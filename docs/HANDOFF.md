@@ -57,13 +57,18 @@ T3 added voice channels, microphone capture, and P2P WebRTC on top of the T2 rea
   same-origin microphone permission gating, CSP `connect-src` allowlisting the configured realtime
   origin, and an automated two-Electron-instance fake-media E2E smoke test.
 
-**T3 is implemented and unit/integration-tested (331 Vitest tests, real-socket protocol/realtime
-coverage, hand-written-fake coverage for `rtc-core`/`media-core`/the Renderer's `RealtimeClient`),
-but the actual completion bar — two real Electron clients establishing a real WebRTC connection and
-exchanging live microphone audio — has NOT been verified live in this environment.** See
-[`tasks/T3_VOICE_WEBRTC.md`](tasks/T3_VOICE_WEBRTC.md)'s handoff notes for exactly why (a
-methodically-isolated tool-environment Chromium instability, confirmed unrelated to this
-implementation) and what to run on ordinary Windows hardware to close that gap.
+**T3 is complete: implemented, unit/integration-tested (337 Vitest tests), and live-verified.** Its
+automated two-Electron-instance smoke test (`apps/desktop/scripts/e2e-voice-smoke.mjs`) passed three
+consecutive times, each launching two real, independent Electron processes into the same voice
+channel and confirming each side's `RTCPeerConnection` reached `'connected'` and received the other's
+genuinely non-silent, actually-decoded audio track (RMS sampled from the real remote `MediaStreamTrack`,
+one to two orders of magnitude above the silence threshold every run). Getting there required finding
+and fixing a real bug in the smoke script itself — `ELECTRON_RUN_AS_NODE: ''` (empty string) is not
+equivalent to the variable being absent, and its presence-but-empty state crashed Electron 43's native
+bootstrap before any window opened. See
+[`tasks/T3_VOICE_WEBRTC.md`](tasks/T3_VOICE_WEBRTC.md)'s handoff notes for the full root-cause
+record and [`references/VERSION_DECISIONS.md`](references/VERSION_DECISIONS.md) for the version-level
+finding.
 
 Read [`tasks/STATUS.md`](tasks/STATUS.md) for the authoritative status,
 [`tasks/T1_ELECTRON_SHELL.md`](tasks/T1_ELECTRON_SHELL.md) /
@@ -79,18 +84,12 @@ WebRTC design including a full join/signaling sequence diagram.
 
 There is no camera/screen/system-audio capture, text chat, database schema, running Coturn stack
 (templates exist but no TURN credential minting), installer/maker artifact, authentication/session
-model, SFU, or production configuration/TLS termination. A live two-Electron-instance voice call has
-not yet been verified end-to-end on real hardware (see above) even though every layer up to that
-point is implemented and tested.
+model, or SFU. Production configuration/TLS termination for the realtime service is also not yet
+implemented. Voice, in T3's P2P-mesh, small-room scope, is real and verified.
 
 ## What should happen next?
 
-**First: close T3's live-verification gap** — run `pnpm --filter @disco-voador/desktop run
-e2e:voice-smoke` and the manual two-instance check from `tasks/T3_VOICE_WEBRTC.md` on ordinary
-Windows hardware, then update `tasks/STATUS.md`/`tasks/T3_VOICE_WEBRTC.md` to COMPLETE once they
-pass.
-
-**Then: T4 — camera streaming**, following the same pattern (task document under `tasks/`,
+**T4 — camera streaming**, following the same pattern (task document under `tasks/`,
 `project-orientation`, `planning-feature`, `webrtc-media-engineer` for `rtc-core`/`media-core`
 extensions, `security-reviewer` for the new permission/signaling surface). Do not implement screen
 sharing or text chat as part of T4 unless its task explicitly says so.
@@ -159,14 +158,15 @@ record, including the one Windows-specific testing limitation it documents (`SIG
 signal-handler wiring cannot be exercised via a cross-process signal on Windows, per Node's own
 documented behavior — the underlying `server.stop()` logic it calls is thoroughly tested).
 
-T3's clean-state evidence, 2026-08-18, is the same gate with 331 Vitest tests (no new
+T3's clean-state evidence, 2026-08-18, is the same gate with 337 Vitest tests (no new
 dependency-audit advisories) — formatting, lint, typecheck, build, and `verify-repository.mjs` all
-pass. Unlike T1/T2, **T3's own required real-runtime evidence (two live Electron instances actually
-exchanging audio) is explicitly outstanding** — this session's tool environment could not sustain any
-Electron/Chromium window long enough to attempt it, confirmed unrelated to the implementation itself
-(see [`tasks/T3_VOICE_WEBRTC.md`](tasks/T3_VOICE_WEBRTC.md)'s handoff notes for the full isolation
-process). Do not treat T3's passing `pnpm check` as equivalent to T1/T2's runtime-verified status —
-it is not, until the two-instance check in that task doc has actually been run and recorded.
+pass — plus its own required real-runtime evidence: `pnpm --filter @disco-voador/desktop run
+e2e:voice-smoke` passed three consecutive times, each run launching two independent Electron
+processes that joined the same voice channel, reached a `'connected'` `RTCPeerConnection`, and
+received the other's genuinely non-silent decoded audio track. See
+[`tasks/T3_VOICE_WEBRTC.md`](tasks/T3_VOICE_WEBRTC.md)'s handoff notes for the full record, including
+the real Electron-bootstrap bug (`ELECTRON_RUN_AS_NODE` set to `''` instead of being genuinely absent)
+found and fixed to get there.
 
 Then perform the task’s required manual/platform checks. Apply
 [`DEFINITION_OF_DONE.md`](DEFINITION_OF_DONE.md) and update status only when every applicable item

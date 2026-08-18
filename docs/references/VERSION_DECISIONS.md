@@ -116,6 +116,38 @@ natively, so `pnpm check`'s audit gate passes without a CLI flag).
   `.cjs` extension (rather than `.js`) also removes any ambiguity from `apps/desktop/package.json`'s
   `"type": "module"`, since a `.cjs` file is unconditionally CommonJS regardless of that field.
 
+## T3 finding: `ELECTRON_RUN_AS_NODE` must be absent, not empty, for a spawned unpackaged Electron child
+
+`apps/desktop/scripts/e2e-voice-smoke.mjs` (T3's automated two-instance voice smoke test) spawns the
+raw `electron` binary directly against `apps/desktop`'s source directory (unpackaged — the packaged
+`.exe`'s `RunAsNode` fuse is disabled per "Required T1 validation" above, so this class of bug cannot
+reach a real packaged build at all). It originally set `ELECTRON_RUN_AS_NODE: ''` in the child's
+`env`, intending to guarantee Electron never falls back to running as plain Node even if the parent
+shell had the variable set (observed in at least one CI-like sandbox, where it was `1`).
+
+That assumption was wrong. Electron's native bootstrap checks the variable's **presence** (via
+`getenv()`/`GetEnvironmentVariable()`), not its truthiness — a present-but-empty value still routes
+through the Node-fallback bootstrap path. On real Windows hardware running Electron `43.4.0`, this
+produced an immediate native crash before any window opened:
+
+```text
+Assertion failed: (isolate_data->snapshot_data()) != nullptr
+  in node::CreateEnvironment
+exit code 134
+```
+
+consistent with Electron 43's Node-startup-snapshot bootstrap expecting the snapshot data that only
+the real Electron main-process path provides — the Node-fallback path does not.
+
+**Decision:** `apps/desktop/scripts/lib/electron-e2e-env.mjs`'s `buildElectronE2EEnvironment` now
+`delete`s the key from the spawned child's environment object entirely, rather than assigning any
+string value to it. Regression-tested in `tests/desktop/electron-e2e-env.test.mjs` (proves genuine
+absence — not `''`, `'0'`, or `'false'` — even when the parent environment has the variable set, and
+even if an override object tries to reintroduce it). After this fix, `pnpm --filter
+@disco-voador/desktop run e2e:voice-smoke` passed three consecutive times with real, non-repeating
+evidence (distinct participant UUIDs, distinct ephemeral ports, distinct non-silent RMS audio-level
+readings each run) — see `docs/tasks/T3_VOICE_WEBRTC.md` for the full record.
+
 ## Required T1 validation — result
 
 Both `electron-forge start` (development) and `electron-forge package` (production, `win32`/`x64`)

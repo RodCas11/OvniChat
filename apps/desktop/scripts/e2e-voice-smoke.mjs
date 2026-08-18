@@ -26,6 +26,8 @@ import { fileURLToPath } from 'node:url';
 
 import electronPath from 'electron';
 
+import { buildElectronE2EEnvironment } from './lib/electron-e2e-env.mjs';
+
 const desktopDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const repoRoot = path.resolve(desktopDir, '../..');
 const mainEntry = path.join(desktopDir, '.vite', 'build', 'main.cjs');
@@ -99,18 +101,13 @@ function runVoiceInstance(label, realtimeUrl, displayName) {
   return new Promise((resolve) => {
     const child = spawn(electronPath, [desktopDir, `--user-data-dir=${userDataDir}`], {
       cwd: desktopDir,
-      env: {
-        ...process.env,
-        // Defensive: some shells/CI runners set this globally, which makes the `electron`
-        // binary run as a plain Node process instead of launching the actual app — silently,
-        // with no window, no IPC, nothing. This script needs the real app every time.
-        ELECTRON_RUN_AS_NODE: '',
+      env: buildElectronE2EEnvironment(process.env, {
         DISCO_VOADOR_REALTIME_URL: realtimeUrl,
         DISCO_VOADOR_E2E_FAKE_MEDIA: '1',
         DISCO_VOADOR_E2E_VOICE_AUTO_JOIN_CHANNEL: 'general',
         DISCO_VOADOR_E2E_VOICE_DISPLAY_NAME: displayName,
         DISCO_VOADOR_E2E_VOICE_SMOKE: '1',
-      },
+      }),
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 

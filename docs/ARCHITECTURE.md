@@ -1,9 +1,8 @@
 # Target architecture
 
 > This document describes the intended architecture. The Electron desktop shell (T1), the realtime
-> connection/protocol foundation (T2), and voice channels/microphone/P2P WebRTC (T3, implemented and
-> tested but pending live two-instance verification — see
-> [`tasks/T3_VOICE_WEBRTC.md`](tasks/T3_VOICE_WEBRTC.md)) exist; see
+> connection/protocol foundation (T2), and voice channels/microphone/P2P WebRTC (T3) are implemented
+> and live-verified — see [`tasks/T3_VOICE_WEBRTC.md`](tasks/T3_VOICE_WEBRTC.md). See
 > [`tasks/STATUS.md`](tasks/STATUS.md) for what remains a marker or is not yet started. Treat any
 > capability this document describes as unimplemented unless STATUS.md says otherwise.
 
