@@ -8,35 +8,42 @@ optional Windows audio without becoming a browser product or requiring external 
 
 ## What exists now?
 
-T0 provides:
+T0 provided the pnpm TypeScript monorepo scaffold: package boundaries, strict TypeScript/ESLint/
+Prettier/Vitest/CI, dependency decisions, marker modules, the Claude Code harness, and docs.
 
-- a pnpm TypeScript monorepo with explicit package boundaries;
-- strict TypeScript, ESLint, Prettier, Vitest, CI, and deterministic repository checks;
-- current Electron/Forge/Vite dependency decisions and a non-executable Forge configuration;
-- marker modules that compile but implement no product behavior;
-- Claude Code project instructions, conservative settings, eight specialist subagents, and eleven
-  reusable skills;
-- product, architecture, security, workflow, licensing, reference, ADR, task, and roadmap docs;
-- Coturn/Docker configuration templates that are not a deployed service.
+T1 replaced the `apps/desktop` markers with a real, verified Electron application:
 
-Read [`tasks/STATUS.md`](tasks/STATUS.md) for the authoritative status and
-[`references/VERSION_DECISIONS.md`](references/VERSION_DECISIONS.md) before changing the toolchain.
+- a secure Main process (`nodeIntegration: false`, `contextIsolation: true`, `sandbox: true`,
+  `webSecurity: true`, no application menu, default-deny navigation/window-open/permissions);
+- a narrow typed Preload bridge (`window.desktopApp.getVersionInfo()`) with sender-origin-validated
+  IPC — no raw `ipcRenderer`, no generic channel access;
+- a custom `app://` protocol for packaged content loading (not `file://`), with a path-traversal
+  containment check and CSP/`X-Content-Type-Options`/`Referrer-Policy` response headers;
+- a minimal React Renderer that states which product capabilities are not implemented yet;
+- a working `pnpm dev` (launches `electron-forge start`) and `electron-forge package` producing a
+  runnable Windows x64 artifact, plus a scripted launch/load/quit smoke test
+  (`apps/desktop/scripts/smoke.mjs`).
+
+Read [`tasks/STATUS.md`](tasks/STATUS.md) for the authoritative status,
+[`tasks/T1_ELECTRON_SHELL.md`](tasks/T1_ELECTRON_SHELL.md) for T1's full verification record, and
+[`references/VERSION_DECISIONS.md`](references/VERSION_DECISIONS.md) before changing the toolchain
+— it records a real Forge/`@electron/packager` incompatibility T1 found and worked around.
 
 ## What does not exist?
 
-There is no Electron window or UI, IPC bridge, WebSocket listener, protocol schema, presence,
-signaling, WebRTC peer connection, device capture, chat, database schema, running Coturn stack,
-installer, or production configuration. Marker exports ending in `Status = 'not-implemented'` are
-truthful scaffold sentinels, not feature stubs.
+There is no WebSocket listener, protocol schema, presence, signaling, WebRTC peer connection,
+device capture, chat, database schema, running Coturn stack, installer/maker artifact, or
+production configuration. The Electron shell itself is real, not a marker, but it claims no
+capability beyond "the shell starts, loads, and quits cleanly."
 
 ## What should happen next?
 
-**T1 — Electron desktop shell and application foundation.**
+**T2 — Shared realtime protocol and realtime service foundation.**
 
-Use its detailed task document, [`tasks/T1_ELECTRON_SHELL.md`](tasks/T1_ELECTRON_SHELL.md), then run
-`project-orientation`, `planning-feature`, and `electron-development`. Consult
-`electron-desktop-engineer`; consult `security-reviewer` for the BrowserWindow, custom protocol,
-navigation/permission, and IPC boundary. Do not start T2 or media implementation as part of T1.
+Use its detailed task document once created/updated under `tasks/`, then run `project-orientation`
+and `planning-feature`. Consult `realtime-backend-engineer` for `services/realtime` and the
+`packages/protocol` contract; consult `security-reviewer` for the WebSocket trust boundary. Do not
+start WebRTC media or text-channel persistence as part of T2 unless its task explicitly says so.
 
 ## Fixed foundation decisions
 
@@ -84,7 +91,14 @@ the high/critical dependency audit all passed. See
 [`tasks/T0_REPOSITORY_HARNESS.md`](tasks/T0_REPOSITORY_HARNESS.md) for environment details and
 limitations.
 
+T1's clean-state evidence, also 2026-08-18, is the same gate with 55 Vitest tests (one documented,
+patched dependency-audit exception; see `references/VERSION_DECISIONS.md`), plus actual Windows
+runtime evidence beyond `pnpm check`: `electron-forge start` and `electron-forge package` both
+verified by launching real windows (development and the packaged `.exe` independently), an
+automated launch/load/quit smoke script, and `@electron/fuses read` against the packaged binary.
+See [`tasks/T1_ELECTRON_SHELL.md`](tasks/T1_ELECTRON_SHELL.md) for the full record.
+
 Then perform the task’s required manual/platform checks. Apply
 [`DEFINITION_OF_DONE.md`](DEFINITION_OF_DONE.md) and update status only when every applicable item
-is evidenced. T1 specifically needs actual Windows Electron start/quit and packaged-artifact smoke
-tests; T0’s passing TypeScript build is not a packaging claim.
+is evidenced. Electron-surface tasks specifically need actual Windows Electron start/quit and
+packaged-artifact smoke tests; a passing TypeScript build alone is not a packaging claim.

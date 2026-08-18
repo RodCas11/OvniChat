@@ -41,7 +41,7 @@ the question, scope, files, constraints, and expected evidence.
 
 ```text
 pnpm install       install exactly from the lockfile in CI
-pnpm dev           T0 TypeScript watch; T1 will add app startup
+pnpm dev           launches the Electron desktop shell (apps/desktop) via `electron-forge start`
 pnpm audit         fail on known high/critical dependency advisories
 pnpm format        write Prettier formatting
 pnpm format:check  verify formatting

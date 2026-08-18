@@ -2,7 +2,10 @@
 
 ## Status
 
-**Accepted (security boundary target).** T0 documents and verifies structure only; T1 must implement and test the desktop processes.
+**Accepted and implemented.** T0 documented and verified structure only. T1 implemented and
+tested the desktop processes against this boundary, including on a packaged (non-`file://`)
+production build; see [`../tasks/T1_ELECTRON_SHELL.md`](../tasks/T1_ELECTRON_SHELL.md) for the
+verification record.
 
 ## Context
 
@@ -19,10 +22,24 @@ Electron combines a privileged Node.js main process with a web renderer. The app
 - Main runtime-validates arguments and verifies sender frame and origin for every privileged IPC request. Permissions default to deny and use both Electron permission-check and permission-request handlers.
 - Unexpected navigation and windows are denied. Any external URL is strictly allowlisted. Production content uses a standard, secure application protocol rather than weakening protections around `file://`.
 
+**Proven in T1:**
+
+- The custom scheme is `app://renderer`, registered privileged (`standard`, `secure`,
+  `supportFetchAPI`, `corsEnabled: false`, `stream`) before `app` is ready and served through
+  `protocol.handle` with a path-traversal-safe resolver. Verified against a real packaged Windows
+  build, not only development.
+- The first bridge capability is `app:get-version-info` (`window.desktopApp.getVersionInfo()`),
+  validated on Main by both `WebContents.id` equality to the created window and `senderFrame`
+  origin against the same allowlist navigation uses. This is a template for later capabilities,
+  not a generic envelope — each new capability still needs its own channel and validation.
+
 **Hypotheses requiring later validation:**
 
-- Exact bridge method names, IPC channels, schemas, error envelopes, and event subscription shapes belong to T1 and later vertical slices.
-- The custom scheme name, display-source picker flow, and permission allowlist values must be proven against packaged production origins.
+- Bridge method names, IPC channels, schemas, error envelopes, and event subscription shapes for
+  capabilities beyond `app:get-version-info` belong to later vertical slices (T3+).
+- The display-source picker flow and a real permission allowlist (T1's permission handlers are
+  unconditional deny, since T1 requests none) must be proven when a task actually needs a
+  permission — most immediately screen/window capture in T5.
 - The process boundary for a future Windows audio helper is deferred to T9; it must remain behind main and never be directly reachable from renderer.
 
 ## Consequences

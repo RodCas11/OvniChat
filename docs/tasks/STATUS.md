@@ -3,7 +3,7 @@
 | Task                           | Status      | Outcome                                                   |
 | ------------------------------ | ----------- | --------------------------------------------------------- |
 | [T0](T0_REPOSITORY_HARNESS.md) | COMPLETE    | Repository and Claude development harness                 |
-| [T1](T1_ELECTRON_SHELL.md)     | NOT STARTED | Electron desktop shell and application foundation         |
+| [T1](T1_ELECTRON_SHELL.md)     | COMPLETE    | Electron desktop shell and application foundation         |
 | T2                             | NOT STARTED | Shared realtime protocol and realtime service foundation  |
 | T3                             | NOT STARTED | Voice channels and microphone WebRTC vertical slice       |
 | T4                             | NOT STARTED | Camera streaming                                          |

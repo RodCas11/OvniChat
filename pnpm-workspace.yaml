@@ -7,16 +7,26 @@ allowBuilds:
   electron: true
   esbuild: true
 
+auditConfig:
+  ignoreGhsas:
+    - GHSA-jmr9-qjv8-65gv
+
 # Forge 7 -> @electron/rebuild pins Electron's node-gyp fork by an exact Git commit. The
 # dependency guard verifies this is the only approved exotic subdependency in the lockfile.
 blockExoticSubdeps: false
 engineStrict: true
 nodeLinker: hoisted
 overrides:
-  # Forge 7.11.2 still resolves vulnerable archive/temp transitives. These exact security
-  # overrides are reviewed in docs/references/VERSION_DECISIONS.md and must pass T1 packaging.
-  '@electron/packager': 20.3.0
+  # @electron/packager stays at its natural Forge 7.11.2 resolution (18.x). Packager >=19
+  # promisified all its lifecycle hooks; Forge 7.11.2's packaging pipeline still calls hooks
+  # with the old (args..., done) callback convention, so packager >=19 makes every
+  # `electron-forge package` run crash. See docs/references/VERSION_DECISIONS.md.
   tar: 7.5.22
   tmp: 0.2.7
+patchedDependencies:
+  # extract-zip 2.0.1 (a transitive dependency of @electron/packager 18.x) has an unvalidated
+  # symlink-target write (CVE-2026-56876 / GHSA-jmr9-qjv8-65gv) with no upstream fix released.
+  # This patch adds the missing target-containment check. See VERSION_DECISIONS.md.
+  extract-zip@2.0.1: patches/extract-zip@2.0.1.patch
 saveExact: true
 strictPeerDependencies: true

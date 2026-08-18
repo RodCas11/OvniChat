@@ -1,0 +1,23 @@
+diff --git a/index.js b/index.js
+index 23384ea16bb848616886f356d8d69f94325535bf..e8af13d802f1875fda649a0c9592e41b6337f586 100644
+--- a/index.js
++++ b/index.js	
+@@ -126,6 +126,18 @@ class Extractor {
+ 
+     if (symlink) {
+       const link = await getStream(readStream)
++
++      // CVE-2026-56876 mitigation: extract-zip validates each entry's own path against the
++      // extraction directory (see the `relativeDestDir` check above) but never validated a
++      // symlink entry's *target*, so a malicious archive could create a symlink inside the
++      // extraction directory that points anywhere on the filesystem. Apply the same
++      // stay-within-`opts.dir` check to the resolved target before creating the link.
++      const resolvedTarget = path.resolve(path.dirname(dest), link)
++      const relativeTarget = path.relative(this.opts.dir, resolvedTarget)
++      if (path.isAbsolute(relativeTarget) || relativeTarget.split(path.sep).includes('..')) {
++        throw new Error(`Out of bound symlink target "${link}" found while processing file ${entry.fileName}`)
++      }
++
+       debug('creating symlink', link, dest)
+       await fs.symlink(link, dest)
+     } else {

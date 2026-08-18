@@ -4,11 +4,13 @@
   "compilerOptions": {
     "declaration": false,
     "declarationMap": false,
+    "jsx": "react-jsx",
     "noEmit": true,
     "types": ["node", "vitest/globals"]
   },
   "include": [
     "apps/**/*.ts",
+    "apps/**/*.tsx",
     "services/**/*.ts",
     "packages/**/*.ts",
     "tests/**/*.ts",

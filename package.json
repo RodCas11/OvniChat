@@ -15,7 +15,7 @@
     "build": "tsc -b --pretty false",
     "check": "prettier --check . && eslint . && tsc --noEmit -p tsconfig.typecheck.json --pretty false && vitest run && tsc -b --pretty false && node scripts/verify-repository.mjs && corepack pnpm audit --audit-level high",
     "clean": "node scripts/clean.mjs",
-    "dev": "tsc -b --watch --preserveWatchOutput",
+    "dev": "corepack pnpm --filter @disco-voador/desktop run start",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "eslint .",
