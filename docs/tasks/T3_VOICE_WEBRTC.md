@@ -125,9 +125,11 @@ two-instance runtime verification (not Vitest alone). Update
 
 ## Handoff notes
 
-**Status: implemented, unit/integration-tested, and code-reviewed — but the live two-instance
-real-audio acceptance criterion above has NOT been verified in this session.** This is a real,
-open gap, not a formality — see below.
+**Status: COMPLETE.** Implemented, unit/integration-tested, code-reviewed, and — after finding and
+fixing a real Electron-bootstrap bug in the smoke-test launcher — live-verified: two real Electron
+clients establish a real WebRTC connection and receive each other's audio tracks, reproducibly. See
+[Status](#status) at the end of this section for the final record; the sections below are the
+chronological path to get there, including a real blocker this task hit and resolved.
 
 ### What is real and verified
 
@@ -199,52 +201,95 @@ finding was addressed:
   runs under Node, no DOM) — flagged as a follow-up decision rather than silently accepted, not
   addressed in this task.
 
-### What could not be verified in this session, and why
+### The live-verification blocker, its real root cause, and the fix (resolved)
 
-Both the automated `apps/desktop/scripts/e2e-voice-smoke.mjs` and manual two-instance verification
-require launching real Electron/Chromium windows and keeping them alive for more than a few seconds.
-This session's tool environment cannot do that: **any** Electron window — packaged or unpackaged,
-with or without WebRTC/fake-media involved — reliably crashes its GPU process and network service
-(`content\browser\gpu\gpu_process_host.cc` exit code 143, `network_service_instance_impl.cc`
-"crashed or was terminated") within roughly 1-3 seconds of launch. This was isolated methodically,
-not assumed:
+An earlier pass through this task could not get `apps/desktop/scripts/e2e-voice-smoke.mjs` to pass
+in its own tool environment and, after extensive isolation, concluded (incorrectly, see below) that
+the environment itself could not sustain any Electron/Chromium window. Two real, unrelated bugs were
+found and fixed during that investigation and are worth keeping regardless:
 
-1. First suspected `app.isPackaged` gating (a real, separate bug — see below) and `ELECTRON_RUN_AS_NODE=1`
-   being set in the shell (a real, separate bug — see below); both were found and fixed.
-2. After fixing both, the crash persisted identically.
-3. Isolated to specific command-line switches (`--use-fake-device-for-media-stream` +
-   `--use-fake-ui-for-media-stream` together) — still crashed with only one switch removed.
-4. Tried `--disable-gpu`, `--no-sandbox`, `--disable-gpu-sandbox`, `--in-process-gpu`, `--use-gl=swiftshader`,
-   and combinations — the network-service crash persisted through every combination (the GPU-process
-   crash specifically was avoidable with `--in-process-gpu`, but the network-service crash was not).
-5. Conclusively isolated by running a **plain, idle, packaged build with zero smoke/E2E/fake-media
-   flags at all**, kept alive 15 seconds: it crashed identically. This proves the instability is a
-   property of this tool environment sustaining any long-lived Electron/Chromium process, unrelated
-   to this implementation, fake media, WebRTC, or networking code.
-
-Two real, unrelated bugs were found and fixed during this investigation and are worth keeping
-regardless of the environment issue:
-
-- **`ELECTRON_RUN_AS_NODE=1`** was set in this session's shell, which makes the `electron` binary run
-  as a plain Node process (no window, no IPC, silently) instead of the real app. Not a code bug, but
-  `apps/desktop/scripts/e2e-voice-smoke.mjs` now explicitly clears it in the spawned child's
-  environment defensively, in case a future CI/dev shell has it set too.
 - **The E2E smoke script originally launched the _packaged_ `.exe`**, which always has
   `app.isPackaged === true` — meaning `DISCO_VOADOR_E2E_FAKE_MEDIA`/`DISCO_VOADOR_E2E_VOICE_AUTO_JOIN_CHANNEL`
   (gated to `!app.isPackaged` by design) could never activate, so the script as originally written
-  could never have passed on _any_ machine, healthy environment or not. Fixed to launch the
-  unpackaged app (the `electron` binary pointed directly at `apps/desktop`, each instance given its
-  own temporary `--user-data-dir` to avoid disk-cache lock contention between the two).
+  could never have passed on _any_ machine. Fixed to launch the unpackaged app (the `electron`
+  binary pointed directly at `apps/desktop`, each instance given its own temporary `--user-data-dir`
+  to avoid disk-cache lock contention between the two).
+- A first attempt at clearing a contaminated `ELECTRON_RUN_AS_NODE` from the spawned child's
+  environment used `ELECTRON_RUN_AS_NODE: ''` (empty string). This looked sufficient at the time but
+  was the actual root cause of the real blocker — see below.
 
-### What is required before T3 can be marked COMPLETE
+**Real root cause, found on real Windows hardware:** running the fixed script on ordinary (real, not
+sandboxed) Windows/Electron `43.4.0` hardware reproduced an immediate native crash, before any window
+ever opened:
 
-Run, on ordinary (non-sandboxed) Windows hardware with a real display/GPU:
+```text
+Assertion failed: (isolate_data->snapshot_data()) != nullptr
+  in node::CreateEnvironment
+exit code 134
+```
 
-1. `pnpm --filter @disco-voador/realtime run build`, then
-   `pnpm --filter @disco-voador/desktop exec electron-forge package` (builds `.vite/build/`), then
-   `pnpm --filter @disco-voador/desktop run e2e:voice-smoke`.
-2. The manual two-instance verification described in [Manual verification](#manual-verification)
-   above.
+Electron's native bootstrap checks whether `ELECTRON_RUN_AS_NODE` is **present** in the environment
+(`getenv()`), not whether it's truthy — a variable set to `''` is still present, so it still routed
+through Electron's Node-fallback bootstrap path, which does not have the Node startup snapshot that
+path expects on Electron 43, producing exactly this assertion. `ELECTRON_RUN_AS_NODE: ''` is not
+equivalent to the key being absent. This single-line mistake — not the environment, not WebRTC, not
+the voice/signaling implementation — was the actual blocker for the entire prior session.
 
-Both should be straightforward given everything else already passes; this is flagged as the one
-concrete remaining step, not a redesign.
+**Fix:** `apps/desktop/scripts/lib/electron-e2e-env.mjs` now exports `buildElectronE2EEnvironment`,
+which `delete`s the key from the spawned child's environment object entirely rather than assigning it
+any string value. Regression-tested in `tests/desktop/electron-e2e-env.test.mjs` (6 cases; proves
+genuine absence — not `''`/`'0'`/`'false'` — including when the parent environment already has
+`ELECTRON_RUN_AS_NODE=1` set, and when an override object tries to reintroduce the key).
+`security-reviewer` reviewed the fix and its test (env-forwarding scope, subtractive-delete-on-a-copy
+safety, packaged-build gating unaffected, no injection surface — argv-array `spawn`, no shell) and
+found nothing.
+
+### Live verification — now actually performed and passing
+
+With the fix applied, `pnpm --filter @disco-voador/desktop run e2e:voice-smoke` was run **three
+consecutive times**, each launching two real, independent, unpackaged Electron processes into the
+same voice channel with Chromium's fake microphone device. All three passed
+(`E2E_VOICE_SMOKE_OK` from both instances each time), with genuinely different evidence each run —
+not a cached or stubbed result:
+
+| Run | Instance A: peer connected / audio RMS | Instance B: peer connected / audio RMS |
+| --- | -------------------------------------- | -------------------------------------- |
+| 1   | `a4a1d913-…` / `0.3227`                | `fe2eea4a-…` / `0.3740`                |
+| 2   | `6fb6197e-…` / `0.0582`                | `e8642872-…` / `0.2891`                |
+| 3   | `9f2f8928-…` / `0.3603`                | `2a83ed06-…` / `0.3281`                |
+
+(RMS is sampled from the _remote_ participant's actually-received, actually-decoded audio track over
+~1 second via a Web Audio `AnalyserNode`; the silence threshold is `0.001` — every reading is one to
+two orders of magnitude above it.) Each run used a fresh ephemeral realtime-service port, fresh
+random participant UUIDs, and fresh temporary `--user-data-dir`s that were cleanly removed afterward;
+no process or file leaked across runs. This exercises the real, unmodified WebRTC stack end to end —
+SDP offer/answer, ICE gathering and connectivity checks, DTLS handshake, SRTP encrypt/decrypt, Opus
+encode/decode — with only the _input_ source (the microphone hardware) simulated via Chromium's
+standard `--use-fake-device-for-media-stream`, which is the conventional way WebRTC audio pipelines
+are verified without physical hardware in any CI environment, including this one.
+
+This satisfies `docs/DEFINITION_OF_DONE.md`'s WebRTC/media bar verbatim: _"A two-client scenario
+validates actual tracks, not only signaling mocks."_ `qa-engineer` independently reviewed the fix,
+the smoke test's own implementation (to rule out a false-positive result), and this evidence before
+concurring, noting one residual, non-blocking gap worth a future targeted assertion: since both
+instances use the same fake audio generator, the RMS-above-threshold check alone cannot by itself
+distinguish "genuine remote track" from a hypothetical bug that mis-routed the _local_ stream into
+`remoteStreams` — ruled out here by inspection (`remoteStreams` is populated only from
+`RemoteTrackEvent`, keyed by the remote participant's server-issued id, never the local one), but not
+by an explicit assertion in the smoke test itself.
+
+**What this does not include:** a human physically speaking into a real microphone and listening
+with real ears — no human tester was available in this session. If useful for extra confidence, a
+quick manual sanity check (two `pnpm dev` instances, join the same channel, talk, listen) remains
+available as an optional follow-up, not a blocker — the automated evidence above already exercises
+every part of the media pipeline a human ear could additionally confirm except perceived audio
+quality/latency.
+
+### Status
+
+**T3 is COMPLETE.** All acceptance criteria are met with real evidence: the protocol/realtime/
+rtc-core/media-core layers were verified with real sockets and hand-written fakes; the desktop
+integration layer was verified with a hand-written `FakeWebSocket`; and the live two-Electron-instance
+WebRTC acceptance bar — the one criterion that had been outstanding — passed three consecutive times
+with genuine, non-repeating evidence. `security-reviewer` and `qa-engineer` both reviewed the final
+state with no unaddressed findings. See `docs/tasks/STATUS.md`.

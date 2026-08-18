@@ -214,12 +214,16 @@ a track object exists — by sampling RMS energy from the _remote_ track via a W
 `E2E_AUDIO_LEVEL_OK:<id>` markers that `main/index.ts`'s `armE2EVoiceSmokeExit` relays to its own
 stdout and watches for.
 
-**Status: implemented but not yet successfully run to completion.** See
-[`../tasks/T3_VOICE_WEBRTC.md`](../tasks/T3_VOICE_WEBRTC.md) for why — this session's tool
-environment cannot sustain any Electron/Chromium window (with or without WebRTC involved) for more
-than a few seconds, confirmed unrelated to this implementation. This script and the manual
-verification steps in the task doc still need to be run successfully on ordinary Windows hardware
-before T3's live-audio acceptance criterion is considered met.
+**Status: implemented and passing.** `pnpm --filter @disco-voador/desktop run e2e:voice-smoke` has
+passed three consecutive runs, each with both instances reaching `'connected'` and receiving
+genuinely non-silent decoded audio (RMS one to two orders of magnitude above the silence threshold).
+Getting here required fixing a real bug in the script: `ELECTRON_RUN_AS_NODE` must be genuinely
+_absent_ from the spawned child's environment, not merely set to `''` — Electron's native bootstrap
+checks presence, not truthiness, and a present-but-empty value crashed Electron 43 before any window
+opened (`apps/desktop/scripts/lib/electron-e2e-env.mjs` now handles this correctly; see
+[`../tasks/T3_VOICE_WEBRTC.md`](../tasks/T3_VOICE_WEBRTC.md) for the full root-cause record and
+[`../references/VERSION_DECISIONS.md`](../references/VERSION_DECISIONS.md) for the version-level
+note).
 
 ## Known gaps / deliberately deferred
 
