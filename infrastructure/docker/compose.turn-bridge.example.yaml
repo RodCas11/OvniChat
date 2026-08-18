@@ -1,0 +1,16 @@
+name: disco-voador-dev
+
+# Portable local-validation template. The deliberately small relay range is not a production
+# capacity recommendation. Docker host networking is preferred for a real Linux TURN host.
+services:
+  coturn:
+    image: coturn/coturn:4.17.2-r0
+    command: ['-c', '/etc/coturn/turnserver.conf']
+    ports:
+      - '3478:3478/tcp'
+      - '3478:3478/udp'
+      - '49160-49200:49160-49200/udp'
+    profiles: ['turn']
+    restart: unless-stopped
+    volumes:
+      - ../coturn/turnserver.dev.conf:/etc/coturn/turnserver.conf:ro

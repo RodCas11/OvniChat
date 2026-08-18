@@ -1,0 +1,30 @@
+# Architecture decision records
+
+ADRs capture durable decisions and their tradeoffs. Use the next zero-padded number. Never rewrite
+history to make a superseded decision appear absent; add a new ADR with `Supersedes ADR NNNN` and
+mark the old one `Superseded by ADR NNNN`.
+
+Required sections:
+
+```text
+Status
+Context
+Decision
+Consequences
+Alternatives
+```
+
+Use status language that distinguishes an accepted architectural decision from a proposed or future
+hypothesis. An accepted target decision may precede implementation; say so explicitly.
+
+## Initial decisions
+
+1. Windows-first Electron application
+2. Simple pnpm monorepo
+3. Main/Preload/Renderer security boundary
+4. Self-hosted core services
+5. One internally modular realtime service
+6. P2P first with an SFU-ready seam
+7. Windows media isolation
+8. VDO.Ninja controlled-reference policy
+9. SQLite first behind a storage boundary

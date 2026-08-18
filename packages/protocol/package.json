@@ -1,0 +1,16 @@
+{
+  "name": "@disco-voador/protocol",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Future canonical runtime-validated realtime contracts.",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -b --pretty false",
+    "typecheck": "tsc --noEmit -p tsconfig.json --pretty false"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ]
+}

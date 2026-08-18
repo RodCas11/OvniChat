@@ -1,0 +1,16 @@
+{
+  "name": "@disco-voador/windows-media",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Future Windows-only capture adapters and native helper boundary.",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -b --pretty false",
+    "typecheck": "tsc --noEmit -p tsconfig.json --pretty false"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ]
+}

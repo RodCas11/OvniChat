@@ -1,0 +1,22 @@
+packages:
+  - apps/*
+  - services/*
+  - packages/*
+
+allowBuilds:
+  electron: true
+  esbuild: true
+
+# Forge 7 -> @electron/rebuild pins Electron's node-gyp fork by an exact Git commit. The
+# dependency guard verifies this is the only approved exotic subdependency in the lockfile.
+blockExoticSubdeps: false
+engineStrict: true
+nodeLinker: hoisted
+overrides:
+  # Forge 7.11.2 still resolves vulnerable archive/temp transitives. These exact security
+  # overrides are reviewed in docs/references/VERSION_DECISIONS.md and must pass T1 packaging.
+  '@electron/packager': 20.3.0
+  tar: 7.5.22
+  tmp: 0.2.7
+saveExact: true
+strictPeerDependencies: true

@@ -1,0 +1,13 @@
+name: disco-voador
+
+# Production-oriented TURN template for a Linux host. Copy the Coturn example configuration to
+# turnserver.conf, inject its secret outside source control, and review every network value first.
+services:
+  coturn:
+    image: coturn/coturn:4.17.2-r0
+    command: ['-c', '/etc/coturn/turnserver.conf']
+    network_mode: host
+    profiles: ['turn']
+    restart: unless-stopped
+    volumes:
+      - ../coturn/turnserver.conf:/etc/coturn/turnserver.conf:ro

@@ -1,0 +1,35 @@
+# Production starting point; incomplete until a runtime-only secret is supplied.
+listening-port=3478
+fingerprint
+use-auth-secret
+realm=turn.example.invalid
+stale-nonce=600
+unauthorized-ratelimit
+unauthorized-ratelimit-rps=10
+min-port=49152
+max-port=65535
+no-cli
+no-multicast-peers
+user-quota=12
+total-quota=1200
+
+# Fail-closed template: no static-auth-secret is committed. Generate the ignored runtime file,
+# append a strong random static-auth-secret there, and restrict its filesystem permissions.
+
+# Public deployments deny relay access to common internal/link-local networks by default. Adjust
+# deliberately and use narrow allowed-peer-ip exceptions only when the deployment requires them.
+denied-peer-ip=10.0.0.0-10.255.255.255
+denied-peer-ip=100.64.0.0-100.127.255.255
+denied-peer-ip=169.254.0.0-169.254.255.255
+denied-peer-ip=172.16.0.0-172.31.255.255
+denied-peer-ip=192.168.0.0-192.168.255.255
+denied-peer-ip=fc00::-fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+denied-peer-ip=fe80::-febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+
+# Required behind NAT; replace both addresses.
+# external-ip=PUBLIC_IP/PRIVATE_IP
+
+# Add TLS only with real, securely mounted certificates.
+# tls-listening-port=5349
+# cert=/run/secrets/turn_cert
+# pkey=/run/secrets/turn_key

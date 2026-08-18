@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "declaration": false,
+    "declarationMap": false,
+    "noEmit": true,
+    "types": ["node", "vitest/globals"]
+  },
+  "include": [
+    "apps/**/*.ts",
+    "services/**/*.ts",
+    "packages/**/*.ts",
+    "tests/**/*.ts",
+    "*.config.ts"
+  ],
+  "exclude": ["**/dist/**", "**/.vite/**", "node_modules"]
+}

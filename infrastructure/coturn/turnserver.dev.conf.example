@@ -1,0 +1,17 @@
+# Local bridge-network validation only; incomplete until a runtime-only secret is supplied.
+listening-port=3478
+fingerprint
+use-auth-secret
+realm=turn.local.invalid
+stale-nonce=600
+unauthorized-ratelimit
+unauthorized-ratelimit-rps=10
+min-port=49160
+max-port=49200
+no-cli
+no-multicast-peers
+user-quota=4
+total-quota=40
+
+# Fail-closed template: add a random static-auth-secret only to the ignored runtime copy. Never
+# expose this development configuration to an untrusted network.
