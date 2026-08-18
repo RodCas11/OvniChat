@@ -14,11 +14,14 @@ import type { RtcPeerConnectionLike } from '../../packages/rtc-core/src/rtc-peer
 export class FakePeerConnection implements RtcPeerConnectionLike {
   connectionState: RTCPeerConnectionState = 'new';
   iceConnectionState: RTCIceConnectionState = 'new';
+  /** Settable by tests to simulate an outstanding local offer for collision scenarios. */
+  signalingState: RTCSignalingState = 'stable';
 
   ontrack: ((event: RTCTrackEvent) => void) | null = null;
   onicecandidate: ((event: RTCPeerConnectionIceEvent) => void) | null = null;
   onconnectionstatechange: ((event: Event) => void) | null = null;
   oniceconnectionstatechange: ((event: Event) => void) | null = null;
+  onnegotiationneeded: ((event: Event) => void) | null = null;
 
   readonly addTrackCalls: MediaStreamTrack[] = [];
   readonly removeTrackCalls: RTCRtpSender[] = [];

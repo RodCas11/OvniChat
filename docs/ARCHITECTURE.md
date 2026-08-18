@@ -1,8 +1,10 @@
 # Target architecture
 
 > This document describes the intended architecture. The Electron desktop shell (T1), the realtime
-> connection/protocol foundation (T2), and voice channels/microphone/P2P WebRTC (T3) are implemented
-> and live-verified — see [`tasks/T3_VOICE_WEBRTC.md`](tasks/T3_VOICE_WEBRTC.md). See
+> connection/protocol foundation (T2), voice channels/microphone/P2P WebRTC (T3), and camera
+> streaming (T4) are implemented and live-verified — see
+> [`tasks/T3_VOICE_WEBRTC.md`](tasks/T3_VOICE_WEBRTC.md) and
+> [`tasks/T4_CAMERA_STREAMING.md`](tasks/T4_CAMERA_STREAMING.md). See
 > [`tasks/STATUS.md`](tasks/STATUS.md) for what remains a marker or is not yet started. Treat any
 > capability this document describes as unimplemented unless STATUS.md says otherwise.
 
@@ -179,25 +181,33 @@ interface MediaTransport {
 }
 ```
 
-`P2PMeshTransport` is the first (and, for T3, only) implementation. A future SFU-backed transport
-implements the same interface without any caller (Renderer) change — mesh-specific peer creation,
-transceivers, negotiation, and fan-out do not leak into React components.
+`P2PMeshTransport` is the only implementation. A future SFU-backed transport implements the same
+interface without any caller (Renderer) change — mesh-specific peer creation, transceivers,
+negotiation, and fan-out do not leak into React components. T4 added the one piece this interface's
+first (T3) implementation was still missing: renegotiation. `Peer` now listens for the platform's
+`negotiationneeded` event (standard "perfect negotiation" glare handling, anchored to the same
+deterministic `role` T3 already computes — see [`architecture/WEBRTC_CAMERA.md`](architecture/WEBRTC_CAMERA.md)),
+so `publishTrack`/`unpublishTrack` correctly renegotiate a track added to or removed from an
+already-`'connected'` peer — required for camera on/off mid-call, and available to any future media
+source (screen-video/screen-audio) with no further transport change.
 
 ## Semantic media-source model
 
 ```text
 microphone    independent audio source   — implemented (T3)
-camera        independent video source   — not yet implemented (T4)
+camera        independent video source   — implemented (T4)
 screen-video  selected monitor/window video source   — not yet implemented (T5)
 screen-audio  optional system or process-tree audio source   — not yet implemented (T5/T6)
 ```
 
 The target supports all four simultaneously. A camera track must not be replaced by a screen track;
-starting or stopping screen capture must not stop voice — T3 already establishes this for
-microphone: muting sets `track.enabled = false` (never stops/reacquires the device), and joining/
-leaving a screen share (once implemented) must not touch the voice `RTCPeerConnection`s at all.
-Track end, mute, source replacement, and cleanup belong to the source/transport lifecycle, while UI
-observes semantic state.
+starting or stopping screen capture must not stop voice — T3/T4 already establish this pattern for
+microphone and camera: microphone muting sets `track.enabled = false` (never stops/reacquires the
+device); camera on/off fully stops/reacquires the device (see `WEBRTC_CAMERA.md` for why that
+differs from microphone) but never touches the peer connection itself, only renegotiates the one
+affected track. Joining/leaving a screen share (once implemented) must not touch the voice/camera
+`RTCPeerConnection`s at all. Track end, mute, source replacement, and cleanup belong to the
+source/transport lifecycle, while UI observes semantic state.
 
 ## Windows audio stages
 

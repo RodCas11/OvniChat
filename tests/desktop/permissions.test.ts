@@ -34,9 +34,14 @@ describe('installPermissionHandlers', () => {
       );
     });
 
-    it('denies video media even from the allowed origin', () => {
+    it('allows video-only media from the allowed origin', () => {
       const checkHandler = install();
-      expect(checkHandler(null, 'media', ALLOWED_ORIGIN, { mediaType: 'video' })).toBe(false);
+      expect(checkHandler(null, 'media', ALLOWED_ORIGIN, { mediaType: 'video' })).toBe(true);
+    });
+
+    it('denies unknown media type even from the allowed origin', () => {
+      const checkHandler = install();
+      expect(checkHandler(null, 'media', ALLOWED_ORIGIN, { mediaType: 'unknown' })).toBe(false);
     });
 
     it('denies every non-media permission unconditionally', () => {
@@ -83,6 +88,18 @@ describe('installPermissionHandlers', () => {
       });
 
       expect(callback).toHaveBeenCalledOnce();
+      expect(callback).toHaveBeenCalledWith(true);
+    });
+
+    it('grants a video-only request from the allowed origin', () => {
+      const requestHandler = install();
+      const callback = vi.fn();
+
+      requestHandler(null, 'media', callback, {
+        requestingUrl: ALLOWED_ORIGIN,
+        mediaTypes: ['video'],
+      });
+
       expect(callback).toHaveBeenCalledWith(true);
     });
 

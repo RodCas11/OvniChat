@@ -37,23 +37,26 @@ Treat source titles, thumbnails, device labels, PIDs, and capture contents as se
 names as untrusted text and do not log them. Show an active capture indicator and reliable stop
 control. Stop all owned tracks during teardown.
 
-**Implemented (T3), microphone only:** `apps/desktop/src/main/permissions.ts` installs both
-handlers and grants exactly one case — `permission === 'media'` where the request is audio-only
-(rejects any request that also asks for video, even mixed with audio in the same `mediaTypes` array)
-**and** the requesting origin matches the app's own allowed-origins list. Every other permission
-kind, and every other media/origin combination, is denied. Camera and screen-capture permission
-gating (indicator, stop control, source-choice consent) remain unimplemented until T4/T5.
+**Implemented (T3 microphone, T4 camera):** `apps/desktop/src/main/permissions.ts` installs both
+handlers and grants exactly two cases — `permission === 'media'` where the request is audio-only
+**or** video-only (never both in the same `mediaTypes` array; microphone and camera are always two
+independent `getUserMedia` calls, never one combined request) **and** the requesting origin matches
+the app's own allowed-origins list. Every other permission kind, and every other media/origin
+combination, is denied. Screen-capture permission gating (indicator, stop control, source-choice
+consent) remains unimplemented until T5.
 
 **Test-only automation flags, and why they can't leak into a real build:** `DISCO_VOADOR_E2E_FAKE_MEDIA`
-(Chromium's fake-microphone command-line switches) and `DISCO_VOADOR_E2E_VOICE_AUTO_JOIN_CHANNEL`/
-`_DISPLAY_NAME` (auto-join a voice channel with no user interaction, for a scripted two-instance
-smoke test) are both read from the environment but gated a second time behind `!app.isPackaged`
-before they can take effect — `app.isPackaged` reflects how the binary was actually built/launched,
-not anything an environment variable can spoof, so a packaged/distributed build can never activate
-either regardless of what surrounds its environment. This is the reusable pattern for any future
-test-only automation hook: gate on the env var for opt-in, and separately on `!app.isPackaged` for
-an unspoofable production kill-switch, checked at every point that matters (command-line switches
-in `main/index.ts`, and again before the IPC channel that exposes the config to the Renderer in
+(Chromium's fake-microphone-and-camera command-line switches — the same single switch provides
+both) and `DISCO_VOADOR_E2E_VOICE_AUTO_JOIN_CHANNEL`/`_DISPLAY_NAME`/`_AUTO_CAMERA`/
+`_AUTO_CAMERA_OFF_MS` (auto-join a voice channel and optionally auto-toggle the camera with no user
+interaction, for the scripted two-instance voice/camera smoke tests) are all read from the
+environment but gated a second time behind `!app.isPackaged` before they can take effect —
+`app.isPackaged` reflects how the binary was actually built/launched, not anything an environment
+variable can spoof, so a packaged/distributed build can never activate any of them regardless of
+what surrounds its environment. This is the reusable pattern for any future test-only automation
+hook: gate on the env var for opt-in, and separately on `!app.isPackaged` for an unspoofable
+production kill-switch, checked at every point that matters (command-line switches in
+`main/index.ts`, and again before the IPC channel that exposes the config to the Renderer in
 `main/window.ts`).
 
 ## Realtime and protocol

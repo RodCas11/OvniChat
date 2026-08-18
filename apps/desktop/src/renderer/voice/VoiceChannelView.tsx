@@ -2,7 +2,10 @@ import { useEffect, useRef, useState, type ChangeEvent, type ReactElement } from
 
 import type { DesktopE2EVoiceConfig, DesktopRealtimeConfig } from '../../shared/ipc-contract.js';
 import { probeRemoteAudioLevel } from './e2e-audio-probe.js';
+import { probeRemoteVideoFrames } from './e2e-video-probe.js';
+import { LocalCameraPreview } from './LocalCameraPreview.js';
 import { RemoteAudio } from './RemoteAudio.js';
+import { RemoteCamera } from './RemoteCamera.js';
 import { useVoiceChannel } from './use-voice-channel.js';
 
 interface VoiceChannelViewProps {
@@ -43,6 +46,16 @@ export function VoiceChannelView({
     actions,
   ]);
 
+  // T4 automated camera smoke test only: once auto-joined, also auto-enable the camera.
+  const autoCameraAttempted = useRef(false);
+  useEffect(() => {
+    if (!e2eAutoJoin?.autoCamera || autoCameraAttempted.current) return;
+    if (!state.currentChannelId) return;
+
+    autoCameraAttempted.current = true;
+    actions.enableCamera();
+  }, [e2eAutoJoin, state.currentChannelId, actions]);
+
   const reportedConnected = useRef(new Set<string>());
   useEffect(() => {
     if (!e2eAutoJoin) return;
@@ -57,16 +70,57 @@ export function VoiceChannelView({
     }
   }, [e2eAutoJoin, state.participants]);
 
-  const probedStreams = useRef(new Set<string>());
+  const probedAudioStreams = useRef(new Set<string>());
   useEffect(() => {
     if (!e2eAutoJoin) return;
-    for (const [participantId, stream] of state.remoteStreams) {
-      if (!probedStreams.current.has(participantId)) {
-        probedStreams.current.add(participantId);
+    for (const [participantId, stream] of state.remoteAudioStreams) {
+      if (!probedAudioStreams.current.has(participantId)) {
+        probedAudioStreams.current.add(participantId);
         probeRemoteAudioLevel(stream, participantId);
       }
     }
-  }, [e2eAutoJoin, state.remoteStreams]);
+  }, [e2eAutoJoin, state.remoteAudioStreams]);
+
+  const probedVideoStreams = useRef(new Set<string>());
+  useEffect(() => {
+    if (!e2eAutoJoin) return;
+    const stillPresent = new Set(state.remoteVideoStreams.keys());
+    for (const participantId of probedVideoStreams.current) {
+      if (!stillPresent.has(participantId)) {
+        probedVideoStreams.current.delete(participantId);
+        // Includes the peer's live connection state at the moment the camera track ended — the
+        // deterministic proof that disabling a remote camera did not disconnect the peer (T4 is
+        // not complete if stopping camera tears down voice).
+        const peerState =
+          state.participants.find((p) => p.participantId === participantId)?.connectionState ??
+          'unknown';
+        console.info(`E2E_REMOTE_VIDEO_ENDED:${participantId}:peerState=${peerState}`);
+      }
+    }
+    for (const [participantId, stream] of state.remoteVideoStreams) {
+      if (!probedVideoStreams.current.has(participantId)) {
+        probedVideoStreams.current.add(participantId);
+        probeRemoteVideoFrames(stream, participantId, state.selfParticipantId);
+      }
+    }
+  }, [e2eAutoJoin, state.remoteVideoStreams, state.selfParticipantId, state.participants]);
+
+  // T4 automated camera smoke test only: auto-disables the camera again a fixed delay after
+  // enabling it, so the two-instance smoke can deterministically exercise and prove camera-off
+  // behavior (remote tile disappears, voice/peer connection survives) without a human involved.
+  const autoCameraOffScheduled = useRef(false);
+  useEffect(() => {
+    if (!e2eAutoJoin?.autoCameraOffAfterMs || autoCameraOffScheduled.current) return;
+    if (!state.cameraEnabled) return;
+
+    autoCameraOffScheduled.current = true;
+    const timer = setTimeout(() => {
+      actions.disableCamera();
+    }, e2eAutoJoin.autoCameraOffAfterMs);
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [e2eAutoJoin, state.cameraEnabled, actions]);
 
   return (
     <section>
@@ -120,6 +174,16 @@ export function VoiceChannelView({
           >
             {state.deafened ? 'Undeafen' : 'Deafen'}
           </button>
+          <button
+            type="button"
+            disabled={state.cameraAcquiring}
+            onClick={() => {
+              if (state.cameraEnabled) actions.disableCamera();
+              else actions.enableCamera();
+            }}
+          >
+            {state.cameraEnabled ? 'Camera off' : 'Camera'}
+          </button>
           <button type="button" onClick={actions.leave}>
             Leave
           </button>
@@ -133,7 +197,7 @@ export function VoiceChannelView({
             ))}
           </ul>
 
-          {[...state.remoteStreams.entries()].map(([participantId, stream]) => (
+          {[...state.remoteAudioStreams.entries()].map(([participantId, stream]) => (
             <RemoteAudio
               key={participantId}
               participantId={participantId}
@@ -141,11 +205,27 @@ export function VoiceChannelView({
               muted={state.deafened}
             />
           ))}
+
+          <div>
+            {state.localCameraStream && <LocalCameraPreview stream={state.localCameraStream} />}
+            {[...state.remoteVideoStreams.entries()].map(([participantId, stream]) => {
+              const participant = state.participants.find((p) => p.participantId === participantId);
+              return (
+                <RemoteCamera
+                  key={participantId}
+                  participantId={participantId}
+                  displayName={participant?.displayName ?? participantId}
+                  stream={stream}
+                />
+              );
+            })}
+          </div>
         </>
       )}
 
       {state.joining && <p>Joining…</p>}
       {state.micError && <p role="alert">Microphone error: {state.micError}</p>}
+      {state.cameraError && <p role="alert">Camera error: {state.cameraError}</p>}
       {state.lastError && <p role="alert">{state.lastError}</p>}
     </section>
   );

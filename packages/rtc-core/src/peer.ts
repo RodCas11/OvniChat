@@ -18,7 +18,26 @@ export interface PeerCallbacks {
  * Owns exactly one remote participant's `RTCPeerConnection` for its full lifecycle: creation
  * (already done by the caller — `Peer` receives an already-constructed `RtcPeerConnectionLike`),
  * local-track attachment, remote-track/ICE/state-change wiring, offer/answer creation per T3's
- * initiator/responder role split, ICE candidate queueing (see `IceCandidateQueue`), and cleanup.
+ * initiator/responder role split, ICE candidate queueing (see `IceCandidateQueue`), T4's
+ * renegotiation for tracks added/removed after the initial offer/answer cycle, and cleanup.
+ *
+ * ## Renegotiation (T4)
+ *
+ * T3's role split (`role: 'initiator' | 'responder'`) decides who sends the *first* offer for a
+ * pair; it is reused as-is here to also decide who is "polite" for every *subsequent*
+ * renegotiation — the responder (`polite = role === 'responder'`) always yields to a colliding
+ * inbound offer, the initiator never does. This is the standard WebRTC "perfect negotiation"
+ * pattern (see MDN's "Establishing a perfect negotiation" article) anchored to state this package
+ * already computes deterministically; no second, independent polite/impolite coordination exists.
+ *
+ * `negotiated` starts `false` and only flips to `true` once the very first offer/answer cycle for
+ * this pair completes (end of a successful initial `createAndSendOffer` for the initiator, end of
+ * a successful initial `handleRemoteOffer` for the responder). The platform fires
+ * `negotiationneeded` for `addTrack`/`removeTrack` calls made *during* that initial setup too (e.g.
+ * `P2PMeshTransport.addParticipant` seeding already-published tracks before the first offer is even
+ * sent) — `onnegotiationneeded` no-ops while `negotiated` is still `false` specifically to avoid a
+ * duplicate/premature offer racing the initial handshake. Once `negotiated` is `true`,
+ * `onnegotiationneeded` reuses `createAndSendOffer` to send a fresh offer for whatever changed.
  *
  * Every method here treats "this peer already closed" as a controlled no-op rather than a thrown
  * or rejected failure — `close()` may race any in-flight negotiation step, and callers (see
@@ -27,22 +46,32 @@ export interface PeerCallbacks {
 export class Peer {
   readonly participantId: ParticipantId;
   readonly role: 'initiator' | 'responder';
+  /** The side that yields (rolls back its own outstanding offer) on a renegotiation collision. */
+  readonly polite: boolean;
 
   private readonly pc: RtcPeerConnectionLike;
+  private readonly signalingPort: SignalingPort;
   private readonly callbacks: PeerCallbacks;
   private readonly iceQueue = new IceCandidateQueue();
   private readonly senders = new Map<MediaStreamTrack, RTCRtpSender>();
   private closed = false;
+  /** True once the first offer/answer cycle for this pair has completed. */
+  private negotiated = false;
+  /** True while an offer created by this side (initial or renegotiation) is in flight. */
+  private makingOffer = false;
 
   constructor(
     participantId: ParticipantId,
     role: 'initiator' | 'responder',
     pc: RtcPeerConnectionLike,
+    signalingPort: SignalingPort,
     callbacks: PeerCallbacks,
   ) {
     this.participantId = participantId;
     this.role = role;
+    this.polite = role === 'responder';
     this.pc = pc;
+    this.signalingPort = signalingPort;
     this.callbacks = callbacks;
 
     pc.ontrack = (event) => {
@@ -63,6 +92,16 @@ export class Peer {
       if (this.closed) return;
       this.callbacks.onStateChanged(pc.connectionState, pc.iceConnectionState);
     };
+    pc.onnegotiationneeded = () => {
+      if (this.closed || !this.negotiated) return;
+      this.createAndSendOffer().catch((error: unknown) => {
+        if (this.closed) return;
+        console.error(`rtc-core: failed to create/send a renegotiation offer`, {
+          participantId: this.participantId,
+          error,
+        });
+      });
+    };
   }
 
   get isClosed(): boolean {
@@ -82,20 +121,50 @@ export class Peer {
     this.pc.removeTrack(sender);
   }
 
-  /** T3's initiator side: create and send the one offer this pair will ever need. */
-  async createAndSendOffer(signalingPort: SignalingPort): Promise<void> {
+  /**
+   * Creates and sends an offer: the initiator's first offer for this pair, or (once `negotiated`)
+   * any later renegotiation offer — both the initial and every later call reuse this same logic.
+   */
+  async createAndSendOffer(): Promise<void> {
     if (this.closed) return;
-    const offer = await this.pc.createOffer();
-    if (this.closed) return;
-    await this.pc.setLocalDescription(offer);
-    if (this.closed) return;
-    if (offer.sdp !== undefined) signalingPort.sendOffer(this.participantId, offer.sdp);
+    this.makingOffer = true;
+    try {
+      const offer = await this.pc.createOffer();
+      if (this.closed) return;
+      await this.pc.setLocalDescription(offer);
+      if (this.closed) return;
+      if (offer.sdp !== undefined) this.signalingPort.sendOffer(this.participantId, offer.sdp);
+      this.negotiated = true;
+    } finally {
+      this.makingOffer = false;
+    }
   }
 
-  /** T3's responder side: apply the inbound offer, flush queued ICE, then answer. */
-  async handleRemoteOffer(sdp: string, signalingPort: SignalingPort): Promise<void> {
+  /**
+   * Applies an inbound offer — the responder's first offer for this pair, or a later renegotiation
+   * offer from the initiator, or (rarely, since the initiator never yields) a colliding offer this
+   * side must decide whether to ignore or accept via rollback.
+   *
+   * Implements standard "perfect negotiation" collision handling: a collision exists if this side
+   * is itself mid-offer (`makingOffer`) or already has a local offer outstanding
+   * (`signalingState !== 'stable'`). The impolite side (`!polite`) ignores a colliding offer
+   * outright — its own offer will win. The polite side rolls back its own local description before
+   * applying the inbound offer, guaranteeing the pair converges on exactly one offer either way.
+   */
+  async handleRemoteOffer(sdp: string): Promise<void> {
     if (this.closed) return;
-    await this.pc.setRemoteDescription({ type: 'offer', sdp });
+    const offerCollision = this.makingOffer || this.pc.signalingState !== 'stable';
+    const ignoreOffer = !this.polite && offerCollision;
+    if (ignoreOffer) return;
+
+    if (offerCollision) {
+      await Promise.all([
+        this.pc.setLocalDescription({ type: 'rollback' }),
+        this.pc.setRemoteDescription({ type: 'offer', sdp }),
+      ]);
+    } else {
+      await this.pc.setRemoteDescription({ type: 'offer', sdp });
+    }
     if (this.closed) return;
     await this.markRemoteDescriptionSetAndFlush();
     if (this.closed) return;
@@ -103,7 +172,8 @@ export class Peer {
     if (this.closed) return;
     await this.pc.setLocalDescription(answer);
     if (this.closed) return;
-    if (answer.sdp !== undefined) signalingPort.sendAnswer(this.participantId, answer.sdp);
+    if (answer.sdp !== undefined) this.signalingPort.sendAnswer(this.participantId, answer.sdp);
+    this.negotiated = true;
   }
 
   async handleRemoteAnswer(sdp: string): Promise<void> {
@@ -139,6 +209,7 @@ export class Peer {
     this.pc.onicecandidate = null;
     this.pc.onconnectionstatechange = null;
     this.pc.oniceconnectionstatechange = null;
+    this.pc.onnegotiationneeded = null;
     this.senders.clear();
     this.pc.close();
   }

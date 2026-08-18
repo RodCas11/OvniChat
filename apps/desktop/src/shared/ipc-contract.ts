@@ -28,13 +28,19 @@ export interface DesktopRealtimeConfig {
 }
 
 /**
- * Present only for the automated two-Electron-instance voice smoke test (see
- * `apps/desktop/scripts/e2e-voice-smoke.mjs`), and only when `!app.isPackaged` — a packaged build
- * always resolves this to `undefined`, so it can never auto-join anything for a real user.
+ * Present only for the automated two-Electron-instance voice/camera smoke tests (see
+ * `apps/desktop/scripts/e2e-voice-smoke.mjs` and `e2e-camera-smoke.mjs`), and only when
+ * `!app.isPackaged` — a packaged build always resolves this to `undefined`, so it can never
+ * auto-join anything (or auto-enable a camera) for a real user. `autoCamera` additionally requires
+ * `channelId` to be meaningful — it enables the camera only after the auto-join completes.
  */
 export interface DesktopE2EVoiceConfig {
   readonly channelId: string;
   readonly displayName: string;
+  readonly autoCamera: boolean;
+  /** Milliseconds after camera turns on before it's automatically disabled again; `undefined` means
+   * never auto-disable. Meaningless unless `autoCamera` is also `true`. */
+  readonly autoCameraOffAfterMs: number | undefined;
 }
 
 export interface DesktopApi {

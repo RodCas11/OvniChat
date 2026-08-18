@@ -36,6 +36,7 @@ if (config.e2eFakeMediaRequested && !app.isPackaged) {
 // that.
 const isSmokeTest = process.env['DISCO_VOADOR_SMOKE_TEST'] === '1';
 const isE2EVoiceSmoke = process.env['DISCO_VOADOR_E2E_VOICE_SMOKE'] === '1' && !app.isPackaged;
+const isE2ECameraSmoke = process.env['DISCO_VOADOR_E2E_CAMERA_SMOKE'] === '1' && !app.isPackaged;
 
 function rendererDirectory(): string {
   return path.join(__dirname, '../renderer', MAIN_WINDOW_VITE_NAME);
@@ -95,6 +96,48 @@ function armE2EVoiceSmokeExit(window: BrowserWindow): void {
   });
 }
 
+/**
+ * Drives `apps/desktop/scripts/e2e-camera-smoke.mjs`: two Electron instances, each launched with
+ * `DISCO_VOADOR_E2E_CAMERA_SMOKE=1` alongside the fake-media, auto-join, and (on at least one
+ * instance) auto-camera-on/auto-camera-off flags. Requires everything `armE2EVoiceSmokeExit`
+ * requires (a real connected peer, real non-silent audio — voice must keep working) *plus* real
+ * decoded remote video (`voice/e2e-video-probe.ts`'s `E2E_REMOTE_VIDEO_OK`) *plus* proof that
+ * disabling a remote camera does not disconnect the peer (`E2E_REMOTE_VIDEO_ENDED` carrying
+ * `peerState=connected` — see `VoiceChannelView.tsx`). A `E2E_REMOTE_VIDEO_ENDED` line with any
+ * other `peerState` is deliberately NOT accepted as satisfying this requirement, so a real
+ * disconnect-on-camera-off regression fails this smoke test (via timeout) instead of passing it.
+ */
+function armE2ECameraSmokeExit(window: BrowserWindow): void {
+  if (!isE2ECameraSmoke) return;
+
+  const requiredMarkers = ['E2E_PEER_CONNECTED:', 'E2E_AUDIO_LEVEL_OK:', 'E2E_REMOTE_VIDEO_OK:'];
+  const seen = new Set<string>();
+  let voiceSurvivedCameraOff = false;
+
+  const timeout = setTimeout(() => {
+    console.error(
+      `E2E_CAMERA_SMOKE_TIMEOUT: only observed [${[...seen].join(', ')}]` +
+        (voiceSurvivedCameraOff ? ' +camera-off-proof' : ' (no camera-off proof)'),
+    );
+    app.exit(1);
+  }, 90_000);
+
+  window.webContents.on('console-message', (_event, _level, message) => {
+    console.info(`[renderer] ${message}`);
+    for (const marker of requiredMarkers) {
+      if (message.startsWith(marker)) seen.add(marker);
+    }
+    if (message.startsWith('E2E_REMOTE_VIDEO_ENDED:') && message.includes('peerState=connected')) {
+      voiceSurvivedCameraOff = true;
+    }
+    if (requiredMarkers.every((marker) => seen.has(marker)) && voiceSurvivedCameraOff) {
+      clearTimeout(timeout);
+      console.info('E2E_CAMERA_SMOKE_OK');
+      setTimeout(() => app.exit(0), 250);
+    }
+  });
+}
+
 async function bootstrap(): Promise<void> {
   await app.whenReady();
 
@@ -111,6 +154,7 @@ async function bootstrap(): Promise<void> {
   const window = createMainWindow(config, realtimeOrigin, allowedOrigins);
   armSmokeTestExit(window);
   armE2EVoiceSmokeExit(window);
+  armE2ECameraSmokeExit(window);
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

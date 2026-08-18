@@ -70,6 +70,15 @@ const desktopConfigSchema = z.object({
   // `DISCO_VOADOR_E2E_FAKE_MEDIA`, so a packaged build can never auto-join anything.
   DISCO_VOADOR_E2E_VOICE_AUTO_JOIN_CHANNEL: channelIdSchema.optional(),
   DISCO_VOADOR_E2E_VOICE_DISPLAY_NAME: z.string().min(1).max(32).optional(),
+  // T4: automated two-Electron-instance camera smoke test only (see
+  // `apps/desktop/scripts/e2e-camera-smoke.mjs`) — after auto-joining voice, also auto-enables the
+  // camera with no user interaction. Meaningless without an auto-join channel also configured;
+  // gated behind `!app.isPackaged` at the same point the auto-join config itself is.
+  DISCO_VOADOR_E2E_VOICE_AUTO_CAMERA: z.enum(['1', '0']).optional(),
+  // T4: automatically disables the camera again this many milliseconds after it turns on —
+  // deterministic camera-off proof for the camera smoke test, meaningless without
+  // `DISCO_VOADOR_E2E_VOICE_AUTO_CAMERA=1`. Same `!app.isPackaged` gating as everything else here.
+  DISCO_VOADOR_E2E_VOICE_AUTO_CAMERA_OFF_MS: z.coerce.number().int().positive().optional(),
 });
 
 export interface DesktopConfig {
@@ -77,7 +86,13 @@ export interface DesktopConfig {
   readonly e2eFakeMediaRequested: boolean;
   readonly iceServers: readonly RtcIceServerConfig[];
   readonly e2eVoiceAutoJoin:
-    { readonly channelId: string; readonly displayName: string } | undefined;
+    | {
+        readonly channelId: string;
+        readonly displayName: string;
+        readonly autoCamera: boolean;
+        readonly autoCameraOffAfterMs: number | undefined;
+      }
+    | undefined;
 }
 
 export function loadDesktopConfig(
@@ -94,6 +109,8 @@ export function loadDesktopConfig(
       ? {
           channelId: autoJoinChannel,
           displayName: parsed.DISCO_VOADOR_E2E_VOICE_DISPLAY_NAME ?? 'e2e-tester',
+          autoCamera: parsed.DISCO_VOADOR_E2E_VOICE_AUTO_CAMERA === '1',
+          autoCameraOffAfterMs: parsed.DISCO_VOADOR_E2E_VOICE_AUTO_CAMERA_OFF_MS,
         }
       : undefined,
   };
