@@ -1,6 +1,12 @@
 import { z } from 'zod';
 
 import { messageIdSchema } from '../envelope.js';
+import {
+  clientWebrtcAnswerMessageSchema,
+  clientWebrtcIceCandidateMessageSchema,
+  clientWebrtcOfferMessageSchema,
+} from './webrtc.js';
+import { clientVoiceJoinMessageSchema, clientVoiceLeaveMessageSchema } from './voice.js';
 
 /**
  * `client:hello` opens the handshake. `protocolVersion` is intentionally `z.number().int()`
@@ -39,6 +45,11 @@ export type ClientPingMessage = z.infer<typeof clientPingMessageSchema>;
 export const clientMessageSchema = z.discriminatedUnion('type', [
   clientHelloMessageSchema,
   clientPingMessageSchema,
+  clientVoiceJoinMessageSchema,
+  clientVoiceLeaveMessageSchema,
+  clientWebrtcOfferMessageSchema,
+  clientWebrtcAnswerMessageSchema,
+  clientWebrtcIceCandidateMessageSchema,
 ]);
 
 export type ClientMessage = z.infer<typeof clientMessageSchema>;

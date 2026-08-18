@@ -3,39 +3,120 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { installPermissionHandlers } from '../../apps/desktop/src/main/permissions.js';
 
+const ALLOWED_ORIGIN = 'app://renderer';
+const allowedOrigins = [ALLOWED_ORIGIN];
+
 describe('installPermissionHandlers', () => {
-  it('denies every permission check unconditionally', () => {
-    let checkHandler: ((...args: unknown[]) => boolean) | undefined;
-    const session = {
-      setPermissionCheckHandler: (handler: typeof checkHandler) => {
-        checkHandler = handler;
-      },
-      setPermissionRequestHandler: () => {},
-    } as unknown as Session;
+  describe('permission checks', () => {
+    function install(): (...args: unknown[]) => boolean {
+      let checkHandler: ((...args: unknown[]) => boolean) | undefined;
+      const session = {
+        setPermissionCheckHandler: (handler: typeof checkHandler) => {
+          checkHandler = handler;
+        },
+        setPermissionRequestHandler: () => {},
+      } as unknown as Session;
 
-    installPermissionHandlers(session);
+      installPermissionHandlers(session, allowedOrigins);
+      if (!checkHandler) throw new Error('check handler was not installed');
+      return checkHandler;
+    }
 
-    expect(checkHandler?.(null, 'media', 'https://example.com', {})).toBe(false);
-    expect(checkHandler?.(null, 'display-capture', 'app://renderer', {})).toBe(false);
+    it('allows audio-only media from the allowed origin', () => {
+      const checkHandler = install();
+      expect(checkHandler(null, 'media', ALLOWED_ORIGIN, { mediaType: 'audio' })).toBe(true);
+    });
+
+    it('denies media from an origin outside the allowlist', () => {
+      const checkHandler = install();
+      expect(checkHandler(null, 'media', 'https://evil.example', { mediaType: 'audio' })).toBe(
+        false,
+      );
+    });
+
+    it('denies video media even from the allowed origin', () => {
+      const checkHandler = install();
+      expect(checkHandler(null, 'media', ALLOWED_ORIGIN, { mediaType: 'video' })).toBe(false);
+    });
+
+    it('denies every non-media permission unconditionally', () => {
+      const checkHandler = install();
+      expect(checkHandler(null, 'display-capture', ALLOWED_ORIGIN, {})).toBe(false);
+      expect(checkHandler(null, 'geolocation', ALLOWED_ORIGIN, {})).toBe(false);
+    });
   });
 
-  it('denies every permission request unconditionally', () => {
-    let requestHandler:
-      | ((webContents: unknown, permission: string, callback: (granted: boolean) => void) => void)
-      | undefined;
-    const session = {
-      setPermissionCheckHandler: () => {},
-      setPermissionRequestHandler: (handler: typeof requestHandler) => {
-        requestHandler = handler;
-      },
-    } as unknown as Session;
+  describe('permission requests', () => {
+    function install(): (
+      webContents: unknown,
+      permission: string,
+      callback: (granted: boolean) => void,
+      details: unknown,
+    ) => void {
+      let requestHandler:
+        | ((
+            webContents: unknown,
+            permission: string,
+            callback: (granted: boolean) => void,
+            details: unknown,
+          ) => void)
+        | undefined;
+      const session = {
+        setPermissionCheckHandler: () => {},
+        setPermissionRequestHandler: (handler: typeof requestHandler) => {
+          requestHandler = handler;
+        },
+      } as unknown as Session;
 
-    installPermissionHandlers(session);
+      installPermissionHandlers(session, allowedOrigins);
+      if (!requestHandler) throw new Error('request handler was not installed');
+      return requestHandler;
+    }
 
-    const callback = vi.fn();
-    requestHandler?.(null, 'media', callback);
+    it('grants an audio-only request from the allowed origin', () => {
+      const requestHandler = install();
+      const callback = vi.fn();
 
-    expect(callback).toHaveBeenCalledOnce();
-    expect(callback).toHaveBeenCalledWith(false);
+      requestHandler(null, 'media', callback, {
+        requestingUrl: ALLOWED_ORIGIN,
+        mediaTypes: ['audio'],
+      });
+
+      expect(callback).toHaveBeenCalledOnce();
+      expect(callback).toHaveBeenCalledWith(true);
+    });
+
+    it('denies a request that includes video alongside audio', () => {
+      const requestHandler = install();
+      const callback = vi.fn();
+
+      requestHandler(null, 'media', callback, {
+        requestingUrl: ALLOWED_ORIGIN,
+        mediaTypes: ['audio', 'video'],
+      });
+
+      expect(callback).toHaveBeenCalledWith(false);
+    });
+
+    it('denies a media request from an origin outside the allowlist', () => {
+      const requestHandler = install();
+      const callback = vi.fn();
+
+      requestHandler(null, 'media', callback, {
+        requestingUrl: 'https://evil.example',
+        mediaTypes: ['audio'],
+      });
+
+      expect(callback).toHaveBeenCalledWith(false);
+    });
+
+    it('denies every non-media permission request unconditionally', () => {
+      const requestHandler = install();
+      const callback = vi.fn();
+
+      requestHandler(null, 'display-capture', callback, { requestingUrl: ALLOWED_ORIGIN });
+
+      expect(callback).toHaveBeenCalledWith(false);
+    });
   });
 });

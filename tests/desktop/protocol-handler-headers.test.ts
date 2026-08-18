@@ -18,20 +18,23 @@ vi.mock('electron', () => ({
 
 const { registerAppProtocolHandler } = await import('../../apps/desktop/src/main/protocol.js');
 
+const REALTIME_ORIGIN = 'ws://127.0.0.1:8090';
+
 describe('registerAppProtocolHandler', () => {
   it('stamps CSP and defense-in-depth headers on every served response', async () => {
-    registerAppProtocolHandler('C:\\app\\.vite\\renderer\\main_window');
+    registerAppProtocolHandler('C:\\app\\.vite\\renderer\\main_window', REALTIME_ORIGIN);
 
     expect(registeredHandler).toBeTypeOf('function');
     const response = await registeredHandler?.(new Request('app://renderer/index.html'));
 
     expect(response?.headers.get('Content-Security-Policy')).toContain("default-src 'self'");
+    expect(response?.headers.get('Content-Security-Policy')).toContain(REALTIME_ORIGIN);
     expect(response?.headers.get('X-Content-Type-Options')).toBe('nosniff');
     expect(response?.headers.get('Referrer-Policy')).toBe('no-referrer');
   });
 
   it('returns a plain 404 instead of serving a request to an unexpected host', async () => {
-    registerAppProtocolHandler('C:\\app\\.vite\\renderer\\main_window');
+    registerAppProtocolHandler('C:\\app\\.vite\\renderer\\main_window', REALTIME_ORIGIN);
 
     const response = await registeredHandler?.(new Request('app://other-host/index.html'));
 

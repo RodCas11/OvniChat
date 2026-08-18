@@ -1,6 +1,11 @@
 import { useEffect, useState, type ReactElement } from 'react';
 
-import type { DesktopVersionInfo } from '../shared/ipc-contract.js';
+import type {
+  DesktopE2EVoiceConfig,
+  DesktopRealtimeConfig,
+  DesktopVersionInfo,
+} from '../shared/ipc-contract.js';
+import { VoiceChannelView } from './voice/VoiceChannelView.js';
 
 type BridgeState =
   | { status: 'loading' }
@@ -8,10 +13,9 @@ type BridgeState =
   | { status: 'error'; message: string };
 
 const NOT_IMPLEMENTED = [
-  'Servers and channels',
-  'Voice, microphone, camera, screen sharing',
+  'Servers (multiple guild-style groupings)',
+  'Camera and screen sharing',
   'Text chat',
-  'Realtime signaling and self-hosted backend',
 ] as const;
 
 function useBridgeState(): BridgeState {
@@ -42,8 +46,56 @@ function useBridgeState(): BridgeState {
   return state;
 }
 
+function useRealtimeConfig(): DesktopRealtimeConfig | undefined {
+  const [config, setConfig] = useState<DesktopRealtimeConfig>();
+
+  useEffect(() => {
+    let cancelled = false;
+
+    window.desktopApp
+      .getRealtimeConfig()
+      .then((result) => {
+        if (!cancelled) setConfig(result);
+      })
+      .catch((error: unknown) => {
+        console.error('Failed to load realtime config', error);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return config;
+}
+
+function useE2EVoiceConfig(): DesktopE2EVoiceConfig | undefined {
+  const [config, setConfig] = useState<DesktopE2EVoiceConfig>();
+
+  useEffect(() => {
+    let cancelled = false;
+
+    window.desktopApp
+      .getE2EVoiceConfig()
+      .then((result) => {
+        if (!cancelled && result) setConfig(result);
+      })
+      .catch((error: unknown) => {
+        console.error('Failed to load E2E voice config', error);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return config;
+}
+
 export function App(): ReactElement {
   const bridge = useBridgeState();
+  const realtimeConfig = useRealtimeConfig();
+  const e2eVoiceConfig = useE2EVoiceConfig();
 
   return (
     <main>
@@ -60,6 +112,9 @@ export function App(): ReactElement {
         {bridge.status === 'loading' && 'Starting…'}
         {bridge.status === 'error' && `Preload bridge error: ${bridge.message}`}
       </p>
+
+      <VoiceChannelView realtimeConfig={realtimeConfig} e2eAutoJoin={e2eVoiceConfig} />
+
       <section>
         <h2>Not implemented yet</h2>
         <ul>

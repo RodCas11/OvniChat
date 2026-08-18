@@ -59,6 +59,42 @@ function nextClose(ws: WebSocket, timeoutMs = 2000): Promise<{ code: number; rea
   });
 }
 
+/**
+ * Collects the next `count` messages in arrival order. Unlike chaining separate `nextMessage()`
+ * calls, the listener is attached once, synchronously, before returning — necessary whenever the
+ * server may send several messages back-to-back (e.g. `server:hello` immediately followed by
+ * `voice:catalog`) without waiting on anything from the client in between, since two chained
+ * `await nextMessage(ws)` calls would risk missing the second message in the gap between them.
+ */
+function nextMessages(
+  ws: WebSocket,
+  count: number,
+  timeoutMs = 2000,
+): Promise<Record<string, unknown>[]> {
+  return new Promise((resolve, reject) => {
+    const collected: Record<string, unknown>[] = [];
+    const timer = setTimeout(() => {
+      ws.off('message', handleMessage);
+      reject(
+        new Error(
+          `Timed out waiting for ${String(count)} messages (got ${String(collected.length)})`,
+        ),
+      );
+    }, timeoutMs);
+
+    function handleMessage(data: Buffer): void {
+      collected.push(JSON.parse(data.toString('utf8')) as Record<string, unknown>);
+      if (collected.length >= count) {
+        clearTimeout(timer);
+        ws.off('message', handleMessage);
+        resolve(collected);
+      }
+    }
+
+    ws.on('message', handleMessage);
+  });
+}
+
 let helloCounter = 0;
 function helloMessage(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   helloCounter += 1;
@@ -68,6 +104,43 @@ function helloMessage(overrides: Record<string, unknown> = {}): Record<string, u
     protocolVersion: CURRENT_PROTOCOL_VERSION,
     client: { name: 'integration-test', version: '0.0.0' },
     ...overrides,
+  };
+}
+
+let joinCounter = 0;
+function joinMessage(channelId: string, displayName: string): Record<string, unknown> {
+  joinCounter += 1;
+  return { type: 'voice:join', id: `join-${String(joinCounter)}`, channelId, displayName };
+}
+
+interface ConnectedClient {
+  readonly ws: WebSocket;
+  readonly connectionId: string;
+}
+
+async function connectAndHandshake(url: string): Promise<ConnectedClient> {
+  const ws = new WebSocket(url);
+  await new Promise<void>((resolve, reject) => {
+    ws.once('open', () => resolve());
+    ws.once('error', reject);
+  });
+  const afterHello = nextMessages(ws, 2); // server:hello, then voice:catalog
+  ws.send(JSON.stringify(helloMessage()));
+  const [hello] = await afterHello;
+  return { ws, connectionId: hello?.['connectionId'] as string };
+}
+
+async function joinChannel(
+  ws: WebSocket,
+  channelId: string,
+  displayName: string,
+): Promise<{ participantId: string; participants: unknown[] }> {
+  const response = nextMessage(ws);
+  ws.send(JSON.stringify(joinMessage(channelId, displayName)));
+  const joined = await response;
+  return {
+    participantId: joined['participantId'] as string,
+    participants: joined['participants'] as unknown[],
   };
 }
 
@@ -387,6 +460,206 @@ describe('realtime server integration (real sockets)', () => {
       good.send(JSON.stringify(helloMessage()));
       expect((await helloResponse)['type']).toBe('server:hello');
       expect(server.connectionCount).toBe(1);
+    });
+  });
+
+  describe('voice channels and WebRTC signaling (real sockets)', () => {
+    it('A and B join the same channel, learn about each other, and negotiate a full offer/answer/ICE exchange', async () => {
+      const a = track((await connectAndHandshake(url)).ws);
+      const b = track((await connectAndHandshake(url)).ws);
+
+      const { participantId: participantIdA, participants: aSnapshot } = await joinChannel(
+        a,
+        'general',
+        'Rodrigo',
+      );
+      expect(aSnapshot).toEqual([]);
+
+      // Only start listening for "someone joined" now that A's own join reply is already
+      // consumed — otherwise this listener could catch A's own reply instead.
+      const bJoinedNotice = nextMessage(a);
+      const { participantId: participantIdB, participants: bSnapshot } = await joinChannel(
+        b,
+        'general',
+        'Arthur',
+      );
+      expect(bSnapshot).toEqual([{ participantId: participantIdA, displayName: 'Rodrigo' }]);
+
+      const notice = await bJoinedNotice;
+      expect(notice).toMatchObject({
+        type: 'voice:participant-joined',
+        channelId: 'general',
+        participant: { participantId: participantIdB, displayName: 'Arthur' },
+      });
+
+      // A (already present) initiates the offer toward B (the newcomer) — the deterministic
+      // offer-ownership strategy documented in docs/architecture/WEBRTC_VOICE.md.
+      const offerAtB = nextMessage(b);
+      a.send(
+        JSON.stringify({
+          type: 'webrtc:offer',
+          id: 'o1',
+          targetParticipantId: participantIdB,
+          sdp: 'v=0\r\no=- offer-from-a',
+        }),
+      );
+      const offerReceived = await offerAtB;
+      expect(offerReceived).toMatchObject({
+        type: 'webrtc:offer',
+        sourceParticipantId: participantIdA,
+        sdp: 'v=0\r\no=- offer-from-a',
+      });
+
+      const answerAtA = nextMessage(a);
+      b.send(
+        JSON.stringify({
+          type: 'webrtc:answer',
+          id: 'a1',
+          targetParticipantId: participantIdA,
+          sdp: 'v=0\r\no=- answer-from-b',
+        }),
+      );
+      const answerReceived = await answerAtA;
+      expect(answerReceived).toMatchObject({
+        type: 'webrtc:answer',
+        sourceParticipantId: participantIdB,
+        sdp: 'v=0\r\no=- answer-from-b',
+      });
+
+      const iceAtB = nextMessage(b);
+      a.send(
+        JSON.stringify({
+          type: 'webrtc:ice-candidate',
+          id: 'i1',
+          targetParticipantId: participantIdB,
+          candidate: { candidate: 'candidate:1 1 UDP 1 192.0.2.1 1 typ host' },
+        }),
+      );
+      const iceReceived = await iceAtB;
+      expect(iceReceived).toMatchObject({
+        type: 'webrtc:ice-candidate',
+        sourceParticipantId: participantIdA,
+        candidate: { candidate: 'candidate:1 1 UDP 1 192.0.2.1 1 typ host' },
+      });
+    });
+
+    it('a participant in one channel cannot signal a participant in another channel', async () => {
+      const a = track((await connectAndHandshake(url)).ws);
+      const c = track((await connectAndHandshake(url)).ws);
+
+      await joinChannel(a, 'general', 'A');
+      const { participantId: participantIdC } = await joinChannel(c, 'games', 'C');
+
+      const errorAtA = nextMessage(a);
+      a.send(
+        JSON.stringify({
+          type: 'webrtc:offer',
+          id: 'o1',
+          targetParticipantId: participantIdC,
+          sdp: 'v=0',
+        }),
+      );
+      const error = await errorAtA;
+      expect(error).toMatchObject({ type: 'server:error', code: 'SIGNALING_TARGET_INVALID' });
+
+      // Non-fatal: the connection must still be open and usable afterward.
+      expect(a.readyState).toBe(a.OPEN);
+      const pingResponse = nextMessage(a);
+      a.send(JSON.stringify({ type: 'client:ping', id: 'still-open' }));
+      expect(await pingResponse).toEqual({ type: 'server:pong', id: 'still-open' });
+    });
+
+    it('abrupt disconnect (no explicit voice:leave) removes the participant and notifies the remaining member', async () => {
+      const a = track((await connectAndHandshake(url)).ws);
+      const b = track((await connectAndHandshake(url)).ws);
+
+      await joinChannel(a, 'general', 'A');
+      const participantJoinedAtA = nextMessage(a);
+      await joinChannel(b, 'general', 'B');
+      await participantJoinedAtA; // drain A's notice that B joined, before listening for the next one
+
+      const departureNoticeAtA = nextMessage(a);
+      b.terminate(); // abrupt loss, not a clean close/leave
+
+      const notice = await departureNoticeAtA;
+      expect(notice).toMatchObject({ type: 'voice:participant-left', channelId: 'general' });
+
+      // Server stays healthy: A can still signal against a channel snapshot with B truly gone.
+      const rejoin = track((await connectAndHandshake(url)).ws);
+      const { participants } = await joinChannel(rejoin, 'general', 'C');
+      expect(participants).toHaveLength(1); // only A remains
+    });
+
+    it('switching channels notifies the old channel, joins the new one cleanly, and leaves no duplicate membership', async () => {
+      const a = track((await connectAndHandshake(url)).ws);
+      const b = track((await connectAndHandshake(url)).ws);
+
+      await joinChannel(a, 'general', 'A');
+      const participantJoinedAtA = nextMessage(a);
+      await joinChannel(b, 'general', 'B');
+      await participantJoinedAtA; // drain A's notice that B joined, before listening for the next one
+
+      const switchNotice = nextMessage(b); // B should learn A left "general"
+      await joinChannel(a, 'games', 'A'); // A switches general -> games
+
+      const notice = await switchNotice;
+      expect(notice).toMatchObject({ type: 'voice:participant-left', channelId: 'general' });
+
+      // A is now only reachable via signaling from within "games", not "general".
+      const cInGames = track((await connectAndHandshake(url)).ws);
+      const { participants: gamesSnapshot } = await joinChannel(cInGames, 'games', 'C');
+      expect(gamesSnapshot).toHaveLength(1); // A
+    });
+
+    it('supports three simultaneous participants in the same channel', async () => {
+      const a = track((await connectAndHandshake(url)).ws);
+      const b = track((await connectAndHandshake(url)).ws);
+      const c = track((await connectAndHandshake(url)).ws);
+
+      await joinChannel(a, 'general', 'A');
+      await joinChannel(b, 'general', 'B');
+      const { participants } = await joinChannel(c, 'general', 'C');
+
+      expect(participants).toHaveLength(2);
+      const names = (participants as { displayName: string }[]).map((p) => p.displayName).sort();
+      expect(names).toEqual(['A', 'B']);
+    });
+
+    it('rejects voice:join for an unknown channel without closing the connection', async () => {
+      const a = track((await connectAndHandshake(url)).ws);
+
+      const errorAtA = nextMessage(a);
+      a.send(JSON.stringify(joinMessage('does-not-exist', 'A')));
+      expect(await errorAtA).toMatchObject({ type: 'server:error', code: 'CHANNEL_NOT_FOUND' });
+
+      expect(a.readyState).toBe(a.OPEN);
+    });
+
+    it('rejects voice:leave and webrtc signaling when not currently in a voice channel', async () => {
+      const a = track((await connectAndHandshake(url)).ws);
+
+      const leaveError = nextMessage(a);
+      a.send(JSON.stringify({ type: 'voice:leave', id: 'l1' }));
+      expect(await leaveError).toMatchObject({
+        type: 'server:error',
+        code: 'NOT_IN_VOICE_CHANNEL',
+      });
+
+      const signalError = nextMessage(a);
+      a.send(
+        JSON.stringify({
+          type: 'webrtc:offer',
+          id: 'o1',
+          targetParticipantId: 'whoever',
+          sdp: 'v=0',
+        }),
+      );
+      expect(await signalError).toMatchObject({
+        type: 'server:error',
+        code: 'NOT_IN_VOICE_CHANNEL',
+      });
+
+      expect(a.readyState).toBe(a.OPEN);
     });
   });
 });

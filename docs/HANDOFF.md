@@ -42,33 +42,58 @@ real, verified realtime connection backbone:
   full handshake, two independent clients, heartbeat liveness, and an 11-case hostile-client
   matrix.
 
+T3 added voice channels, microphone capture, and P2P WebRTC on top of the T2 realtime service:
+
+- `packages/protocol`: `voice:*`/`webrtc:*` message schemas (join/leave/catalog/participant
+  notifications, offer/answer/ICE-candidate forwarding with server-verified source identity), three
+  new non-fatal error codes.
+- `services/realtime`: a hardcoded voice-channel catalog, an in-memory `VoiceRegistry` (membership,
+  same-channel-only signaling authorization, abrupt-disconnect cleanup).
+- `packages/rtc-core`: environment-neutral `MediaTransport`/`P2PMeshTransport`/`Peer`, deterministic
+  offer/answer ownership (no glare-avoidance logic needed), ICE candidate queueing.
+- `packages/media-core`: audio-only `acquireMicrophone()`, mute-without-reacquire, stop semantics.
+- `apps/desktop`: a Renderer `RealtimeClient` (implements `rtc-core`'s `SignalingPort` directly), a
+  voice-channel UI (join/leave, participants, mute/deafen, remote audio playback), audio-only
+  same-origin microphone permission gating, CSP `connect-src` allowlisting the configured realtime
+  origin, and an automated two-Electron-instance fake-media E2E smoke test.
+
+**T3 is implemented and unit/integration-tested (331 Vitest tests, real-socket protocol/realtime
+coverage, hand-written-fake coverage for `rtc-core`/`media-core`/the Renderer's `RealtimeClient`),
+but the actual completion bar — two real Electron clients establishing a real WebRTC connection and
+exchanging live microphone audio — has NOT been verified live in this environment.** See
+[`tasks/T3_VOICE_WEBRTC.md`](tasks/T3_VOICE_WEBRTC.md)'s handoff notes for exactly why (a
+methodically-isolated tool-environment Chromium instability, confirmed unrelated to this
+implementation) and what to run on ordinary Windows hardware to close that gap.
+
 Read [`tasks/STATUS.md`](tasks/STATUS.md) for the authoritative status,
 [`tasks/T1_ELECTRON_SHELL.md`](tasks/T1_ELECTRON_SHELL.md) /
-[`tasks/T2_REALTIME_PROTOCOL.md`](tasks/T2_REALTIME_PROTOCOL.md) for their full verification
-records, and [`references/VERSION_DECISIONS.md`](references/VERSION_DECISIONS.md) before changing
-the toolchain — it records a real Forge/`@electron/packager` incompatibility T1 found and worked
-around. [`architecture/REALTIME_PROTOCOL.md`](architecture/REALTIME_PROTOCOL.md) documents the
-full T2 protocol design.
+[`tasks/T2_REALTIME_PROTOCOL.md`](tasks/T2_REALTIME_PROTOCOL.md) /
+[`tasks/T3_VOICE_WEBRTC.md`](tasks/T3_VOICE_WEBRTC.md) for their full verification records, and
+[`references/VERSION_DECISIONS.md`](references/VERSION_DECISIONS.md) before changing the toolchain
+— it records a real Forge/`@electron/packager` incompatibility T1 found and worked around.
+[`architecture/REALTIME_PROTOCOL.md`](architecture/REALTIME_PROTOCOL.md) documents the full T2
+protocol design; [`architecture/WEBRTC_VOICE.md`](architecture/WEBRTC_VOICE.md) documents T3's voice/
+WebRTC design including a full join/signaling sequence diagram.
 
 ## What does not exist?
 
-There is no WebRTC peer connection, device capture (microphone/camera/screen), chat, database
-schema, running Coturn stack, installer/maker artifact, authentication/session model, or
-production configuration/TLS termination. The Electron shell and the realtime connection backbone
-are both real, not markers, but the realtime service claims no capability beyond "a client can
-connect, negotiate, stay alive, and be safely rejected when it misbehaves" — no presence beyond
-raw connection lifecycle, no voice/text messages.
+There is no camera/screen/system-audio capture, text chat, database schema, running Coturn stack
+(templates exist but no TURN credential minting), installer/maker artifact, authentication/session
+model, SFU, or production configuration/TLS termination. A live two-Electron-instance voice call has
+not yet been verified end-to-end on real hardware (see above) even though every layer up to that
+point is implemented and tested.
 
 ## What should happen next?
 
-**T3 — Voice channels and microphone WebRTC vertical slice.**
+**First: close T3's live-verification gap** — run `pnpm --filter @disco-voador/desktop run
+e2e:voice-smoke` and the manual two-instance check from `tasks/T3_VOICE_WEBRTC.md` on ordinary
+Windows hardware, then update `tasks/STATUS.md`/`tasks/T3_VOICE_WEBRTC.md` to COMPLETE once they
+pass.
 
-Use its detailed task document (create/update under `tasks/` following the T1/T2 pattern if it
-does not already exist), then run `project-orientation` and `planning-feature`. Consult
-`webrtc-media-engineer` for `packages/rtc-core`/`packages/media-core` and `realtime-backend-engineer`
-for the `voice:*`/`webrtc:*` signaling messages this adds to `packages/protocol`; consult
-`security-reviewer` for the new signaling surface. Do not implement camera, screen sharing, or text
-chat as part of T3 unless its task explicitly says so.
+**Then: T4 — camera streaming**, following the same pattern (task document under `tasks/`,
+`project-orientation`, `planning-feature`, `webrtc-media-engineer` for `rtc-core`/`media-core`
+extensions, `security-reviewer` for the new permission/signaling surface). Do not implement screen
+sharing or text chat as part of T4 unless its task explicitly says so.
 
 ## Fixed foundation decisions
 
@@ -133,6 +158,15 @@ structured logs. See [`tasks/T2_REALTIME_PROTOCOL.md`](tasks/T2_REALTIME_PROTOCO
 record, including the one Windows-specific testing limitation it documents (`SIGINT`/`SIGTERM`
 signal-handler wiring cannot be exercised via a cross-process signal on Windows, per Node's own
 documented behavior — the underlying `server.stop()` logic it calls is thoroughly tested).
+
+T3's clean-state evidence, 2026-08-18, is the same gate with 331 Vitest tests (no new
+dependency-audit advisories) — formatting, lint, typecheck, build, and `verify-repository.mjs` all
+pass. Unlike T1/T2, **T3's own required real-runtime evidence (two live Electron instances actually
+exchanging audio) is explicitly outstanding** — this session's tool environment could not sustain any
+Electron/Chromium window long enough to attempt it, confirmed unrelated to the implementation itself
+(see [`tasks/T3_VOICE_WEBRTC.md`](tasks/T3_VOICE_WEBRTC.md)'s handoff notes for the full isolation
+process). Do not treat T3's passing `pnpm check` as equivalent to T1/T2's runtime-verified status —
+it is not, until the two-instance check in that task doc has actually been run and recorded.
 
 Then perform the task’s required manual/platform checks. Apply
 [`DEFINITION_OF_DONE.md`](DEFINITION_OF_DONE.md) and update status only when every applicable item

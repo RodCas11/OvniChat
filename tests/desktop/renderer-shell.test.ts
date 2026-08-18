@@ -19,7 +19,14 @@ describe('App shell', () => {
   it('states that product capabilities remain unimplemented', () => {
     const markup = renderToStaticMarkup(createElement(App));
 
-    expect(markup).toContain('Voice, microphone, camera, screen sharing');
+    expect(markup).toContain('Camera and screen sharing');
     expect(markup).toContain('Text chat');
+  });
+
+  it('renders the voice section', () => {
+    const markup = renderToStaticMarkup(createElement(App));
+
+    expect(markup).toContain('Voice');
+    expect(markup).toContain('Realtime connection');
   });
 });

@@ -6,6 +6,8 @@ import type { WebSocket } from 'ws';
 import type { RealtimeConfig } from '../../services/realtime/src/config.js';
 import { Connection } from '../../services/realtime/src/connection.js';
 import { createNoopLogger } from '../../services/realtime/src/logging.js';
+import { DEFAULT_VOICE_CHANNELS } from '../../services/realtime/src/voice/catalog.js';
+import { VoiceRegistry } from '../../services/realtime/src/voice/registry.js';
 
 /**
  * A minimal stand-in for a `ws` `WebSocket` implementing only what `Connection` actually calls,
@@ -67,6 +69,8 @@ describe('Connection — unexpected handler failure containment', () => {
       socket as unknown as WebSocket,
       TEST_CONFIG,
       createNoopLogger(),
+      new VoiceRegistry(DEFAULT_VOICE_CHANNELS),
+      () => {},
       () => {},
       now,
     );

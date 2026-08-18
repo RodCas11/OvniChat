@@ -2,7 +2,7 @@
   "name": "@disco-voador/media-core",
   "version": "0.0.0",
   "private": true,
-  "description": "Future generic semantic media-source abstractions.",
+  "description": "Generic semantic media-source abstractions, starting with the microphone source.",
   "type": "module",
   "scripts": {
     "build": "tsc -b --pretty false",

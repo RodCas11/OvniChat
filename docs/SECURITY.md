@@ -37,6 +37,25 @@ Treat source titles, thumbnails, device labels, PIDs, and capture contents as se
 names as untrusted text and do not log them. Show an active capture indicator and reliable stop
 control. Stop all owned tracks during teardown.
 
+**Implemented (T3), microphone only:** `apps/desktop/src/main/permissions.ts` installs both
+handlers and grants exactly one case — `permission === 'media'` where the request is audio-only
+(rejects any request that also asks for video, even mixed with audio in the same `mediaTypes` array)
+**and** the requesting origin matches the app's own allowed-origins list. Every other permission
+kind, and every other media/origin combination, is denied. Camera and screen-capture permission
+gating (indicator, stop control, source-choice consent) remain unimplemented until T4/T5.
+
+**Test-only automation flags, and why they can't leak into a real build:** `DISCO_VOADOR_E2E_FAKE_MEDIA`
+(Chromium's fake-microphone command-line switches) and `DISCO_VOADOR_E2E_VOICE_AUTO_JOIN_CHANNEL`/
+`_DISPLAY_NAME` (auto-join a voice channel with no user interaction, for a scripted two-instance
+smoke test) are both read from the environment but gated a second time behind `!app.isPackaged`
+before they can take effect — `app.isPackaged` reflects how the binary was actually built/launched,
+not anything an environment variable can spoof, so a packaged/distributed build can never activate
+either regardless of what surrounds its environment. This is the reusable pattern for any future
+test-only automation hook: gate on the env var for opt-in, and separately on `!app.isPackaged` for
+an unspoofable production kill-switch, checked at every point that matters (command-line switches
+in `main/index.ts`, and again before the IPC channel that exposes the config to the Renderer in
+`main/window.ts`).
+
 ## Realtime and protocol
 
 - Runtime-validate every inbound and outbound protocol envelope at trust boundaries.
@@ -46,6 +65,18 @@ control. Stop all owned tracks during teardown.
 - Do not evaluate received code, interpolate it into shell/database commands, or trust client state.
 - Signaling carries control/SDP/ICE only; reject attempted media payload tunneling.
 - Design reconnection and idempotency so replay cannot duplicate destructive state transitions.
+
+**Implemented (T3):** `webrtc:offer`/`answer`/`ice-candidate` forwarding never trusts a client's
+claimed identity — the forwarded message's `sourceParticipantId` is always derived server-side from
+the sending connection's own voice-registry membership (`services/realtime/src/protocol-handlers.ts`'s
+`buildForwardedSignal`), never read from the client's message body. Signaling is only forwarded
+between two connections confirmed to be in the _same_ voice channel
+(`VoiceRegistry.resolveSignalingTarget`); a sender not in any channel, a target in a different
+channel, or a self-targeted signal are all rejected without closing the connection (non-fatal, per
+the closed error-code-to-close-code mapping in `packages/protocol/src/errors.ts`). SDP and ICE
+candidates are bounded opaque strings/structures the server never parses semantically — only their
+size is bounded (8192 / 1024 bytes) so a hostile client cannot smuggle an oversized payload inside an
+otherwise-small signaling message.
 
 Authentication and authorization details remain open for T2/T7 and require an explicit threat
 review before public exposure.

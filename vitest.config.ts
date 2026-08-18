@@ -18,6 +18,14 @@ export default defineConfig({
         find: '@disco-voador/protocol',
         replacement: path.resolve(__dirname, 'packages/protocol/src/index.ts'),
       },
+      {
+        find: '@disco-voador/rtc-core',
+        replacement: path.resolve(__dirname, 'packages/rtc-core/src/index.ts'),
+      },
+      {
+        find: '@disco-voador/media-core',
+        replacement: path.resolve(__dirname, 'packages/media-core/src/index.ts'),
+      },
     ],
   },
   test: {

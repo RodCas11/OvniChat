@@ -1,6 +1,12 @@
 export interface ContentSecurityPolicyOptions {
   /** Present only in development, where the Vite dev server serves the document directly. */
   readonly devServerOrigin?: string;
+  /**
+   * The exactly-one realtime WebSocket origin this build is configured to connect to (see
+   * `desktop-config.ts`), added to `connect-src` explicitly — never a wildcard scheme/host, so a
+   * compromised Renderer cannot open a WebSocket to an arbitrary attacker-chosen endpoint.
+   */
+  readonly realtimeOrigin: string;
 }
 
 /**
@@ -17,7 +23,7 @@ export function buildContentSecurityPolicy(options: ContentSecurityPolicyOptions
     'style-src': ["'self'", "'unsafe-inline'"],
     'img-src': ["'self'", 'data:'],
     'font-src': ["'self'"],
-    'connect-src': ["'self'"],
+    'connect-src': ["'self'", options.realtimeOrigin],
     'object-src': ["'none'"],
     'base-uri': ["'none'"],
     'form-action': ["'none'"],
