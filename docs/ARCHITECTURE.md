@@ -1,7 +1,9 @@
 # Target architecture
 
-> This document describes the intended architecture. T0 contains only package markers and tooling;
-> the runtime components below are not yet implemented.
+> This document describes the intended architecture. The Electron desktop shell (T1) and the
+> realtime connection/protocol foundation (T2) are implemented; see
+> [`tasks/STATUS.md`](tasks/STATUS.md) for what remains a marker or is not yet started. Treat any
+> capability this document describes as unimplemented unless STATUS.md says otherwise.
 
 ## System context
 
@@ -110,21 +112,32 @@ forbidden imports and should expand when real boundaries appear.
 
 ## Realtime service strategy
 
-The first deployable may contain these internal modules:
+T2 implemented the connection/protocol-handling foundation of the first deployable, using `ws` for
+the WebSocket server and `zod` for runtime message/config validation (see
+[`references/VERSION_DECISIONS.md`](references/VERSION_DECISIONS.md) for why). Every inbound
+message is decoded and runtime-validated at one boundary
+(`packages/protocol`'s `parseClientMessage`) before a connection-state check dispatches it; nothing
+reaches domain logic unvalidated. The shared protocol package is canonical; client/server
+hand-written copies are prohibited. Full protocol design:
+[`architecture/REALTIME_PROTOCOL.md`](architecture/REALTIME_PROTOCOL.md).
+
+Presence, voice-signaling, and text-chat remain unimplemented internal modules for later tasks
+(T3+, T7) to add alongside the connection module T2 built:
 
 ```text
 services/realtime/src/
-  connection/
-  presence/
-  voice-signaling/
-  text-chat/
-  protocol-handlers/
+  connection.ts, connection-state.ts   # T2 — implemented
+  protocol-handlers.ts, heartbeat.ts   # T2 — implemented
+  rate-limiter.ts, config.ts, logging.ts, server.ts, index.ts   # T2 — implemented
+  presence/          # not yet implemented
+  voice-signaling/    # not yet implemented
+  text-chat/          # not yet implemented
 ```
 
-T2 will select a WebSocket library and runtime schema system. Every inbound message must be decoded
-at one boundary, validated before dispatch, associated with an authorized connection/session, and
-bounded for size/rate. The shared protocol package is canonical; client/server hand-written copies
-are prohibited.
+Bounding message size/rate is implemented (`REALTIME_MAX_MESSAGE_BYTES`,
+`REALTIME_RATE_LIMIT_MAX_MESSAGES`/`_WINDOW_MS`); associating a message with an _authorized_
+session is not — T2 has no authentication/session model, only a non-authoritative
+`connectionId`. That association is deferred to whichever task introduces accounts/sessions.
 
 ## Persistence strategy
 

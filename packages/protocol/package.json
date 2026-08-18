@@ -2,7 +2,7 @@
   "name": "@disco-voador/protocol",
   "version": "0.0.0",
   "private": true,
-  "description": "Future canonical runtime-validated realtime contracts.",
+  "description": "Canonical runtime-validated realtime protocol contracts.",
   "type": "module",
   "scripts": {
     "build": "tsc -b --pretty false",
@@ -12,5 +12,8 @@
   "types": "dist/index.d.ts",
   "files": [
     "dist"
-  ]
+  ],
+  "dependencies": {
+    "zod": "4.4.3"
+  }
 }

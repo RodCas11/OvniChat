@@ -1,10 +1,15 @@
 # Configuration philosophy
 
-> T0 defines names and handling rules only. No runtime configuration loader exists yet.
-
 Configuration must be explicit, typed, validated at process startup, and separated by trust
 boundary. Missing production configuration should fail with a useful error; it must not silently
 fall back to hosted services or embedded credentials.
+
+`packages/config` (implemented in T2) provides the shared, reusable pieces: `parseConfig(schema,
+source)` validates a source once against a `zod` schema and throws a `ConfigValidationError`
+listing every violation, plus small coercion factories (`envPort`, `envPositiveInt`,
+`envNonEmptyString`) for values that always arrive as strings. Each service defines its own
+concrete schema from these primitives — see `services/realtime/src/config.ts` for the first real
+example — rather than `packages/config` prescribing one global shape.
 
 ## Expected client-visible values
 
@@ -19,18 +24,34 @@ fall back to hosted services or embedded credentials.
 The root [`.env.example`](../.env.example) contains blank placeholders for discoverability. A real
 `.env` is ignored and must not be committed.
 
+## Realtime service values (implemented, T2)
+
+Defined and validated in `services/realtime/src/config.ts`; see
+[`docs/architecture/REALTIME_PROTOCOL.md`](architecture/REALTIME_PROTOCOL.md) for how each is
+used. None of these are secrets.
+
+| Variable                           |   Default | Purpose                                      |
+| ---------------------------------- | --------: | -------------------------------------------- |
+| `REALTIME_HOST`                    | 127.0.0.1 | Bind address                                 |
+| `REALTIME_PORT`                    |      8090 | Bind port (`0` = ephemeral, used by tests)   |
+| `REALTIME_MAX_CONNECTIONS`         |      1000 | Maximum concurrent connections               |
+| `REALTIME_MAX_MESSAGE_BYTES`       |     16384 | Maximum inbound WebSocket frame size         |
+| `REALTIME_HANDSHAKE_TIMEOUT_MS`    |      5000 | Time allowed to send `client:hello`          |
+| `REALTIME_HEARTBEAT_INTERVAL_MS`   |     15000 | Interval between server-initiated pings      |
+| `REALTIME_HEARTBEAT_TIMEOUT_MS`    |     10000 | Grace period for a pong before disconnecting |
+| `REALTIME_RATE_LIMIT_MAX_MESSAGES` |        30 | Messages allowed per connection per window   |
+| `REALTIME_RATE_LIMIT_WINDOW_MS`    |     10000 | Rate-limit window length                     |
+| `LOG_LEVEL`                        |    `info` | `debug`\|`info`\|`warn`\|`error`             |
+
 ## Future server-only values
 
 Names are provisional until their owning task defines schemas:
 
 ```text
-REALTIME_HOST
-REALTIME_PORT
 DATABASE_PATH
 TURN_SHARED_SECRET
 TURN_CREDENTIAL_TTL_SECONDS
 TRUSTED_ORIGINS
-LOG_LEVEL
 ```
 
 `TURN_SHARED_SECRET` is never client-visible. The realtime service should use it to mint expiring
@@ -50,9 +71,10 @@ restricted files rather than placing them in Compose YAML, command lines, images
 
 ## Precedence
 
-T0 does not prescribe a final precedence system. T2/T10 should choose the minimum needed across
-command-line arguments, environment, and operator files, then document it with tests. Desktop user
-preferences such as device choice are application state, not environment configuration.
+`services/realtime` (T2) reads configuration from `process.env` only — no command-line arguments
+or operator config files yet; that need can be added later if a real deployment requires it.
+Desktop user preferences such as device choice are application state, not environment
+configuration.
 
 ## Coturn templates
 

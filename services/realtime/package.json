@@ -2,15 +2,26 @@
   "name": "@disco-voador/realtime",
   "version": "0.0.0",
   "private": true,
-  "description": "Future self-hosted WebSocket signaling, presence, and text service.",
+  "description": "Self-hosted WebSocket realtime service: connection lifecycle and protocol handshake.",
   "type": "module",
   "scripts": {
     "build": "tsc -b --pretty false",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
     "typecheck": "tsc --noEmit -p tsconfig.json --pretty false"
   },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [
     "dist"
-  ]
+  ],
+  "dependencies": {
+    "@disco-voador/config": "workspace:*",
+    "@disco-voador/protocol": "workspace:*",
+    "ws": "8.21.3"
+  },
+  "devDependencies": {
+    "@types/ws": "8.18.1",
+    "tsx": "4.23.12"
+  }
 }

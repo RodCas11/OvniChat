@@ -2,8 +2,14 @@
 
 ## Status
 
-Accepted architectural decision for the initial implementation. No realtime service is implemented
-in T0.
+**Accepted and implemented.** T0 accepted the decision with no realtime service implemented. T2
+implemented the connection/protocol-handling module of the "one internally modular service": a
+real WebSocket server with an explicit handshake, versioned runtime-validated contracts in
+`packages/protocol`, heartbeat liveness, and safe rejection of invalid input. Presence,
+voice-signaling, and text-chat modules described below remain unimplemented — they are later
+tasks (T3+, T7) building inside this same service, not yet-separate deployables. See
+[`../architecture/REALTIME_PROTOCOL.md`](../architecture/REALTIME_PROTOCOL.md) and
+[`../tasks/T2_REALTIME_PROTOCOL.md`](../tasks/T2_REALTIME_PROTOCOL.md).
 
 ## Context
 

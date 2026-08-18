@@ -6,7 +6,17 @@
     "declarationMap": false,
     "jsx": "react-jsx",
     "noEmit": true,
-    "types": ["node", "vitest/globals"]
+    "types": ["node", "vitest/globals"],
+    // Workspace packages publish "types"/"main" pointing at their own "dist/", which does not
+    // exist until they are built. This whole-repo typecheck runs before "tsc -b" in `pnpm check`,
+    // so cross-package imports (e.g. services/realtime importing @disco-voador/protocol) are
+    // redirected straight to source here to avoid a typecheck-before-build ordering deadlock.
+    // Runtime module resolution (tsx, node) is unaffected — it still goes through node_modules
+    // and does require a prior build of the packages it imports.
+    "paths": {
+      "@disco-voador/config": ["./packages/config/src/index.ts"],
+      "@disco-voador/protocol": ["./packages/protocol/src/index.ts"]
+    }
   },
   "include": [
     "apps/**/*.ts",

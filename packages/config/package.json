@@ -2,7 +2,7 @@
   "name": "@disco-voador/config",
   "version": "0.0.0",
   "private": true,
-  "description": "Future typed configuration parsing and validation.",
+  "description": "Typed configuration parsing and validation.",
   "type": "module",
   "scripts": {
     "build": "tsc -b --pretty false",
@@ -12,5 +12,8 @@
   "types": "dist/index.d.ts",
   "files": [
     "dist"
-  ]
+  ],
+  "dependencies": {
+    "zod": "4.4.3"
+  }
 }

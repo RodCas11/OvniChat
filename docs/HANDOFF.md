@@ -24,26 +24,51 @@ T1 replaced the `apps/desktop` markers with a real, verified Electron applicatio
   runnable Windows x64 artifact, plus a scripted launch/load/quit smoke test
   (`apps/desktop/scripts/smoke.mjs`).
 
+T2 replaced the `packages/protocol`, `packages/config`, and `services/realtime` markers with a
+real, verified realtime connection backbone:
+
+- `packages/protocol`: typed + `zod`-runtime-validated wire contracts (`client:hello`,
+  `client:ping` / `server:hello`, `server:pong`, `server:error`), explicit protocol versioning, a
+  closed `ErrorCode` set, and parse helpers that never throw on hostile input. Platform-neutral —
+  no Electron/React/Node-fs/Windows/WebRTC dependency.
+- `packages/config`: small reusable `zod`-based env-parsing/validation primitives.
+- `services/realtime`: a real `ws`-based WebSocket server with an explicit handshake (with
+  timeout), server-driven heartbeat liveness detection, a per-connection rate limiter, a
+  configurable connection cap, `ws`'s own max-message-size enforcement, structured JSON logging,
+  a single-connection exception containment boundary (one connection's bug can't crash the shared
+  process), and programmatic `createRealtimeServer(config) -> {start(), stop()}` used by both the
+  CLI bootstrap and the test suite.
+- 141 Vitest tests including real (non-mocked) `ws` server/client integration tests covering the
+  full handshake, two independent clients, heartbeat liveness, and an 11-case hostile-client
+  matrix.
+
 Read [`tasks/STATUS.md`](tasks/STATUS.md) for the authoritative status,
-[`tasks/T1_ELECTRON_SHELL.md`](tasks/T1_ELECTRON_SHELL.md) for T1's full verification record, and
-[`references/VERSION_DECISIONS.md`](references/VERSION_DECISIONS.md) before changing the toolchain
-— it records a real Forge/`@electron/packager` incompatibility T1 found and worked around.
+[`tasks/T1_ELECTRON_SHELL.md`](tasks/T1_ELECTRON_SHELL.md) /
+[`tasks/T2_REALTIME_PROTOCOL.md`](tasks/T2_REALTIME_PROTOCOL.md) for their full verification
+records, and [`references/VERSION_DECISIONS.md`](references/VERSION_DECISIONS.md) before changing
+the toolchain — it records a real Forge/`@electron/packager` incompatibility T1 found and worked
+around. [`architecture/REALTIME_PROTOCOL.md`](architecture/REALTIME_PROTOCOL.md) documents the
+full T2 protocol design.
 
 ## What does not exist?
 
-There is no WebSocket listener, protocol schema, presence, signaling, WebRTC peer connection,
-device capture, chat, database schema, running Coturn stack, installer/maker artifact, or
-production configuration. The Electron shell itself is real, not a marker, but it claims no
-capability beyond "the shell starts, loads, and quits cleanly."
+There is no WebRTC peer connection, device capture (microphone/camera/screen), chat, database
+schema, running Coturn stack, installer/maker artifact, authentication/session model, or
+production configuration/TLS termination. The Electron shell and the realtime connection backbone
+are both real, not markers, but the realtime service claims no capability beyond "a client can
+connect, negotiate, stay alive, and be safely rejected when it misbehaves" — no presence beyond
+raw connection lifecycle, no voice/text messages.
 
 ## What should happen next?
 
-**T2 — Shared realtime protocol and realtime service foundation.**
+**T3 — Voice channels and microphone WebRTC vertical slice.**
 
-Use its detailed task document once created/updated under `tasks/`, then run `project-orientation`
-and `planning-feature`. Consult `realtime-backend-engineer` for `services/realtime` and the
-`packages/protocol` contract; consult `security-reviewer` for the WebSocket trust boundary. Do not
-start WebRTC media or text-channel persistence as part of T2 unless its task explicitly says so.
+Use its detailed task document (create/update under `tasks/` following the T1/T2 pattern if it
+does not already exist), then run `project-orientation` and `planning-feature`. Consult
+`webrtc-media-engineer` for `packages/rtc-core`/`packages/media-core` and `realtime-backend-engineer`
+for the `voice:*`/`webrtc:*` signaling messages this adds to `packages/protocol`; consult
+`security-reviewer` for the new signaling surface. Do not implement camera, screen sharing, or text
+chat as part of T3 unless its task explicitly says so.
 
 ## Fixed foundation decisions
 
@@ -51,7 +76,8 @@ start WebRTC media or text-channel persistence as part of T2 unless its task exp
 - Main/Preload/sandboxed Renderer trust boundary.
 - Self-hostable core services; no mandatory SaaS.
 - One internally modular realtime service may initially own signaling and text.
-- Signaling/text are WebSocket; media is WebRTC and never relayed by that service.
+- Signaling/text are WebSocket (`ws`); media is WebRTC and never relayed by that service.
+- Runtime validation uses `zod`, shared by `packages/protocol` and `packages/config`.
 - P2P first with an SFU-ready UI/transport seam.
 - Independent microphone, camera, screen-video, and screen-audio sources.
 - Windows-specific media isolated in `packages/windows-media`.
@@ -63,7 +89,7 @@ See accepted ADRs in [`adr/`](adr/); supersede them explicitly if evidence chang
 ## Decisions still open
 
 - Concrete application state, routing, and UI component choices.
-- WebSocket and runtime-schema libraries, protocol envelope, auth/session model.
+- Auth/session model (T2's `connectionId` is explicitly not an identity signal).
 - Exact RTC transport API, negotiation topology, diagnostics model, and room limits.
 - Storage interface and SQLite driver/schema/migration tooling.
 - Native addon versus isolated helper for advanced Windows audio.
@@ -97,6 +123,16 @@ runtime evidence beyond `pnpm check`: `electron-forge start` and `electron-forge
 verified by launching real windows (development and the packaged `.exe` independently), an
 automated launch/load/quit smoke script, and `@electron/fuses read` against the packaged binary.
 See [`tasks/T1_ELECTRON_SHELL.md`](tasks/T1_ELECTRON_SHELL.md) for the full record.
+
+T2's clean-state evidence, also 2026-08-18, is the same gate with 141 Vitest tests (the same one
+documented dependency-audit exception; T2 introduced no new advisories), plus real-runtime
+evidence: `pnpm --filter @disco-voador/realtime run dev` actually listening, and a real external
+`ws` client (a separate OS process, not part of the Vitest run) completing a full
+hello/hello/ping/pong/close round trip against it, cross-checked against the server's own
+structured logs. See [`tasks/T2_REALTIME_PROTOCOL.md`](tasks/T2_REALTIME_PROTOCOL.md) for the full
+record, including the one Windows-specific testing limitation it documents (`SIGINT`/`SIGTERM`
+signal-handler wiring cannot be exercised via a cross-process signal on Windows, per Node's own
+documented behavior — the underlying `server.stop()` logic it calls is thoroughly tested).
 
 Then perform the task’s required manual/platform checks. Apply
 [`DEFINITION_OF_DONE.md`](DEFINITION_OF_DONE.md) and update status only when every applicable item
