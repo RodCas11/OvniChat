@@ -123,7 +123,12 @@ describe('registerIpcHandlers', () => {
   });
 
   it('returns the configured E2E auto-join config for a trusted sender when supplied', async () => {
-    const e2eVoiceConfig = { channelId: 'general', displayName: 'e2e-tester' };
+    const e2eVoiceConfig = {
+      channelId: 'general',
+      displayName: 'e2e-tester',
+      autoCamera: false,
+      autoCameraOffAfterMs: undefined,
+    };
     registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig, e2eVoiceConfig);
 
     const handler = handlers.get(IPC_CHANNELS.getE2EVoiceConfig);

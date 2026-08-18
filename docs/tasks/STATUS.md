@@ -6,7 +6,7 @@
 | [T1](T1_ELECTRON_SHELL.md)     | COMPLETE    | Electron desktop shell and application foundation         |
 | [T2](T2_REALTIME_PROTOCOL.md)  | COMPLETE    | Shared realtime protocol and realtime service foundation  |
 | [T3](T3_VOICE_WEBRTC.md)       | COMPLETE    | Voice channels and microphone WebRTC vertical slice       |
-| T4                             | NOT STARTED | Camera streaming                                          |
+| [T4](T4_CAMERA_STREAMING.md)   | COMPLETE    | Camera streaming over existing WebRTC voice sessions      |
 | T5                             | NOT STARTED | Screen/window streaming                                   |
 | T6                             | NOT STARTED | Windows system audio sharing                              |
 | T7                             | NOT STARTED | Text channels, realtime messaging, and SQLite persistence |

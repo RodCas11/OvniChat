@@ -70,9 +70,9 @@ describe('Peer — offer/answer role ownership', () => {
   it('an initiator creates and sends exactly one offer', async () => {
     const pc = new FakePeerConnection();
     const signalingPort = createFakeSignalingPort();
-    const peer = new Peer('peer-1', 'initiator', pc, createCallbacks());
+    const peer = new Peer('peer-1', 'initiator', pc, signalingPort, createCallbacks());
 
-    await peer.createAndSendOffer(signalingPort);
+    await peer.createAndSendOffer();
 
     expect(pc.setLocalDescriptionCalls).toEqual([{ type: 'offer', sdp: 'fake-offer-sdp' }]);
     expect(signalingPort.offers).toEqual([
@@ -84,9 +84,9 @@ describe('Peer — offer/answer role ownership', () => {
   it('a responder never creates an offer, only answers an inbound one', async () => {
     const pc = new FakePeerConnection();
     const signalingPort = createFakeSignalingPort();
-    const peer = new Peer('peer-1', 'responder', pc, createCallbacks());
+    const peer = new Peer('peer-1', 'responder', pc, signalingPort, createCallbacks());
 
-    await peer.handleRemoteOffer('remote-offer-sdp', signalingPort);
+    await peer.handleRemoteOffer('remote-offer-sdp');
 
     expect(signalingPort.offers).toEqual([]);
     expect(pc.setRemoteDescriptionCalls).toEqual([{ type: 'offer', sdp: 'remote-offer-sdp' }]);
@@ -101,20 +101,21 @@ describe('Peer — ICE candidate queueing', () => {
   it('queues a candidate that arrives before the remote description is applied, then flushes it in order', async () => {
     const pc = new FakePeerConnection();
     const signalingPort = createFakeSignalingPort();
-    const peer = new Peer('peer-1', 'responder', pc, createCallbacks());
+    const peer = new Peer('peer-1', 'responder', pc, signalingPort, createCallbacks());
     const early: RTCIceCandidateInit = { candidate: 'candidate:early', sdpMLineIndex: 0 };
 
     await peer.handleRemoteIceCandidate(early);
     expect(pc.addIceCandidateCalls).toEqual([]); // not applied yet — queued
 
-    await peer.handleRemoteOffer('remote-offer-sdp', signalingPort);
+    await peer.handleRemoteOffer('remote-offer-sdp');
 
     expect(pc.addIceCandidateCalls).toEqual([early]);
   });
 
   it('applies a candidate immediately once the remote description is already set', async () => {
     const pc = new FakePeerConnection();
-    const peer = new Peer('peer-1', 'initiator', pc, createCallbacks());
+    const signalingPort = createFakeSignalingPort();
+    const peer = new Peer('peer-1', 'initiator', pc, signalingPort, createCallbacks());
 
     await peer.handleRemoteAnswer('remote-answer-sdp');
     const late: RTCIceCandidateInit = { candidate: 'candidate:late', sdpMLineIndex: 0 };
@@ -127,10 +128,10 @@ describe('Peer — ICE candidate queueing', () => {
   it('queues and flushes a null end-of-candidates signal like any other candidate', async () => {
     const pc = new FakePeerConnection();
     const signalingPort = createFakeSignalingPort();
-    const peer = new Peer('peer-1', 'responder', pc, createCallbacks());
+    const peer = new Peer('peer-1', 'responder', pc, signalingPort, createCallbacks());
 
     await peer.handleRemoteIceCandidate(null);
-    await peer.handleRemoteOffer('remote-offer-sdp', signalingPort);
+    await peer.handleRemoteOffer('remote-offer-sdp');
 
     expect(pc.addIceCandidateCalls).toEqual([null]);
   });
@@ -140,7 +141,7 @@ describe('Peer — connection-state forwarding and terminal cleanup', () => {
   it('forwards every state change and signals terminal exactly once on failure', () => {
     const pc = new FakePeerConnection();
     const callbacks = createCallbacks();
-    new Peer('peer-1', 'initiator', pc, callbacks);
+    new Peer('peer-1', 'initiator', pc, createFakeSignalingPort(), callbacks);
 
     pc.connectionState = 'connecting';
     pc.onconnectionstatechange?.(new Event('connectionstatechange'));
@@ -156,7 +157,7 @@ describe('Peer — connection-state forwarding and terminal cleanup', () => {
   it('does not treat "disconnected" as terminal', () => {
     const pc = new FakePeerConnection();
     const callbacks = createCallbacks();
-    new Peer('peer-1', 'initiator', pc, callbacks);
+    new Peer('peer-1', 'initiator', pc, createFakeSignalingPort(), callbacks);
 
     pc.connectionState = 'disconnected';
     pc.onconnectionstatechange?.(new Event('connectionstatechange'));
@@ -169,7 +170,7 @@ describe('Peer — ICE candidate forwarding to signaling', () => {
   it('forwards a locally generated candidate via onicecandidate', () => {
     const pc = new FakePeerConnection();
     const callbacks = createCallbacks();
-    new Peer('peer-1', 'initiator', pc, callbacks);
+    new Peer('peer-1', 'initiator', pc, createFakeSignalingPort(), callbacks);
     const candidate = { toJSON: () => ({ candidate: 'candidate:1', sdpMLineIndex: 0 }) };
 
     pc.onicecandidate?.({ candidate } as unknown as RTCPeerConnectionIceEvent);
@@ -180,7 +181,7 @@ describe('Peer — ICE candidate forwarding to signaling', () => {
   it('forwards null for the end-of-candidates signal', () => {
     const pc = new FakePeerConnection();
     const callbacks = createCallbacks();
-    new Peer('peer-1', 'initiator', pc, callbacks);
+    new Peer('peer-1', 'initiator', pc, createFakeSignalingPort(), callbacks);
 
     pc.onicecandidate?.({ candidate: null } as unknown as RTCPeerConnectionIceEvent);
 
@@ -191,7 +192,7 @@ describe('Peer — ICE candidate forwarding to signaling', () => {
 describe('Peer — close() idempotency and cleanup', () => {
   it('closes the underlying connection exactly once no matter how many times close() is called', () => {
     const pc = new FakePeerConnection();
-    const peer = new Peer('peer-1', 'initiator', pc, createCallbacks());
+    const peer = new Peer('peer-1', 'initiator', pc, createFakeSignalingPort(), createCallbacks());
 
     peer.close();
     peer.close();
@@ -202,7 +203,7 @@ describe('Peer — close() idempotency and cleanup', () => {
 
   it('detaches every event handler on close so late platform dispatches are inert', () => {
     const pc = new FakePeerConnection();
-    const peer = new Peer('peer-1', 'initiator', pc, createCallbacks());
+    const peer = new Peer('peer-1', 'initiator', pc, createFakeSignalingPort(), createCallbacks());
 
     peer.close();
 
@@ -210,11 +211,12 @@ describe('Peer — close() idempotency and cleanup', () => {
     expect(pc.onicecandidate).toBeNull();
     expect(pc.onconnectionstatechange).toBeNull();
     expect(pc.oniceconnectionstatechange).toBeNull();
+    expect(pc.onnegotiationneeded).toBeNull();
   });
 
   it('reports isClosed after close()', () => {
     const pc = new FakePeerConnection();
-    const peer = new Peer('peer-1', 'initiator', pc, createCallbacks());
+    const peer = new Peer('peer-1', 'initiator', pc, createFakeSignalingPort(), createCallbacks());
 
     expect(peer.isClosed).toBe(false);
     peer.close();
@@ -224,15 +226,19 @@ describe('Peer — close() idempotency and cleanup', () => {
   it('every public method is a no-op once closed, never throwing or rejecting', async () => {
     const pc = new FakePeerConnection();
     const signalingPort = createFakeSignalingPort();
-    const peer = new Peer('peer-1', 'initiator', pc, createCallbacks());
+    const peer = new Peer('peer-1', 'initiator', pc, signalingPort, createCallbacks());
     peer.close();
 
     peer.addTrack(fakeAudioTrack());
-    await expect(peer.createAndSendOffer(signalingPort)).resolves.toBeUndefined();
-    await expect(peer.handleRemoteOffer('sdp', signalingPort)).resolves.toBeUndefined();
+    await expect(peer.createAndSendOffer()).resolves.toBeUndefined();
+    await expect(peer.handleRemoteOffer('sdp')).resolves.toBeUndefined();
     await expect(peer.handleRemoteAnswer('sdp')).resolves.toBeUndefined();
     await expect(peer.handleRemoteIceCandidate(null)).resolves.toBeUndefined();
     await expect(peer.getStats()).resolves.toBeUndefined();
+    // A late negotiationneeded dispatch (the platform racing a synchronous close()) must also be
+    // impossible to observe as work — but close() already nulled the handler, so this is really
+    // asserting there is nothing left to dispatch to.
+    expect(pc.onnegotiationneeded).toBeNull();
 
     expect(pc.addTrackCalls).toEqual([]);
     expect(pc.setLocalDescriptionCalls).toEqual([]);
@@ -245,7 +251,7 @@ describe('Peer — close() idempotency and cleanup', () => {
 describe('Peer — track publication', () => {
   it('adds a track to the underlying connection and removes it via the returned sender', () => {
     const pc = new FakePeerConnection();
-    const peer = new Peer('peer-1', 'initiator', pc, createCallbacks());
+    const peer = new Peer('peer-1', 'initiator', pc, createFakeSignalingPort(), createCallbacks());
     const track = fakeAudioTrack();
 
     peer.addTrack(track);
@@ -259,7 +265,7 @@ describe('Peer — track publication', () => {
 
   it('does not add the same track twice', () => {
     const pc = new FakePeerConnection();
-    const peer = new Peer('peer-1', 'initiator', pc, createCallbacks());
+    const peer = new Peer('peer-1', 'initiator', pc, createFakeSignalingPort(), createCallbacks());
     const track = fakeAudioTrack();
 
     peer.addTrack(track);
@@ -270,7 +276,7 @@ describe('Peer — track publication', () => {
 
   it('removing an untracked track is a no-op', () => {
     const pc = new FakePeerConnection();
-    const peer = new Peer('peer-1', 'initiator', pc, createCallbacks());
+    const peer = new Peer('peer-1', 'initiator', pc, createFakeSignalingPort(), createCallbacks());
 
     peer.removeTrack(fakeAudioTrack());
 
@@ -278,15 +284,158 @@ describe('Peer — track publication', () => {
   });
 });
 
+describe('Peer — renegotiation (T4)', () => {
+  it('does not offer when negotiationneeded fires before the initial handshake completes', () => {
+    const pc = new FakePeerConnection();
+    const signalingPort = createFakeSignalingPort();
+    const peer = new Peer('peer-1', 'initiator', pc, signalingPort, createCallbacks());
+
+    // Mirrors what a real browser does: addTrack (e.g. seeding an already-published microphone
+    // track before the first offer is even sent) schedules negotiationneeded on its own.
+    peer.addTrack(fakeAudioTrack());
+    pc.onnegotiationneeded?.(new Event('negotiationneeded'));
+
+    expect(signalingPort.offers).toEqual([]);
+  });
+
+  it('a track added to an already-negotiated peer triggers a fresh offer', async () => {
+    const pc = new FakePeerConnection();
+    const signalingPort = createFakeSignalingPort();
+    const peer = new Peer('peer-1', 'initiator', pc, signalingPort, createCallbacks());
+
+    await peer.createAndSendOffer(); // completes the initial handshake -> negotiated = true
+    expect(signalingPort.offers).toHaveLength(1);
+
+    peer.addTrack(fakeAudioTrack('camera-track'));
+    pc.onnegotiationneeded?.(new Event('negotiationneeded'));
+    await flushMicrotasks();
+
+    expect(signalingPort.offers).toHaveLength(2);
+    expect(pc.setLocalDescriptionCalls).toHaveLength(2);
+  });
+
+  it('a track removed from an already-negotiated peer triggers a fresh offer', async () => {
+    const pc = new FakePeerConnection();
+    const signalingPort = createFakeSignalingPort();
+    const peer = new Peer('peer-1', 'initiator', pc, signalingPort, createCallbacks());
+    const track = fakeAudioTrack('camera-track');
+    peer.addTrack(track);
+
+    await peer.createAndSendOffer();
+    expect(signalingPort.offers).toHaveLength(1);
+
+    peer.removeTrack(track);
+    pc.onnegotiationneeded?.(new Event('negotiationneeded'));
+    await flushMicrotasks();
+
+    expect(signalingPort.offers).toHaveLength(2);
+  });
+
+  it('the responder also renegotiates once negotiated, after its initial handleRemoteOffer', async () => {
+    const pc = new FakePeerConnection();
+    const signalingPort = createFakeSignalingPort();
+    const peer = new Peer('peer-1', 'responder', pc, signalingPort, createCallbacks());
+
+    await peer.handleRemoteOffer('remote-offer-sdp'); // negotiated = true
+    expect(signalingPort.answers).toHaveLength(1);
+
+    peer.addTrack(fakeAudioTrack('camera-track'));
+    pc.onnegotiationneeded?.(new Event('negotiationneeded'));
+    await flushMicrotasks();
+
+    expect(signalingPort.offers).toHaveLength(1);
+  });
+
+  it('a failed renegotiation offer is contained — no unhandled rejection escapes the handler', async () => {
+    const pc = new FakePeerConnection();
+    const signalingPort = createFakeSignalingPort();
+    const peer = new Peer('peer-1', 'initiator', pc, signalingPort, createCallbacks());
+    await peer.createAndSendOffer();
+
+    const failure = new Error('createOffer failed');
+    pc.createOfferImpl = () => Promise.reject(failure);
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    expect(() => pc.onnegotiationneeded?.(new Event('negotiationneeded'))).not.toThrow();
+    await flushMicrotasks();
+
+    expect(consoleErrorSpy).toHaveBeenCalled();
+    consoleErrorSpy.mockRestore();
+  });
+});
+
+describe('Peer — glare (perfect negotiation)', () => {
+  it('the polite (responder) side rolls back its own offer and accepts a colliding inbound offer', async () => {
+    const pc = new FakePeerConnection();
+    const signalingPort = createFakeSignalingPort();
+    const peer = new Peer('peer-1', 'responder', pc, signalingPort, createCallbacks());
+
+    // Simulate this side already having a local offer outstanding when the collision happens.
+    pc.signalingState = 'have-local-offer';
+
+    await peer.handleRemoteOffer('colliding-offer-sdp');
+
+    expect(pc.setLocalDescriptionCalls[0]).toEqual({ type: 'rollback' });
+    expect(pc.setRemoteDescriptionCalls).toEqual([{ type: 'offer', sdp: 'colliding-offer-sdp' }]);
+    expect(signalingPort.answers).toEqual([
+      { targetParticipantId: 'peer-1', sdp: 'fake-answer-sdp' },
+    ]);
+  });
+
+  it('the impolite (initiator) side ignores a colliding inbound offer outright', async () => {
+    const pc = new FakePeerConnection();
+    const signalingPort = createFakeSignalingPort();
+    const peer = new Peer('peer-1', 'initiator', pc, signalingPort, createCallbacks());
+
+    pc.signalingState = 'have-local-offer';
+
+    await peer.handleRemoteOffer('colliding-offer-sdp');
+
+    expect(pc.setRemoteDescriptionCalls).toEqual([]);
+    expect(pc.setLocalDescriptionCalls).toEqual([]);
+    expect(signalingPort.answers).toEqual([]);
+  });
+
+  it('the impolite side ignores a colliding offer that arrives while it is itself mid-createOffer', async () => {
+    const pc = new FakePeerConnection();
+    const signalingPort = createFakeSignalingPort();
+    const peer = new Peer('peer-1', 'initiator', pc, signalingPort, createCallbacks());
+    const deferred = createDeferred<RTCSessionDescriptionInit>();
+    pc.createOfferImpl = () => deferred.promise;
+
+    const offering = peer.createAndSendOffer(); // makingOffer = true while this is in flight
+    await peer.handleRemoteOffer('colliding-offer-sdp');
+
+    expect(pc.setRemoteDescriptionCalls).toEqual([]);
+    expect(signalingPort.answers).toEqual([]);
+
+    deferred.resolve({ type: 'offer', sdp: 'my-offer-sdp' });
+    await offering;
+  });
+
+  it('no collision (stable signaling state) still answers normally regardless of politeness', async () => {
+    const pc = new FakePeerConnection();
+    const signalingPort = createFakeSignalingPort();
+    const peer = new Peer('peer-1', 'initiator', pc, signalingPort, createCallbacks());
+
+    await peer.handleRemoteOffer('remote-offer-sdp');
+
+    expect(pc.setRemoteDescriptionCalls).toEqual([{ type: 'offer', sdp: 'remote-offer-sdp' }]);
+    expect(signalingPort.answers).toEqual([
+      { targetParticipantId: 'peer-1', sdp: 'fake-answer-sdp' },
+    ]);
+  });
+});
+
 describe('Peer — races between negotiation and local teardown', () => {
   it('close() during an in-flight handleRemoteOffer prevents the answer from ever being sent', async () => {
     const pc = new FakePeerConnection();
     const signalingPort = createFakeSignalingPort();
-    const peer = new Peer('peer-1', 'responder', pc, createCallbacks());
+    const peer = new Peer('peer-1', 'responder', pc, signalingPort, createCallbacks());
     const deferred = createDeferred<undefined>();
     pc.setRemoteDescriptionImpl = () => deferred.promise;
 
-    const handling = peer.handleRemoteOffer('remote-offer-sdp', signalingPort);
+    const handling = peer.handleRemoteOffer('remote-offer-sdp');
     expect(pc.setRemoteDescriptionCalls).toHaveLength(1); // the call started
 
     peer.close();
@@ -300,11 +449,11 @@ describe('Peer — races between negotiation and local teardown', () => {
   it('close() during an in-flight createAndSendOffer prevents the offer from ever being sent', async () => {
     const pc = new FakePeerConnection();
     const signalingPort = createFakeSignalingPort();
-    const peer = new Peer('peer-1', 'initiator', pc, createCallbacks());
+    const peer = new Peer('peer-1', 'initiator', pc, signalingPort, createCallbacks());
     const deferred = createDeferred<RTCSessionDescriptionInit>();
     pc.createOfferImpl = () => deferred.promise;
 
-    const creating = peer.createAndSendOffer(signalingPort);
+    const creating = peer.createAndSendOffer();
     peer.close();
     deferred.resolve({ type: 'offer', sdp: 'too-late-offer-sdp' });
 
@@ -315,7 +464,7 @@ describe('Peer — races between negotiation and local teardown', () => {
 
   it('a candidate arriving for a peer that started closing mid-apply is a controlled no-op', async () => {
     const pc = new FakePeerConnection();
-    const peer = new Peer('peer-1', 'initiator', pc, createCallbacks());
+    const peer = new Peer('peer-1', 'initiator', pc, createFakeSignalingPort(), createCallbacks());
     await peer.handleRemoteAnswer('remote-answer-sdp'); // marks remote description set
     const deferred = createDeferred<undefined>();
     pc.addIceCandidateImpl = () => deferred.promise;
@@ -331,7 +480,7 @@ describe('Peer — races between negotiation and local teardown', () => {
 describe('Peer — genuine (non-race) negotiation failures still propagate', () => {
   it('rejects when addIceCandidate genuinely fails and the peer is not closing', async () => {
     const pc = new FakePeerConnection();
-    const peer = new Peer('peer-1', 'initiator', pc, createCallbacks());
+    const peer = new Peer('peer-1', 'initiator', pc, createFakeSignalingPort(), createCallbacks());
     await peer.handleRemoteAnswer('remote-answer-sdp');
     const failure = new Error('m-line mismatch');
     pc.addIceCandidateImpl = () => Promise.reject(failure);
@@ -346,7 +495,7 @@ describe('Peer — remote track and stats', () => {
   it('forwards the first stream from an ontrack event', () => {
     const pc = new FakePeerConnection();
     const callbacks = createCallbacks();
-    new Peer('peer-1', 'initiator', pc, callbacks);
+    new Peer('peer-1', 'initiator', pc, createFakeSignalingPort(), callbacks);
     const track = fakeAudioTrack();
     const stream = {} as MediaStream;
 
@@ -363,7 +512,7 @@ describe('Peer — remote track and stats', () => {
 
     const pc = new FakePeerConnection();
     const callbacks = createCallbacks();
-    new Peer('peer-1', 'initiator', pc, callbacks);
+    new Peer('peer-1', 'initiator', pc, createFakeSignalingPort(), callbacks);
     const track = fakeAudioTrack();
 
     pc.ontrack?.({ track, streams: [] } as unknown as RTCTrackEvent);
@@ -377,8 +526,12 @@ describe('Peer — remote track and stats', () => {
     const pc = new FakePeerConnection();
     const statsReport = { fake: true } as unknown as RTCStatsReport;
     pc.getStatsImpl = () => Promise.resolve(statsReport);
-    const peer = new Peer('peer-1', 'initiator', pc, createCallbacks());
+    const peer = new Peer('peer-1', 'initiator', pc, createFakeSignalingPort(), createCallbacks());
 
     await expect(peer.getStats()).resolves.toBe(statsReport);
   });
 });
+
+function flushMicrotasks(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}

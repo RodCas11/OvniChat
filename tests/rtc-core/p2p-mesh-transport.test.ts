@@ -131,6 +131,27 @@ describe('P2PMeshTransport — track publication fan-out', () => {
     expect(pc?.removeTrackCalls).toHaveLength(1);
   });
 
+  it('a newly-added peer receives every currently published track, even multiple ones added mid-session', () => {
+    const { transport, connections } = createTransport();
+    const micTrack = fakeAudioTrack('mic-track');
+    const cameraTrack = fakeAudioTrack('camera-track'); // kind is irrelevant to this transport
+
+    transport.publishTrack(micTrack);
+    transport.addParticipant('peer-1', 'responder');
+    transport.publishTrack(cameraTrack); // published after peer-1 already joined
+
+    // peer-2 joins later, after both tracks are already published — regression coverage for T4's
+    // camera-as-a-second-track scenario: no special-casing needed for a late joiner.
+    transport.addParticipant('peer-2', 'responder');
+
+    const pcs = [...connections.values()];
+    expect(pcs).toHaveLength(2);
+    for (const pc of pcs) {
+      expect(pc.addTrackCalls).toEqual(expect.arrayContaining([micTrack, cameraTrack]));
+      expect(pc.addTrackCalls).toHaveLength(2);
+    }
+  });
+
   it('unpublishing a track that was never published is a no-op', () => {
     const { transport, connections } = createTransport();
     transport.addParticipant('peer-1', 'responder');
@@ -139,6 +160,34 @@ describe('P2PMeshTransport — track publication fan-out', () => {
 
     const pc = [...connections.values()][0];
     expect(pc?.removeTrackCalls).toEqual([]);
+  });
+});
+
+describe('P2PMeshTransport — renegotiation wiring (T4)', () => {
+  it('publishing a track to an already-negotiated peer triggers a fresh offer once negotiationneeded fires', async () => {
+    const { transport, connections, signalingPort } = createTransport();
+    transport.addParticipant('peer-1', 'initiator');
+    await flushMicrotasks(); // the initial offer completes -> that peer's Peer.negotiated becomes true
+    expect(signalingPort.offers).toHaveLength(1);
+
+    const cameraTrack = fakeAudioTrack('camera-track');
+    transport.publishTrack(cameraTrack);
+    const pc = [...connections.values()][0];
+    pc?.onnegotiationneeded?.(new Event('negotiationneeded'));
+    await flushMicrotasks();
+
+    expect(signalingPort.offers).toHaveLength(2);
+  });
+
+  it('does not double-offer when negotiationneeded fires before the initial offer is sent', () => {
+    const { transport, connections, signalingPort } = createTransport();
+    transport.addParticipant('peer-1', 'initiator');
+    // Fires synchronously, before the initial createAndSendOffer's awaited createOffer() resolves —
+    // negotiated is still false at this point.
+    const pc = [...connections.values()][0];
+    pc?.onnegotiationneeded?.(new Event('negotiationneeded'));
+
+    expect(signalingPort.offers).toEqual([]);
   });
 });
 

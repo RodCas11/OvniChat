@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import type {
   IceCandidatePayload,
@@ -13,8 +13,11 @@ import type {
   VoiceChannelSummary,
 } from '@disco-voador/protocol';
 import {
+  acquireCamera,
   acquireMicrophone,
+  CameraAccessError,
   MicrophoneAccessError,
+  type Camera,
   type Microphone,
 } from '@disco-voador/media-core';
 import {
@@ -38,13 +41,22 @@ export interface VoiceChannelState {
   readonly connectionStatus: VoiceConnectionStatus;
   readonly channels: readonly VoiceChannelSummary[];
   readonly currentChannelId: string | undefined;
+  readonly selfParticipantId: string | undefined;
   readonly participants: readonly VoiceParticipantView[];
-  readonly remoteStreams: ReadonlyMap<string, MediaStream>;
+  readonly remoteAudioStreams: ReadonlyMap<string, MediaStream>;
+  readonly remoteVideoStreams: ReadonlyMap<string, MediaStream>;
   readonly muted: boolean;
   readonly deafened: boolean;
   readonly joining: boolean;
   readonly micError: string | undefined;
   readonly lastError: string | undefined;
+  /** Camera is independent of microphone — see `docs/architecture/WEBRTC_CAMERA.md`. */
+  readonly cameraEnabled: boolean;
+  /** True while `acquireCamera()` is in flight — lets the UI disable the button so a fast
+   * double-click can't start a second concurrent capture attempt on the same device. */
+  readonly cameraAcquiring: boolean;
+  readonly localCameraStream: MediaStream | undefined;
+  readonly cameraError: string | undefined;
 }
 
 export interface VoiceChannelActions {
@@ -52,6 +64,8 @@ export interface VoiceChannelActions {
   leave(): void;
   setMuted(muted: boolean): void;
   setDeafened(deafened: boolean): void;
+  enableCamera(): void;
+  disableCamera(): void;
 }
 
 /**
@@ -74,13 +88,19 @@ const INITIAL_STATE: VoiceChannelState = {
   connectionStatus: 'connecting',
   channels: [],
   currentChannelId: undefined,
+  selfParticipantId: undefined,
   participants: [],
-  remoteStreams: new Map(),
+  remoteAudioStreams: new Map(),
+  remoteVideoStreams: new Map(),
   muted: false,
   deafened: false,
   joining: false,
   micError: undefined,
   lastError: undefined,
+  cameraEnabled: false,
+  cameraAcquiring: false,
+  localCameraStream: undefined,
+  cameraError: undefined,
 };
 
 /**
@@ -100,6 +120,14 @@ export function useVoiceChannel(
   const transportRef = useRef<P2PMeshTransport | undefined>(undefined);
   const microphoneRef = useRef<Microphone | undefined>(undefined);
   const mutedRef = useRef(false);
+  const cameraRef = useRef<Camera | undefined>(undefined);
+  // Bumped on every enable/disable so a `getUserMedia` call that resolves after the user (or a
+  // channel leave/unmount) has already moved on can detect it is stale — see the T3 microphone
+  // late-acquisition race this mirrors, in `join()` below.
+  const cameraGenerationRef = useRef(0);
+  // True for the duration of one `acquireCamera()` call — blocks a second concurrent call (see
+  // `enableCamera` for the double-click race this closes).
+  const cameraAcquiringRef = useRef(false);
 
   useEffect(() => {
     if (!realtimeConfig) return undefined;
@@ -119,6 +147,18 @@ export function useVoiceChannel(
       transport.unpublishTrack(microphone.track);
       microphone.stop();
       microphoneRef.current = undefined;
+    }
+
+    /** Unlike microphone mute, camera OFF always fully stops the device (see task section on
+     * camera-mute-vs-stop) — this is the single place that happens, called from `disableCamera()`
+     * (user-driven), `onLeft` (voice left), and this effect's own cleanup (unmount/reconnect). */
+    function releaseCamera(): void {
+      cameraGenerationRef.current += 1;
+      const camera = cameraRef.current;
+      if (!camera) return;
+      transport.unpublishTrack(camera.track);
+      camera.stop();
+      cameraRef.current = undefined;
     }
 
     const onStateChange = (connectionState: RealtimeConnectionState) => {
@@ -147,12 +187,14 @@ export function useVoiceChannel(
       setState((prev) => ({
         ...prev,
         currentChannelId: message.channelId,
+        selfParticipantId: message.participantId,
         participants: message.participants.map((p) => ({
           participantId: p.participantId,
           displayName: p.displayName,
           connectionState: undefined,
         })),
-        remoteStreams: new Map(),
+        remoteAudioStreams: new Map(),
+        remoteVideoStreams: new Map(),
         joining: false,
         lastError: undefined,
       }));
@@ -162,12 +204,17 @@ export function useVoiceChannel(
       for (const id of currentParticipantIds) transport.removeParticipant(id);
       currentParticipantIds = new Set();
       releaseMicrophone();
+      releaseCamera();
 
       setState((prev) => ({
         ...prev,
         currentChannelId: undefined,
+        selfParticipantId: undefined,
         participants: [],
-        remoteStreams: new Map(),
+        remoteAudioStreams: new Map(),
+        remoteVideoStreams: new Map(),
+        cameraEnabled: false,
+        localCameraStream: undefined,
       }));
     };
 
@@ -193,12 +240,15 @@ export function useVoiceChannel(
       transport.removeParticipant(message.participantId);
 
       setState((prev) => {
-        const remoteStreams = new Map(prev.remoteStreams);
-        remoteStreams.delete(message.participantId);
+        const remoteAudioStreams = new Map(prev.remoteAudioStreams);
+        remoteAudioStreams.delete(message.participantId);
+        const remoteVideoStreams = new Map(prev.remoteVideoStreams);
+        remoteVideoStreams.delete(message.participantId);
         return {
           ...prev,
           participants: prev.participants.filter((p) => p.participantId !== message.participantId),
-          remoteStreams,
+          remoteAudioStreams,
+          remoteVideoStreams,
         };
       });
     };
@@ -221,12 +271,56 @@ export function useVoiceChannel(
       setState((prev) => ({ ...prev, lastError: message.message, joining: false }));
     };
 
+    /**
+     * `track.kind` (`'audio'`/`'video'`) is the source discriminator — T4 has exactly one video
+     * source, so no separate `TrackSource` metadata is needed (see
+     * `docs/architecture/WEBRTC_CAMERA.md`).
+     *
+     * Detecting "the far side stopped sending this track" is NOT `track.onended`: empirically
+     * (confirmed against real Electron 43/Chromium — see `docs/tasks/T4_CAMERA_STREAMING.md`),
+     * renegotiating a sender's track away (`unpublishTrack` -> `pc.removeTrack`) does not reliably
+     * end the receiver's corresponding remote track — it just stops receiving data. The correct,
+     * spec-defined signal for that is the track's `'mute'`/`'unmute'` events (`track.muted`
+     * reflects "temporarily unable to provide data"). Camera re-enabling later typically reuses the
+     * same transceiver/receiver track (`RTCPeerConnection.addTrack` reuses a stopped-sender,
+     * compatible-direction transceiver when one exists), so the remote side sees the *same* track
+     * object fire `'unmute'` again rather than a fresh `ontrack` — video wires both events so
+     * on/off/on toggling is reflected correctly without leaking stale map entries. Audio
+     * deliberately does not react to mute/unmute: microphone mute (`track.enabled = false` on the
+     * sender) sends silence rather than stopping data flow, so the receiving track does not mute,
+     * and even if a platform did briefly signal it, removing the `<audio>` element for an ordinary
+     * mute would be wrong UX — audio's only removal signal is `'ended'`/the participant leaving.
+     */
     const onRemoteTrack = (event: RemoteTrackEvent) => {
-      setState((prev) => {
-        const remoteStreams = new Map(prev.remoteStreams);
-        remoteStreams.set(event.participantId, event.stream);
-        return { ...prev, remoteStreams };
-      });
+      const isVideo = event.track.kind === 'video';
+
+      const addToState = () => {
+        setState((prev) => {
+          const streams = new Map(isVideo ? prev.remoteVideoStreams : prev.remoteAudioStreams);
+          streams.set(event.participantId, event.stream);
+          return isVideo
+            ? { ...prev, remoteVideoStreams: streams }
+            : { ...prev, remoteAudioStreams: streams };
+        });
+      };
+
+      const removeFromState = () => {
+        setState((prev) => {
+          const streams = new Map(isVideo ? prev.remoteVideoStreams : prev.remoteAudioStreams);
+          streams.delete(event.participantId);
+          return isVideo
+            ? { ...prev, remoteVideoStreams: streams }
+            : { ...prev, remoteAudioStreams: streams };
+        });
+      };
+
+      event.track.addEventListener('ended', removeFromState);
+      if (isVideo) {
+        event.track.addEventListener('mute', removeFromState);
+        event.track.addEventListener('unmute', addToState);
+      }
+
+      addToState();
     };
 
     const onPeerStateChanged = (event: PeerConnectionStateEvent) => {
@@ -277,6 +371,9 @@ export function useVoiceChannel(
       transport.closeAll();
       microphoneRef.current?.stop();
       microphoneRef.current = undefined;
+      cameraGenerationRef.current += 1;
+      cameraRef.current?.stop();
+      cameraRef.current = undefined;
       clientRef.current = undefined;
       transportRef.current = undefined;
     };
@@ -330,5 +427,76 @@ export function useVoiceChannel(
     setState((prev) => ({ ...prev, deafened }));
   }, []);
 
-  return [state, { join, leave, setMuted, setDeafened }] as const;
+  const enableCamera = useCallback(() => {
+    const transport = transportRef.current;
+    // `cameraAcquiringRef` blocks a *second* concurrent `acquireCamera()` call for as long as one
+    // is already in flight — even across an intervening `disableCamera()` — because many real
+    // webcams only support one open capture handle at a time; without this, a fast double-click
+    // (the button has no `disabled`-during-acquisition state to rely on instead) could start two
+    // concurrent `getUserMedia` calls, and if the *stale* one happens to be the one that succeeds,
+    // the user sees a spurious camera error after a single intended click. Found by QA review, not
+    // by the live E2E (which never exercises rapid double-invocation).
+    if (!transport || cameraRef.current || cameraAcquiringRef.current) return;
+
+    cameraAcquiringRef.current = true;
+    const generation = ++cameraGenerationRef.current;
+    setState((prev) => ({ ...prev, cameraError: undefined, cameraAcquiring: true }));
+
+    void (async () => {
+      try {
+        const camera = await acquireCamera();
+        if (transportRef.current !== transport || cameraGenerationRef.current !== generation) {
+          // The transport was torn down, or the user disabled the camera again (or enabled it a
+          // second time — the generation counter only ever matches the most recent call) while
+          // `getUserMedia` was pending. Stop the device immediately instead of leaking the
+          // hardware camera or publishing a track nobody asked for anymore — the same class of
+          // race T3 fixed for the microphone.
+          camera.stop();
+          return;
+        }
+
+        cameraRef.current = camera;
+        camera.track.addEventListener('ended', () => {
+          // The physical device stopped unexpectedly (unplugged, revoked, etc.) rather than via
+          // `disableCamera()` — `cameraRef.current !== camera` means `disableCamera()` (or a
+          // newer `enableCamera()`) already handled cleanup for this instance, so this is a no-op.
+          if (cameraRef.current !== camera) return;
+          cameraRef.current = undefined;
+          transport.unpublishTrack(camera.track);
+          setState((prev) => ({ ...prev, cameraEnabled: false, localCameraStream: undefined }));
+        });
+
+        transport.publishTrack(camera.track);
+        setState((prev) => ({ ...prev, cameraEnabled: true, localCameraStream: camera.stream }));
+      } catch (error) {
+        const message = error instanceof CameraAccessError ? error.message : 'Camera access failed';
+        console.error('voice: camera acquisition failed', message, error);
+        setState((prev) => ({ ...prev, cameraError: message }));
+      } finally {
+        cameraAcquiringRef.current = false;
+        setState((prev) => ({ ...prev, cameraAcquiring: false }));
+      }
+    })();
+  }, []);
+
+  const disableCamera = useCallback(() => {
+    cameraGenerationRef.current += 1;
+    const transport = transportRef.current;
+    const camera = cameraRef.current;
+    cameraRef.current = undefined;
+    if (transport && camera) transport.unpublishTrack(camera.track);
+    camera?.stop();
+    setState((prev) => ({ ...prev, cameraEnabled: false, localCameraStream: undefined }));
+  }, []);
+
+  // Memoized so callers holding `actions` in a `useEffect` dependency array (e.g. the E2E
+  // auto-camera-off timer in `VoiceChannelView.tsx`) get a stable reference instead of one that
+  // changes on every render — each individual action is already a `useCallback` with empty deps,
+  // so this object's own identity is stable for the component's whole lifetime.
+  const actions = useMemo<VoiceChannelActions>(
+    () => ({ join, leave, setMuted, setDeafened, enableCamera, disableCamera }),
+    [join, leave, setMuted, setDeafened, enableCamera, disableCamera],
+  );
+
+  return [state, actions] as const;
 }

@@ -70,29 +70,61 @@ bootstrap before any window opened. See
 record and [`references/VERSION_DECISIONS.md`](references/VERSION_DECISIONS.md) for the version-level
 finding.
 
+T4 added camera as a second, independent media source over the same T3 voice `RTCPeerConnection`s:
+
+- `packages/rtc-core`: the one real gap T3 left — `Peer` never renegotiated after the initial
+  offer/answer cycle, so adding/removing a track on an already-connected peer never reached the
+  remote side. Fixed with standard WebRTC "perfect negotiation" (polite/impolite derived from T3's
+  existing initiator/responder role — no second coordination mechanism). `publishTrack`/
+  `unpublishTrack`/`addParticipant`'s track fan-out needed zero changes; it was already correct for
+  existing peers, new peers, and multiple peers.
+- `packages/media-core`: `acquireCamera()`/`Camera` — video-only capture, full stop-on-disable
+  (unlike microphone's mute-in-place — the camera light must actually turn off), the same
+  late-acquisition-race protection T3 established for microphone.
+- `apps/desktop`: camera permission widened (video-only, still never mixed with audio, still
+  trusted-origin-only), camera on/off UI, local preview, remote camera tiles keyed by participant
+  id, an automated two-Electron-instance camera E2E smoke test.
+
+**T4 is complete: implemented, unit/integration-tested (386 Vitest tests), and live-verified.** Its
+camera E2E smoke (`apps/desktop/scripts/e2e-camera-smoke.mjs`) passed three consecutive times,
+proving real decoded remote video (not just `ontrack` firing) and that disabling a remote camera
+does not disconnect the peer or interrupt audio. Two real bugs were found only by this live
+verification (invisible to every layer of testing below it): remote camera-off detection needs the
+track's `'mute'` event, not `'ended'` (renegotiating a track away doesn't end the receiver's track on
+real Electron/Chromium — see [`architecture/WEBRTC_CAMERA.md`](architecture/WEBRTC_CAMERA.md)'s
+dedicated section); and the voice hook's returned `actions` object needed `useMemo` — an unmemoized
+wrapper object was silently resetting a `setTimeout`-based E2E effect on every unrelated re-render.
+See [`tasks/T4_CAMERA_STREAMING.md`](tasks/T4_CAMERA_STREAMING.md)'s handoff notes for the full
+record.
+
 Read [`tasks/STATUS.md`](tasks/STATUS.md) for the authoritative status,
 [`tasks/T1_ELECTRON_SHELL.md`](tasks/T1_ELECTRON_SHELL.md) /
 [`tasks/T2_REALTIME_PROTOCOL.md`](tasks/T2_REALTIME_PROTOCOL.md) /
-[`tasks/T3_VOICE_WEBRTC.md`](tasks/T3_VOICE_WEBRTC.md) for their full verification records, and
-[`references/VERSION_DECISIONS.md`](references/VERSION_DECISIONS.md) before changing the toolchain
-— it records a real Forge/`@electron/packager` incompatibility T1 found and worked around.
+[`tasks/T3_VOICE_WEBRTC.md`](tasks/T3_VOICE_WEBRTC.md) /
+[`tasks/T4_CAMERA_STREAMING.md`](tasks/T4_CAMERA_STREAMING.md) for their full verification records,
+and [`references/VERSION_DECISIONS.md`](references/VERSION_DECISIONS.md) before changing the
+toolchain — it records a real Forge/`@electron/packager` incompatibility T1 found and worked around.
 [`architecture/REALTIME_PROTOCOL.md`](architecture/REALTIME_PROTOCOL.md) documents the full T2
 protocol design; [`architecture/WEBRTC_VOICE.md`](architecture/WEBRTC_VOICE.md) documents T3's voice/
-WebRTC design including a full join/signaling sequence diagram.
+WebRTC design; [`architecture/WEBRTC_CAMERA.md`](architecture/WEBRTC_CAMERA.md) documents T4's camera
+design including the renegotiation and mute/unmute-detection findings.
 
 ## What does not exist?
 
-There is no camera/screen/system-audio capture, text chat, database schema, running Coturn stack
-(templates exist but no TURN credential minting), installer/maker artifact, authentication/session
-model, or SFU. Production configuration/TLS termination for the realtime service is also not yet
-implemented. Voice, in T3's P2P-mesh, small-room scope, is real and verified.
+There is no screen/system-audio capture, text chat, database schema, running Coturn stack (templates
+exist but no TURN credential minting), installer/maker artifact, authentication/session model, or
+SFU. Production configuration/TLS termination for the realtime service is also not yet implemented.
+Voice and camera, in T3/T4's P2P-mesh, small-room scope, are both real and verified.
 
 ## What should happen next?
 
-**T4 — camera streaming**, following the same pattern (task document under `tasks/`,
+**T5 — screen/window streaming**, following the same pattern (task document under `tasks/`,
 `project-orientation`, `planning-feature`, `webrtc-media-engineer` for `rtc-core`/`media-core`
-extensions, `security-reviewer` for the new permission/signaling surface). Do not implement screen
-sharing or text chat as part of T4 unless its task explicitly says so.
+extensions, `windows-media-engineer` for Windows capture, `security-reviewer` for the new
+permission/capture-consent surface). Camera's `publishTrack`/`unpublishTrack`/renegotiation path
+should need no further transport change for a third media source — screen-video is expected to flow
+through the exact same seam. Do not implement system/process audio or text chat as part of T5 unless
+its task explicitly says so.
 
 ## Fixed foundation decisions
 
@@ -167,6 +199,16 @@ received the other's genuinely non-silent decoded audio track. See
 [`tasks/T3_VOICE_WEBRTC.md`](tasks/T3_VOICE_WEBRTC.md)'s handoff notes for the full record, including
 the real Electron-bootstrap bug (`ELECTRON_RUN_AS_NODE` set to `''` instead of being genuinely absent)
 found and fixed to get there.
+
+T4's clean-state evidence, 2026-08-18, is the same gate with 386 Vitest tests (no new
+dependency-audit advisories) — formatting, lint, typecheck, build, and `verify-repository.mjs` all
+pass — plus its own required real-runtime evidence: `pnpm --filter @disco-voador/desktop run
+e2e:camera-smoke` passed three consecutive times, each proving real decoded remote video
+(`videoWidth`/`videoHeight` both positive, sampled from an actual `<video>` element) and that
+disabling a remote camera left the peer `'connected'` and audio still flowing. `pnpm --filter
+@disco-voador/desktop run e2e:voice-smoke` (T3's smoke, unmodified) was re-run twice during this
+task and still passes, confirming no voice regression. See
+[`tasks/T4_CAMERA_STREAMING.md`](tasks/T4_CAMERA_STREAMING.md)'s handoff notes for the full record.
 
 Then perform the task’s required manual/platform checks. Apply
 [`DEFINITION_OF_DONE.md`](DEFINITION_OF_DONE.md) and update status only when every applicable item

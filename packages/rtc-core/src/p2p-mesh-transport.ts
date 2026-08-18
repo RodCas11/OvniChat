@@ -56,7 +56,7 @@ export class P2PMeshTransport implements MediaTransport {
     if (this.closedAll || this.peers.has(participantId)) return;
 
     const pc = this.createPeerConnection(this.config);
-    const peer = new Peer(participantId, role, pc, {
+    const peer = new Peer(participantId, role, pc, this.signalingPort, {
       onRemoteTrack: (track, stream) => {
         for (const listener of [...this.remoteTrackListeners]) {
           listener({ participantId, track, stream });
@@ -84,7 +84,7 @@ export class P2PMeshTransport implements MediaTransport {
     for (const track of this.publishedTracks) peer.addTrack(track);
 
     if (role === 'initiator') {
-      peer.createAndSendOffer(this.signalingPort).catch((error: unknown) => {
+      peer.createAndSendOffer().catch((error: unknown) => {
         if (peer.isClosed) return;
         console.error(`rtc-core: failed to create/send an offer`, { participantId, error });
       });
@@ -99,7 +99,7 @@ export class P2PMeshTransport implements MediaTransport {
     const peer = this.peers.get(participantId);
     if (!peer) return;
     try {
-      await peer.handleRemoteOffer(sdp, this.signalingPort);
+      await peer.handleRemoteOffer(sdp);
     } catch (error) {
       console.error(`rtc-core: failed to handle a remote offer`, { participantId, error });
     }

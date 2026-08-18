@@ -13,10 +13,22 @@ import type { RtcTransportConfig } from './types.js';
 export interface RtcPeerConnectionLike {
   readonly connectionState: RTCPeerConnectionState;
   readonly iceConnectionState: RTCIceConnectionState;
+  /**
+   * Needed for T4's "perfect negotiation" collision handling (`Peer.handleRemoteOffer`): an offer
+   * collision is detected in part by `signalingState !== 'stable'` (the local side already has an
+   * offer outstanding). A real `RTCPeerConnection` already exposes this read-only.
+   */
+  readonly signalingState: RTCSignalingState;
   ontrack: ((event: RTCTrackEvent) => void) | null;
   onicecandidate: ((event: RTCPeerConnectionIceEvent) => void) | null;
   onconnectionstatechange: ((event: Event) => void) | null;
   oniceconnectionstatechange: ((event: Event) => void) | null;
+  /**
+   * Fired by the platform whenever local state (e.g. `addTrack`/`removeTrack` on an already
+   * negotiated connection) requires a fresh offer/answer round. `Peer` wires this to trigger T4's
+   * renegotiation (see `Peer`'s class-level comment).
+   */
+  onnegotiationneeded: ((event: Event) => void) | null;
   addTrack(track: MediaStreamTrack, ...streams: MediaStream[]): RTCRtpSender;
   removeTrack(sender: RTCRtpSender): void;
   createOffer(): Promise<RTCSessionDescriptionInit>;

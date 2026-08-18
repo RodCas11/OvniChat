@@ -5,16 +5,19 @@ Canonical contracts live in code at [`packages/protocol/src/messages/{voice,webr
 [`packages/media-core/src/`](../../packages/media-core/src/); this document explains the design and
 is not itself authoritative. See [`REALTIME_PROTOCOL.md`](REALTIME_PROTOCOL.md) for the T2
 connection/handshake foundation this builds on, [`../ARCHITECTURE.md`](../ARCHITECTURE.md) for how
-the pieces fit the wider system, and [`../tasks/T3_VOICE_WEBRTC.md`](../tasks/T3_VOICE_WEBRTC.md)
-for the task record including its verification status.
+the pieces fit the wider system, [`../tasks/T3_VOICE_WEBRTC.md`](../tasks/T3_VOICE_WEBRTC.md) for
+the task record including its verification status, and [`WEBRTC_CAMERA.md`](WEBRTC_CAMERA.md) for
+T4's camera streaming, built on top of this same transport (including the renegotiation support T4
+had to add to `packages/rtc-core`'s `Peer` — this document's [P2P mesh
+topology](#p2p-mesh-topology) section predates that; `WEBRTC_CAMERA.md` documents it).
 
 ## Scope
 
 T3 is the first voice vertical slice: predefined voice channels (a hardcoded catalog, no database),
 microphone capture, P2P WebRTC between every pair of participants in a channel, and WebRTC signaling
-carried over the T2 realtime service. Camera, screen sharing, system audio, text chat, SQLite,
-authentication, and an SFU are explicitly out of scope — see ADR 0006 for the P2P-first decision
-this implements.
+carried over the T2 realtime service. Camera (added in T4, see `WEBRTC_CAMERA.md`), screen sharing,
+system audio, text chat, SQLite, authentication, and an SFU are explicitly out of scope for T3 — see
+ADR 0006 for the P2P-first decision this implements.
 
 ## Identity model
 
