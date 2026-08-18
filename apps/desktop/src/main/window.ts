@@ -2,22 +2,24 @@ import { app, BrowserWindow, session } from 'electron';
 import path from 'node:path';
 
 import { buildContentSecurityPolicy } from './content-security-policy.js';
+import type { DesktopConfig } from './desktop-config.js';
 import { registerIpcHandlers } from './ipc.js';
 import { installNavigationGuards } from './navigation-guards.js';
-import { allowedRendererOrigins } from './origins.js';
 import { appEntryUrl } from './protocol.js';
 import { buildWindowOptions } from './window-options.js';
 
-function devServerUrl(): string | undefined {
+export function devServerUrl(): string | undefined {
   return MAIN_WINDOW_VITE_DEV_SERVER_URL;
 }
 
-function installDevelopmentCsp(devServer: string): void {
+function installDevelopmentCsp(devServer: string, realtimeOrigin: string): void {
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
     callback({
       responseHeaders: {
         ...details.responseHeaders,
-        'Content-Security-Policy': [buildContentSecurityPolicy({ devServerOrigin: devServer })],
+        'Content-Security-Policy': [
+          buildContentSecurityPolicy({ devServerOrigin: devServer, realtimeOrigin }),
+        ],
         'X-Content-Type-Options': ['nosniff'],
         'Referrer-Policy': ['no-referrer'],
       },
@@ -25,7 +27,11 @@ function installDevelopmentCsp(devServer: string): void {
   });
 }
 
-export function createMainWindow(): BrowserWindow {
+export function createMainWindow(
+  config: DesktopConfig,
+  realtimeOrigin: string,
+  allowedOrigins: readonly string[],
+): BrowserWindow {
   const devServer = devServerUrl();
   const preloadPath = path.join(__dirname, 'preload.cjs');
 
@@ -33,9 +39,15 @@ export function createMainWindow(): BrowserWindow {
     buildWindowOptions(preloadPath, { devToolsEnabled: !app.isPackaged }),
   );
 
-  const allowedOrigins = allowedRendererOrigins(devServer);
   installNavigationGuards(window.webContents, allowedOrigins);
-  registerIpcHandlers(window.webContents, allowedOrigins);
+  registerIpcHandlers(
+    window.webContents,
+    allowedOrigins,
+    { url: config.realtimeUrl, iceServers: config.iceServers },
+    // Packaged builds never expose this to the Renderer, regardless of environment variables —
+    // the same `!app.isPackaged` gate used for the fake-media-device switches in `main/index.ts`.
+    !app.isPackaged ? config.e2eVoiceAutoJoin : undefined,
+  );
 
   window.once('ready-to-show', () => {
     window.show();
@@ -46,7 +58,7 @@ export function createMainWindow(): BrowserWindow {
   });
 
   if (devServer) {
-    installDevelopmentCsp(devServer);
+    installDevelopmentCsp(devServer, realtimeOrigin);
     void window.loadURL(devServer);
   } else {
     void window.loadURL(appEntryUrl());

@@ -14,8 +14,16 @@ import type { Logger } from './logging.js';
 import { HeartbeatMonitor } from './heartbeat.js';
 import { routeClientMessage } from './protocol-handlers.js';
 import { RateLimiter } from './rate-limiter.js';
+import type { VoiceRegistry } from './voice/registry.js';
 
-const CLOSE_CODE_BY_ERROR: Record<ErrorCode, number> = {
+/**
+ * Which {@link ErrorCode}s close the connection, and with which WebSocket close code. A code's
+ * absence here means it is **non-fatal**: `server:error` is sent, but the connection stays open.
+ * This single table is the one source of truth for that split (see `errors.ts` in
+ * `packages/protocol` for the reasoning) — there is no separately-maintained "is this fatal" flag
+ * to drift out of sync with it.
+ */
+const CLOSE_CODE_BY_ERROR: Partial<Record<ErrorCode, number>> = {
   INVALID_MESSAGE: CLOSE_CODES.INVALID_MESSAGE,
   UNSUPPORTED_PROTOCOL: CLOSE_CODES.UNSUPPORTED_PROTOCOL,
   HANDSHAKE_REQUIRED: CLOSE_CODES.HANDSHAKE_REQUIRED,
@@ -25,19 +33,21 @@ const CLOSE_CODE_BY_ERROR: Record<ErrorCode, number> = {
   MESSAGE_TOO_LARGE: CLOSE_CODES.MESSAGE_TOO_LARGE,
   INTERNAL_ERROR: CLOSE_CODES.INTERNAL_ERROR,
   SERVER_AT_CAPACITY: CLOSE_CODES.SERVER_AT_CAPACITY,
+  // CHANNEL_NOT_FOUND, NOT_IN_VOICE_CHANNEL, SIGNALING_TARGET_INVALID, CHANNEL_FULL are
+  // intentionally absent: they are ordinary recoverable conditions (see errors.ts), not protocol
+  // violations.
 };
 
 /** How long to wait for a clean WS close handshake before forcing the socket shut. */
 const FORCE_CLOSE_GRACE_MS = 2_000;
 
 /**
- * Every rejected message results in a `server:error` (when the socket can still be written to)
- * followed immediately by connection close. T2 has no "warn and continue" path: its protocol
- * surface is small enough that a well-behaved client should never trigger these cases in normal
- * operation, so simplicity wins over trying to gracefully recover a connection that already
- * violated the protocol. The one exception is an oversized frame, which `ws`'s own `maxPayload`
- * enforcement terminates before any application code observes it (see `errors.ts` in
- * `packages/protocol` for why `MESSAGE_TOO_LARGE` cannot carry a `server:error` in this server).
+ * Every *fatal* rejection results in a `server:error` (when the socket can still be written to)
+ * followed immediately by connection close — see {@link CLOSE_CODE_BY_ERROR}. A non-fatal
+ * rejection (T3's voice/signaling domain errors) sends only the `server:error`; the connection
+ * and its voice membership are untouched. The one exception to "error then close" for fatal codes
+ * is an oversized frame, which `ws`'s own `maxPayload` enforcement terminates before any
+ * application code observes it (see `errors.ts` in `packages/protocol`).
  */
 export class Connection {
   readonly id: string = randomUUID();
@@ -55,6 +65,9 @@ export class Connection {
     private readonly socket: WebSocket,
     private readonly config: RealtimeConfig,
     private readonly logger: Logger,
+    private readonly voiceRegistry: VoiceRegistry,
+    /** Sends a message to a *different* connection, looked up by id, if it still exists. */
+    private readonly deliverToConnection: (connectionId: string, message: ServerMessage) => void,
     private readonly onClosed: (connection: Connection) => void,
     private readonly now: () => Date = () => new Date(),
   ) {
@@ -96,6 +109,11 @@ export class Connection {
   /** Resolves once the underlying socket has actually finished closing. */
   get closed(): Promise<void> {
     return this.closedPromise;
+  }
+
+  /** Pushes a server-originated message to this connection (e.g. forwarded signaling, presence). */
+  deliver(message: ServerMessage): void {
+    this.send(message);
   }
 
   private handleHandshakeTimeout(): void {
@@ -147,10 +165,11 @@ export class Connection {
           intervalMs: this.config.heartbeatIntervalMs,
           timeoutMs: this.config.heartbeatTimeoutMs,
         },
+        voiceRegistry: this.voiceRegistry,
       });
 
       if (!result.ok) {
-        this.rejectAndClose(result.code, result.message, parsed.message.id);
+        this.rejectOrWarn(result.code, result.message, parsed.message.id);
         return;
       }
 
@@ -163,7 +182,13 @@ export class Connection {
         this.logger.info('handshake_completed', { connectionId: this.id });
       }
 
-      this.send(result.response);
+      for (const action of result.actions) {
+        if (action.kind === 'reply') {
+          this.send(action.message);
+        } else {
+          this.deliverToConnection(action.connectionId, action.message);
+        }
+      }
     } catch (error) {
       this.logger.error('unexpected_handler_error', {
         connectionId: this.id,
@@ -173,9 +198,20 @@ export class Connection {
     }
   }
 
+  /** Fatal codes (present in {@link CLOSE_CODE_BY_ERROR}) close the connection; others do not. */
+  private rejectOrWarn(code: ErrorCode, message: string, replyTo?: string): void {
+    const closeCode = CLOSE_CODE_BY_ERROR[code];
+    if (closeCode === undefined) {
+      this.sendError(code, message, replyTo);
+      return;
+    }
+    this.sendError(code, message, replyTo);
+    this.close(closeCode, code);
+  }
+
   private rejectAndClose(code: ErrorCode, message: string, replyTo?: string): void {
     this.sendError(code, message, replyTo);
-    this.close(CLOSE_CODE_BY_ERROR[code], code);
+    this.close(CLOSE_CODE_BY_ERROR[code] ?? CLOSE_CODES.INTERNAL_ERROR, code);
   }
 
   private send(message: ServerMessage): void {
@@ -226,6 +262,7 @@ export class Connection {
     this.clearHandshakeTimer();
     this.clearForceCloseTimer();
     this.heartbeat.stop();
+    this.cleanupVoiceMembership();
     this.logger.info('connection_closed', {
       connectionId: this.id,
       code,
@@ -233,6 +270,31 @@ export class Connection {
     });
     this.onClosed(this);
     this.resolveClosed();
+  }
+
+  /**
+   * If a WebSocket disappears — however it disappears, explicit `voice:leave` or not — the
+   * participant must not linger in server state, and remaining channel members must learn they
+   * left. This never waits for an explicit leave message.
+   */
+  private cleanupVoiceMembership(): void {
+    const left = this.voiceRegistry.leave(this.id);
+    if (!left) return;
+
+    this.logger.info('voice_left_on_disconnect', {
+      connectionId: this.id,
+      channelId: left.channelId,
+      participantId: left.participantId,
+    });
+
+    for (const memberConnectionId of left.remainingMemberConnectionIds) {
+      this.deliverToConnection(memberConnectionId, {
+        type: 'voice:participant-left',
+        id: randomUUID(),
+        channelId: left.channelId,
+        participantId: left.participantId,
+      });
+    }
   }
 
   private clearHandshakeTimer(): void {

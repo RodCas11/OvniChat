@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc -b --pretty false",
+    "e2e:voice-smoke": "node scripts/e2e-voice-smoke.mjs",
     "package": "electron-forge package",
     "smoke": "node scripts/smoke.mjs",
     "start": "electron-forge start",
@@ -25,6 +26,10 @@
     "vite": "7.3.6"
   },
   "dependencies": {
+    "@disco-voador/config": "workspace:*",
+    "@disco-voador/media-core": "workspace:*",
+    "@disco-voador/protocol": "workspace:*",
+    "@disco-voador/rtc-core": "workspace:*",
     "react": "19.2.8",
     "react-dom": "19.2.8"
   }

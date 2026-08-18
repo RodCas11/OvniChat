@@ -59,7 +59,7 @@ export function resolveRendererFilePath(rendererDir: string, requestUrl: string)
   return resolved;
 }
 
-export function registerAppProtocolHandler(rendererDir: string): void {
+export function registerAppProtocolHandler(rendererDir: string, realtimeOrigin: string): void {
   protocol.handle(APP_PROTOCOL_SCHEME, async (request) => {
     const filePath = resolveRendererFilePath(rendererDir, request.url);
     if (!filePath) {
@@ -68,7 +68,7 @@ export function registerAppProtocolHandler(rendererDir: string): void {
 
     const fileResponse = await net.fetch(pathToFileURL(filePath).toString());
     const headers = new Headers(fileResponse.headers);
-    headers.set('Content-Security-Policy', buildContentSecurityPolicy({}));
+    headers.set('Content-Security-Policy', buildContentSecurityPolicy({ realtimeOrigin }));
     headers.set('X-Content-Type-Options', 'nosniff');
     headers.set('Referrer-Policy', 'no-referrer');
     return new Response(fileResponse.body, {

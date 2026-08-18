@@ -26,7 +26,11 @@ describe('preload bridge', () => {
   it('never exposes ipcRenderer, generic channels, or a send/invoke passthrough', () => {
     const api = exposed.get('desktopApp') as Record<string, unknown>;
 
-    expect(Object.keys(api)).toEqual(['getVersionInfo']);
+    expect(Object.keys(api).sort()).toEqual([
+      'getE2EVoiceConfig',
+      'getRealtimeConfig',
+      'getVersionInfo',
+    ]);
     expect(api['ipcRenderer']).toBeUndefined();
     expect(api['invoke']).toBeUndefined();
     expect(api['send']).toBeUndefined();
@@ -39,5 +43,21 @@ describe('preload bridge', () => {
 
     expect(invoke).toHaveBeenCalledWith(IPC_CHANNELS.getVersionInfo);
     expect(result).toMatchObject({ appVersion: '0.0.0' });
+  });
+
+  it('getRealtimeConfig invokes the explicit versioned channel with no attacker-controlled arguments', async () => {
+    const api = exposed.get('desktopApp') as { getRealtimeConfig: () => Promise<unknown> };
+
+    await api.getRealtimeConfig();
+
+    expect(invoke).toHaveBeenCalledWith(IPC_CHANNELS.getRealtimeConfig);
+  });
+
+  it('getE2EVoiceConfig invokes the explicit versioned channel with no attacker-controlled arguments', async () => {
+    const api = exposed.get('desktopApp') as { getE2EVoiceConfig: () => Promise<unknown> };
+
+    await api.getE2EVoiceConfig();
+
+    expect(invoke).toHaveBeenCalledWith(IPC_CHANNELS.getE2EVoiceConfig);
   });
 });

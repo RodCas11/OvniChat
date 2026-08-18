@@ -2,16 +2,19 @@
 
 Canonical contracts live in code at [`packages/protocol/src/`](../../packages/protocol/src/); this
 document explains the design and is not itself authoritative — the schemas are. See
-[`docs/ARCHITECTURE.md`](../ARCHITECTURE.md) for how `services/realtime` fits the wider system and
+[`docs/ARCHITECTURE.md`](../ARCHITECTURE.md) for how `services/realtime` fits the wider system,
 [`docs/tasks/T2_REALTIME_PROTOCOL.md`](../tasks/T2_REALTIME_PROTOCOL.md) for the task that
-implemented this.
+implemented the connection foundation this document covers, and
+[`WEBRTC_VOICE.md`](WEBRTC_VOICE.md) / [`docs/tasks/T3_VOICE_WEBRTC.md`](../tasks/T3_VOICE_WEBRTC.md)
+for the voice/WebRTC signaling this foundation now also carries.
 
 ## Scope
 
-T2 defines the connection/handshake/liveness foundation only: `client:hello`, `client:ping`,
-`server:hello`, `server:pong`, `server:error`. It carries no presence, signaling, voice, text, or
-authentication semantics — those are later tasks building on this same envelope and versioning
-strategy (see [Future extension](#future-extension)).
+This document covers the connection/handshake/liveness envelope T2 defined: `client:hello`,
+`client:ping`, `server:hello`, `server:pong`, `server:error`. Voice signaling (`voice:*`,
+`webrtc:*`) was added in T3 on top of this same envelope and versioning strategy without changing
+it — see [`WEBRTC_VOICE.md`](WEBRTC_VOICE.md) for that message surface's own design. Text chat
+remains a later task (T7, see [Future extension](#future-extension)).
 
 ## Transport
 
@@ -233,16 +236,31 @@ connections up to the cap. A production deployment fronted by a reverse proxy (s
 
 ## Future extension
 
-The envelope and versioning strategy are designed so later tasks can add message types without
-redesigning the foundation — for example (not implemented in T2):
+The envelope and versioning strategy were designed so later tasks could add message types without
+redesigning the foundation, and T3 is the first proof of that:
 
 ```text
-T3  voice:join, voice:leave, webrtc:offer, webrtc:answer, webrtc:ice-candidate
-T7  text:join, text:message-send, text:message-created
+T3  voice:join, voice:leave, voice:joined, voice:left, voice:participant-joined,
+    voice:participant-left, voice:catalog, webrtc:offer, webrtc:answer,
+    webrtc:ice-candidate   — implemented, see architecture/WEBRTC_VOICE.md
+T7  text:join, text:message-send, text:message-created   — not yet implemented
 ```
 
-Each new message type is its own schema added to the relevant discriminated union in
-`packages/protocol`, following the same rules: bounded fields, an explicit direction, and coverage
-by the same `error-then-close` policy for anything that fails validation. Presence beyond raw
-connection lifecycle ("a socket is connected" is not "a user is online") and authentication/session
-identity are explicitly out of scope until a task introduces an account model.
+T3 needed no envelope or versioning change — every new message is its own schema added to the
+relevant discriminated union in `packages/protocol`, following the same rules this document already
+established: bounded fields, an explicit direction, and coverage by the error-then-close policy —
+**except** that T3 introduced the protocol's first genuinely **non-fatal** error codes
+(`CHANNEL_NOT_FOUND`, `NOT_IN_VOICE_CHANNEL`, `SIGNALING_TARGET_INVALID`): these send a
+`server:error` but do **not** close the connection, unlike every T2 error code. Whether a code is
+fatal is a single lookup (`CLOSE_CODE_BY_ERROR` in `services/realtime/src/connection.ts`, a
+`Partial<Record<ErrorCode, number>>` — presence of an entry means fatal) rather than a
+separately-maintained flag, so this is structurally enforced rather than convention. The rationale:
+T2's small protocol surface meant a well-behaved client should never trigger its errors in normal
+operation, but T3's signaling errors (e.g. signaling a participant who left a moment ago — a benign
+race, not misbehavior) are expected to happen during ordinary use and must not tear down the whole
+voice session.
+
+Presence beyond raw connection lifecycle ("a socket is connected" is not "a user is online" — voice
+channel membership is closer to presence than T2's `connectionId` ever was, but it is still not an
+authenticated identity) and authentication/session identity remain out of scope until a task
+introduces an account model.

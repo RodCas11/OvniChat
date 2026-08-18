@@ -1,12 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 
-import { CLOSE_CODES } from '@disco-voador/protocol';
+import { CLOSE_CODES, type ServerMessage } from '@disco-voador/protocol';
 import { WebSocketServer, type WebSocket } from 'ws';
 
 import { Connection } from './connection.js';
 import type { RealtimeConfig } from './config.js';
 import { createNoopLogger, type Logger } from './logging.js';
+import { DEFAULT_VOICE_CHANNELS } from './voice/catalog.js';
+import { VoiceRegistry } from './voice/registry.js';
 
 export interface RealtimeServerAddress {
   readonly host: string;
@@ -35,7 +37,12 @@ export function createRealtimeServer(
 ): RealtimeServerHandle {
   const logger = deps.logger ?? createNoopLogger();
   const connections = new Map<string, Connection>();
+  const voiceRegistry = new VoiceRegistry(DEFAULT_VOICE_CHANNELS);
   let wss: WebSocketServer | undefined;
+
+  function deliverToConnection(connectionId: string, message: ServerMessage): void {
+    connections.get(connectionId)?.deliver(message);
+  }
 
   function handleConnection(socket: WebSocket): void {
     if (connections.size >= config.maxConnections) {
@@ -57,9 +64,16 @@ export function createRealtimeServer(
       return;
     }
 
-    const connection = new Connection(socket, config, logger, (closed) => {
-      connections.delete(closed.id);
-    });
+    const connection = new Connection(
+      socket,
+      config,
+      logger,
+      voiceRegistry,
+      deliverToConnection,
+      (closed) => {
+        connections.delete(closed.id);
+      },
+    );
     connections.set(connection.id, connection);
     logger.info('connection_opened', { connectionId: connection.id });
   }

@@ -1,2 +1,6 @@
-/** T0 marker only. Semantic media source abstractions begin with media feature tasks. */
-export const mediaCoreStatus = 'not-implemented' as const;
+export {
+  MicrophoneAccessError,
+  classifyMicrophoneErrorReason,
+  type MicrophoneErrorReason,
+} from './microphone-errors.js';
+export { acquireMicrophone, type Microphone, type MicrophoneConstraints } from './microphone.js';

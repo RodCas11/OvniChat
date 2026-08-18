@@ -1,7 +1,9 @@
 # Target architecture
 
-> This document describes the intended architecture. The Electron desktop shell (T1) and the
-> realtime connection/protocol foundation (T2) are implemented; see
+> This document describes the intended architecture. The Electron desktop shell (T1), the realtime
+> connection/protocol foundation (T2), and voice channels/microphone/P2P WebRTC (T3, implemented and
+> tested but pending live two-instance verification — see
+> [`tasks/T3_VOICE_WEBRTC.md`](tasks/T3_VOICE_WEBRTC.md)) exist; see
 > [`tasks/STATUS.md`](tasks/STATUS.md) for what remains a marker or is not yet started. Treat any
 > capability this document describes as unimplemented unless STATUS.md says otherwise.
 
@@ -121,16 +123,16 @@ reaches domain logic unvalidated. The shared protocol package is canonical; clie
 hand-written copies are prohibited. Full protocol design:
 [`architecture/REALTIME_PROTOCOL.md`](architecture/REALTIME_PROTOCOL.md).
 
-Presence, voice-signaling, and text-chat remain unimplemented internal modules for later tasks
-(T3+, T7) to add alongside the connection module T2 built:
+Voice signaling was added in T3 alongside the connection module T2 built; presence beyond raw
+connection lifecycle and text-chat remain unimplemented internal modules for later tasks (T7):
 
 ```text
 services/realtime/src/
   connection.ts, connection-state.ts   # T2 — implemented
   protocol-handlers.ts, heartbeat.ts   # T2 — implemented
   rate-limiter.ts, config.ts, logging.ts, server.ts, index.ts   # T2 — implemented
+  voice/catalog.ts, voice/registry.ts  # T3 — implemented
   presence/          # not yet implemented
-  voice-signaling/    # not yet implemented
   text-chat/          # not yet implemented
 ```
 
@@ -150,39 +152,53 @@ No application schema or database code exists in T0.
 
 ## RTC transport strategy
 
-The first media path is P2P, likely a small-room mesh. Screen sharing fan-out makes an SFU valuable
-at larger participant counts, so UI/application state must talk in terms of participants and
-semantic publications rather than peer-mesh internals.
+T3 implemented the first media path: P2P, one `RTCPeerConnection` per remote participant (a small-room
+mesh). Screen sharing fan-out (T5) will make an SFU valuable at larger participant counts, so
+UI/application state talks in terms of participants and semantic publications rather than peer-mesh
+internals — see [`architecture/WEBRTC_VOICE.md`](architecture/WEBRTC_VOICE.md) for the full design,
+including offer/answer ownership, ICE candidate queueing, and the mesh-teardown-vs-mid-session-removal
+distinction.
 
-Conceptual, non-binding seam:
+Implemented seam (`packages/rtc-core/src/types.ts`):
 
 ```ts
-type MediaSourceKind = 'microphone' | 'camera' | 'screen-video' | 'screen-audio';
-
-interface RtcTransport {
-  connect(session: SessionDescriptor): Promise<void>;
-  publish(source: MediaPublication): Promise<PublicationId>;
-  unpublish(publicationId: PublicationId): Promise<void>;
-  close(): Promise<void>;
+interface MediaTransport {
+  addParticipant(participantId: ParticipantId, role: 'initiator' | 'responder'): void;
+  removeParticipant(participantId: ParticipantId): void;
+  handleRemoteOffer(participantId: ParticipantId, sdp: string): Promise<void>;
+  handleRemoteAnswer(participantId: ParticipantId, sdp: string): Promise<void>;
+  handleRemoteIceCandidate(
+    participantId: ParticipantId,
+    candidate: RTCIceCandidateInit | null,
+  ): Promise<void>;
+  publishTrack(track: MediaStreamTrack): void;
+  unpublishTrack(track: MediaStreamTrack): void;
+  getStats(participantId: ParticipantId): Promise<RTCStatsReport | undefined>;
+  on<K extends keyof MediaTransportEvents>(event: K, listener: MediaTransportEvents[K]): void;
+  off<K extends keyof MediaTransportEvents>(event: K, listener: MediaTransportEvents[K]): void;
+  closeAll(): void;
 }
 ```
 
-T3 must refine this against a real vertical slice. Do not add this exact interface merely because
-it appears here. Preserve the seam: mesh-specific peer creation, transceivers, negotiation, and
-fan-out must not leak into React components.
+`P2PMeshTransport` is the first (and, for T3, only) implementation. A future SFU-backed transport
+implements the same interface without any caller (Renderer) change — mesh-specific peer creation,
+transceivers, negotiation, and fan-out do not leak into React components.
 
 ## Semantic media-source model
 
 ```text
-microphone    independent audio source
-camera        independent video source
-screen-video  selected monitor/window video source
-screen-audio  optional system or process-tree audio source
+microphone    independent audio source   — implemented (T3)
+camera        independent video source   — not yet implemented (T4)
+screen-video  selected monitor/window video source   — not yet implemented (T5)
+screen-audio  optional system or process-tree audio source   — not yet implemented (T5/T6)
 ```
 
 The target supports all four simultaneously. A camera track must not be replaced by a screen track;
-starting or stopping screen capture must not stop voice. Track end, mute, source replacement, and
-cleanup belong to the source/transport lifecycle, while UI observes semantic state.
+starting or stopping screen capture must not stop voice — T3 already establishes this for
+microphone: muting sets `track.enabled = false` (never stops/reacquires the device), and joining/
+leaving a screen share (once implemented) must not touch the voice `RTCPeerConnection`s at all.
+Track end, mute, source replacement, and cleanup belong to the source/transport lifecycle, while UI
+observes semantic state.
 
 ## Windows audio stages
 

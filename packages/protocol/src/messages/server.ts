@@ -2,6 +2,18 @@ import { z } from 'zod';
 
 import { messageIdSchema } from '../envelope.js';
 import { errorCodeSchema } from '../errors.js';
+import {
+  serverWebrtcAnswerMessageSchema,
+  serverWebrtcIceCandidateMessageSchema,
+  serverWebrtcOfferMessageSchema,
+} from './webrtc.js';
+import {
+  serverVoiceCatalogMessageSchema,
+  serverVoiceJoinedMessageSchema,
+  serverVoiceLeftMessageSchema,
+  serverVoiceParticipantJoinedMessageSchema,
+  serverVoiceParticipantLeftMessageSchema,
+} from './voice.js';
 
 /**
  * `server:hello` answers a successful handshake. It carries only what proves negotiation
@@ -52,6 +64,14 @@ export const serverMessageSchema = z.discriminatedUnion('type', [
   serverHelloMessageSchema,
   serverPongMessageSchema,
   serverErrorMessageSchema,
+  serverVoiceCatalogMessageSchema,
+  serverVoiceJoinedMessageSchema,
+  serverVoiceLeftMessageSchema,
+  serverVoiceParticipantJoinedMessageSchema,
+  serverVoiceParticipantLeftMessageSchema,
+  serverWebrtcOfferMessageSchema,
+  serverWebrtcAnswerMessageSchema,
+  serverWebrtcIceCandidateMessageSchema,
 ]);
 
 export type ServerMessage = z.infer<typeof serverMessageSchema>;

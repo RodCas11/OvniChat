@@ -45,6 +45,18 @@ importers:
 
   apps/desktop:
     dependencies:
+      '@disco-voador/config':
+        specifier: workspace:*
+        version: link:../../packages/config
+      '@disco-voador/media-core':
+        specifier: workspace:*
+        version: link:../../packages/media-core
+      '@disco-voador/protocol':
+        specifier: workspace:*
+        version: link:../../packages/protocol
+      '@disco-voador/rtc-core':
+        specifier: workspace:*
+        version: link:../../packages/rtc-core
       react:
         specifier: 19.2.8
         version: 19.2.8

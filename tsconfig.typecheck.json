@@ -15,7 +15,9 @@
     // and does require a prior build of the packages it imports.
     "paths": {
       "@disco-voador/config": ["./packages/config/src/index.ts"],
-      "@disco-voador/protocol": ["./packages/protocol/src/index.ts"]
+      "@disco-voador/media-core": ["./packages/media-core/src/index.ts"],
+      "@disco-voador/protocol": ["./packages/protocol/src/index.ts"],
+      "@disco-voador/rtc-core": ["./packages/rtc-core/src/index.ts"]
     }
   },
   "include": [
