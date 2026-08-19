@@ -56,16 +56,33 @@ enumeration (a stale/previous-enumeration id is rejected), a successful selectio
 cached native source list before granting (never trusting the sanitized data the Renderer holds),
 the request's origin is checked, and no source ever satisfies a request without an explicit prior
 `selectScreenShareSource` call from a trusted sender — there is no default/first-enumerated-source
-grant. Audio is never included in the grant (`audio` is never passed to the callback); system/game
-audio capture is out of scope until a future task. A researched, documented residual finding
-(`permissions.ts`'s `isDisplayCaptureRequest` doc comment) about a legacy `chromeMediaSource:
-'screen'` `getUserMedia()` constraint form that does not route through
-`setDisplayMediaRequestHandler` at all is flagged for ongoing `security-reviewer` attention — this
-app's Renderer never invokes that legacy form itself, and is defended in depth against reaching a
-state where it could (`sandbox: true`, `contextIsolation: true`, `script-src 'self'` CSP, no Node/
-filesystem exposure through Preload), but the residual risk is documented rather than silently
-accepted. Source titles/names are rendered as plain text content only, never interpolated into
-markup/attributes, and are not logged (see `ScreenSourcePicker.tsx`).
+grant. A researched, documented residual finding (`permissions.ts`'s `isDisplayCaptureRequest` doc
+comment) about a legacy `chromeMediaSource: 'screen'` `getUserMedia()` constraint form that does not
+route through `setDisplayMediaRequestHandler` at all is flagged for ongoing `security-reviewer`
+attention — this app's Renderer never invokes that legacy form itself, and is defended in depth
+against reaching a state where it could (`sandbox: true`, `contextIsolation: true`, `script-src
+'self'` CSP, no Node/filesystem exposure through Preload), but the residual risk is documented
+rather than silently accepted. Source titles/names are rendered as plain text content only, never
+interpolated into markup/attributes, and are not logged (see `ScreenSourcePicker.tsx`).
+
+**Implemented (T6 system audio):** screen sharing may optionally also grant Windows system-audio
+loopback (`audio: 'loopback'` — Electron's documented, Windows-only mechanism confirmed against
+this app's pinned Electron version's own type definitions; never the legacy `chromeMediaSource`
+path) — never silently, only when the user's explicit per-share "Share audio" choice, the
+platform's own confirmation the Renderer's `getDisplayMedia()` call actually requested audio
+(`request.audioRequested`), and `process.platform === 'win32'` all independently agree. That choice
+is armed in the same single-use `pendingSelection` as the video source (`{sourceId, shareAudio}`),
+consumed by the same synchronous, single-use, origin-checked `setDisplayMediaRequestHandler` path
+above — there is no separate, independently-timed audio permission step. A T6 security review noted
+that the pre-existing T5 residual race (a second concurrent `getDisplayMedia()` call from an
+already-arbitrary-script-execution Renderer racing to consume an armed selection before the
+legitimate caller does) now can also yield the audio grant when the legitimately-armed selection
+requested one, not only video — the same precondition and defense-in-depth already documented above
+apply; this does not weaken the three-way check itself, only widens what an already-documented race
+could obtain. Microphone is now announced through the same `media:track-source` mechanism camera and
+screen-video already used (`packages/protocol`'s `TrackSource` gained `'microphone'`/`'screen-audio'`
+members) — server-side forwarding continues to derive `sourceParticipantId` from the sender's own
+voice-registry membership, never from client-supplied data, unaffected by the schema widening.
 
 **Test-only automation flags, and why they can't leak into a real build:** `DISCO_VOADOR_E2E_FAKE_MEDIA`
 (Chromium's fake-microphone-and-camera command-line switches — the same single switch provides
@@ -105,13 +122,16 @@ between two connections confirmed to be in the _same_ voice channel
 channel, or a self-targeted signal are all rejected without closing the connection (non-fatal, per
 the closed error-code-to-close-code mapping in `packages/protocol/src/errors.ts`). SDP and ICE
 candidates are bounded opaque strings/structures the server never parses semantically — only their
-size is bounded (24576 / 1024 bytes; the SDP bound was raised from an original 8192 in T5 after live
-testing found a genuine 3-media-source offer exceeding it — see
-`packages/protocol/src/messages/webrtc.ts`'s `SDP_MAX_LENGTH` doc comment) so a hostile client
-cannot smuggle an oversized payload inside an otherwise-small signaling message. The realtime
-service's transport-level `REALTIME_MAX_MESSAGE_BYTES` (`services/realtime/src/config.ts`) was
-raised alongside it (16 KiB → 32 KiB) and deliberately kept with headroom above the SDP bound, not
-sized identically to it, once JSON envelope overhead and `\r\n` escaping are accounted for.
+size is bounded (65536 / 1024 bytes; the SDP bound was raised from an original 8192 in T5 after live
+testing found a genuine 3-media-source offer exceeding it, then raised again in T6 after live
+testing found a genuine 4-media-source offer (with a screen-share re-share cycle) measuring 25,235
+characters against the T5-era 24576 bound — see `packages/protocol/src/messages/webrtc.ts`'s
+`SDP_MAX_LENGTH` doc comment) so a hostile client cannot smuggle an oversized payload inside an
+otherwise-small signaling message. The realtime service's transport-level
+`REALTIME_MAX_MESSAGE_BYTES` (`services/realtime/src/config.ts`) was raised alongside it each time
+(16 KiB → 32 KiB for T5, 32 KiB → 80 KiB for T6) and deliberately kept with headroom above the SDP
+bound, not sized identically to it, once JSON envelope overhead and `\r\n` escaping are accounted
+for.
 
 **Implemented (T5):** `media:track-source` (the semantic camera-vs-screen-video identity
 announcement — see `docs/architecture/WEBRTC_SCREEN_SHARE.md`) follows the exact same

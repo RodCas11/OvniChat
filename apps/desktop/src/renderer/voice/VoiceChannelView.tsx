@@ -51,9 +51,9 @@ export function VoiceChannelView({
     setDisplayName(event.target.value);
   }
 
-  function handleScreenShareSelected(quality: ScreenQualityPreset): void {
+  function handleScreenShareSelected(quality: ScreenQualityPreset, shareAudio: boolean): void {
     setShowScreenPicker(false);
-    actions.enableScreenShare(quality);
+    actions.enableScreenShare(quality, shareAudio);
   }
 
   // Automated two-Electron-instance voice smoke test only (see
@@ -99,27 +99,31 @@ export function VoiceChannelView({
   // human clicking "Share" in `ScreenSourcePicker` would. Extracted into a stable `useCallback`
   // (rather than an inline effect body) so the re-share effect below can reuse the exact same
   // sequence as a dependency both effects can list honestly.
-  const autoStartScreenShare = useCallback(async (): Promise<void> => {
-    try {
-      const sources = await window.desktopApp.listScreenShareSources();
-      const sourceId = firstScreenSourceId(sources);
-      if (!sourceId) {
-        console.error('E2E screen-share auto-select found no screen source');
-        return;
+  const autoStartScreenShare = useCallback(
+    async (shareAudio: boolean): Promise<void> => {
+      try {
+        const sources = await window.desktopApp.listScreenShareSources();
+        const sourceId = firstScreenSourceId(sources);
+        if (!sourceId) {
+          console.error('E2E screen-share auto-select found no screen source');
+          return;
+        }
+        const accepted = await window.desktopApp.selectScreenShareSource(sourceId, shareAudio);
+        if (!accepted) {
+          console.error('E2E screen-share auto-select: selectScreenShareSource was rejected');
+          return;
+        }
+        // 'standard' (720p30), not the default 'high' (1080p30): a lighter quality preset leaves
+        // more headroom on the publishing instance, which is still doing real screen (and,
+        // optionally, system-audio loopback) capture even in T5 stabilization's
+        // one-publisher/one-viewer topology.
+        actions.enableScreenShare('standard', shareAudio);
+      } catch (error) {
+        console.error('E2E screen-share auto-select failed', error);
       }
-      const accepted = await window.desktopApp.selectScreenShareSource(sourceId);
-      if (!accepted) {
-        console.error('E2E screen-share auto-select: selectScreenShareSource was rejected');
-        return;
-      }
-      // 'standard' (720p30), not the default 'high' (1080p30): a lighter quality preset leaves more
-      // headroom on the publishing instance, which is still doing real screen capture even in T5
-      // stabilization's one-publisher/one-viewer topology.
-      actions.enableScreenShare('standard');
-    } catch (error) {
-      console.error('E2E screen-share auto-select failed', error);
-    }
-  }, [actions]);
+    },
+    [actions],
+  );
 
   const autoScreenShareAttempted = useRef(false);
   useEffect(() => {
@@ -130,7 +134,11 @@ export function VoiceChannelView({
     if (e2eAutoJoin.autoCamera && !state.cameraEnabled) return;
 
     autoScreenShareAttempted.current = true;
-    void autoStartScreenShare();
+    // This scenario (`e2e:screen-smoke`) stays screen-video-only, unchanged from T5 —
+    // `e2e:screen-audio-smoke` is a separate, dedicated scenario (see the
+    // `screenAudioScenarioStarted` effect below) so this one's behavior/gate is not disturbed by
+    // the new source.
+    void autoStartScreenShare(false);
   }, [e2eAutoJoin, voiceReady, state.cameraEnabled, autoStartScreenShare]);
 
   // T5 stabilization: local screen-share lifecycle markers — proof that *this* instance's own
@@ -162,6 +170,23 @@ export function VoiceChannelView({
       console.info(`E2E_LOCAL_SCREEN_OFF:${String(screenShareCycleCount.current)}`);
     }
   }, [e2eAutoJoin, state.screenSharingState]);
+
+  // T6: local screen-*audio* lifecycle marker, numbered per the *same* share cycle counter above —
+  // proof that a given share cycle specifically did (or did not) include audio, distinguishing an
+  // audio-off cycle from an audio-on one for the orchestrating script.
+  const lastReportedScreenShareAudioActive = useRef(false);
+  useEffect(() => {
+    if (!e2eAutoJoin) return;
+    const previous = lastReportedScreenShareAudioActive.current;
+    lastReportedScreenShareAudioActive.current = state.screenShareAudioActive;
+
+    if (state.screenShareAudioActive && !previous) {
+      console.info(`E2E_LOCAL_SCREEN_AUDIO_ON:${String(screenShareCycleCount.current)}`);
+    }
+    if (!state.screenShareAudioActive && previous) {
+      console.info(`E2E_LOCAL_SCREEN_AUDIO_OFF:${String(screenShareCycleCount.current)}`);
+    }
+  }, [e2eAutoJoin, state.screenShareAudioActive]);
 
   const reportedConnected = useRef(new Set<string>());
   useEffect(() => {
@@ -213,6 +238,13 @@ export function VoiceChannelView({
   }, [e2eAutoJoin, state.remoteCameraStreams, state.selfParticipantId, state.participants]);
 
   const probedScreenStreams = useRef(new Set<string>());
+  // T6: counts this viewer's own *observed* screen-share appearances, independent of the
+  // publisher's local cycle count — lets `E2E_SCREEN_AUDIO_ABSENT` below be tied to a specific
+  // observed cycle (`main/index.ts`'s exit-watcher requires cycle 1 specifically, the audio-off
+  // cycle) rather than accepted from any cycle, since a later audio-*on* cycle's video can settle
+  // one render tick before its audio does, which would otherwise make this check ambiguous evidence
+  // for "audio was genuinely off," not just "hadn't arrived yet at this instant."
+  const viewerScreenCycleCount = useRef(0);
   useEffect(() => {
     if (!e2eAutoJoin) return;
     const stillPresent = new Set(state.remoteScreenStreams.keys());
@@ -249,7 +281,23 @@ export function VoiceChannelView({
     for (const [participantId, stream] of state.remoteScreenStreams) {
       if (!probedScreenStreams.current.has(participantId)) {
         probedScreenStreams.current.add(participantId);
+        viewerScreenCycleCount.current += 1;
         probeRemoteScreenFrames(stream, participantId, state.selfParticipantId);
+        // T6: recorded at the same moment screen-video is first confirmed present for this cycle
+        // — if screen-audio has not also appeared yet, this cycle is (at this instant) audio-less.
+        // Tagged with this viewer's own observed cycle number so the exit-watcher can require it
+        // specifically for cycle 1 (the audio-off cycle) rather than accept it from any cycle — a
+        // later audio-on cycle's video can settle one render tick before its audio does, which
+        // would otherwise be ambiguous evidence. Combined with `E2E_SCREEN_AUDIO_OK` below (which
+        // the probe keeps retrying for up to its own timeout window), the orchestrating script
+        // distinguishes an audio-off cycle from an audio-on one using the *viewer's* own
+        // observation, not just the publisher's stated intent — see
+        // `docs/architecture/WEBRTC_SCREEN_AUDIO.md`'s "E2E strategy".
+        if (!state.remoteScreenAudioStreams.has(participantId)) {
+          console.info(
+            `E2E_SCREEN_AUDIO_ABSENT:${participantId}:cycle=${String(viewerScreenCycleCount.current)}`,
+          );
+        }
       }
     }
   }, [
@@ -257,9 +305,38 @@ export function VoiceChannelView({
     state.remoteScreenStreams,
     state.remoteAudioStreams,
     state.remoteCameraStreams,
+    state.remoteScreenAudioStreams,
     state.selfParticipantId,
     state.participants,
   ]);
+
+  // T6: mirrors `probedScreenStreams` above, for screen-*audio* — a deliberately separate marker
+  // family (`E2E_SCREEN_AUDIO_OK`/`E2E_SCREEN_AUDIO_SILENT`, via `probeRemoteAudioLevel`'s
+  // `markerPrefix`) from microphone's `E2E_AUDIO_LEVEL_OK`/`E2E_AUDIO_LEVEL_SILENT`, so a
+  // microphone-path success can never be mistaken for screen-audio proof (see
+  // `docs/architecture/WEBRTC_SCREEN_AUDIO.md`'s "Media identity"). `E2E_SCREEN_AUDIO_ENDED`
+  // mirrors camera/screen-video's own ended-with-healthy-peer proof: screen-audio disappearing
+  // must not disconnect the peer or affect voice/camera/screen-video.
+  const probedScreenAudioStreams = useRef(new Set<string>());
+  useEffect(() => {
+    if (!e2eAutoJoin) return;
+    const stillPresent = new Set(state.remoteScreenAudioStreams.keys());
+    for (const participantId of probedScreenAudioStreams.current) {
+      if (!stillPresent.has(participantId)) {
+        probedScreenAudioStreams.current.delete(participantId);
+        const peerState =
+          state.participants.find((p) => p.participantId === participantId)?.connectionState ??
+          'unknown';
+        console.info(`E2E_SCREEN_AUDIO_ENDED:${participantId}:peerState=${peerState}`);
+      }
+    }
+    for (const [participantId, stream] of state.remoteScreenAudioStreams) {
+      if (!probedScreenAudioStreams.current.has(participantId)) {
+        probedScreenAudioStreams.current.add(participantId);
+        probeRemoteAudioLevel(stream, participantId, 'E2E_SCREEN_AUDIO');
+      }
+    }
+  }, [e2eAutoJoin, state.remoteScreenAudioStreams, state.participants]);
 
   // T4 automated camera smoke test only: auto-disables the camera again a fixed delay after
   // enabling it, so the two-instance smoke can deterministically exercise and prove camera-off
@@ -316,12 +393,146 @@ export function VoiceChannelView({
 
     autoScreenShareReshareScheduled.current = true;
     const timer = setTimeout(() => {
-      void autoStartScreenShare();
+      void autoStartScreenShare(false);
     }, e2eAutoJoin.autoScreenShareReshareAfterMs);
     return () => {
       clearTimeout(timer);
     };
   }, [e2eAutoJoin, state.screenSharingState, autoStartScreenShare]);
+
+  // T6 automated screen-audio smoke test only (`e2e:screen-audio-smoke`) — both roles auto-deafen
+  // immediately once voice is stable, so this machine's own remote-audio playback never re-enters
+  // the publisher's system-audio loopback capture (same-machine feedback avoidance; deafen is
+  // local-playback-only, so the underlying tracks/probes stay fully live regardless — see
+  // `docs/architecture/WEBRTC_SCREEN_AUDIO.md`'s "Same-machine feedback" section).
+  const autoDeafenAttempted = useRef(false);
+  useEffect(() => {
+    if (!e2eAutoJoin?.autoScreenShareAudio || autoDeafenAttempted.current) return;
+    if (!voiceReady) return;
+
+    autoDeafenAttempted.current = true;
+    actions.setDeafened(true);
+    console.info('E2E_LOCAL_DEAFENED');
+  }, [e2eAutoJoin, voiceReady, actions]);
+
+  // T6 automated screen-audio smoke test only, publisher role: a continuous, deterministic,
+  // *real* audio source for the scenario's screen-audio proof to depend on — plays through the
+  // actual OS default audio output device via a normal `AudioContext` destination (never a fake
+  // device, never a `MediaStreamTrack` injected directly into rtc-core), so this instance's own
+  // Windows system-audio loopback capture (`main/screen-share.ts`) picks it up through the exact
+  // same production path a real user's shared system sound would take. See
+  // `docs/architecture/WEBRTC_SCREEN_AUDIO.md`'s "E2E strategy" section for why this is required
+  // (Chromium's fake-media-device switches only fake `getUserMedia` camera/microphone devices —
+  // there is no equivalent "fake loopback" switch to depend on instead).
+  const screenAudioToneStarted = useRef(false);
+  useEffect(() => {
+    if (!e2eAutoJoin?.autoScreenShareAudio || !e2eAutoJoin.autoScreenShare) return;
+    if (!voiceReady || screenAudioToneStarted.current) return;
+    screenAudioToneStarted.current = true;
+
+    const AudioContextCtor =
+      window.AudioContext ??
+      (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+    const audioContext = new AudioContextCtor();
+    const oscillator = audioContext.createOscillator();
+    oscillator.frequency.value = 440;
+    oscillator.connect(audioContext.destination);
+    oscillator.start();
+    console.info('E2E_LOCAL_TONE_STARTED');
+
+    return () => {
+      oscillator.stop();
+      void audioContext.close();
+    };
+  }, [e2eAutoJoin, voiceReady]);
+
+  // T6 automated screen-audio smoke test only, publisher role: the scripted phase sequence —
+  // share (audio off) -> stop -> share (audio on) -> mute mic -> unmute mic -> stop -> re-share
+  // (audio on) — proving, in order: video-only sharing still works, optional audio actually
+  // publishes when requested, microphone mute does not affect screen-audio, stopping cleans up
+  // both tracks, and re-sharing with audio works again. Explicit numbered phases via sequential
+  // `await`s (not a chain of independent timer effects) — this scenario has too many ordered steps
+  // for T5 stabilization's simpler single-timer-per-effect pattern to stay readable. Each phase's
+  // own wait is a starting value, not yet independently measured against this scenario's real
+  // negotiation/capture timing (see `docs/architecture/WEBRTC_SCREEN_AUDIO.md`'s "E2E strategy" —
+  // to be tuned from live measurement, following T5 stabilization's "measure, don't guess"
+  // discipline, once this scenario has actually been run).
+  const screenAudioScenarioStarted = useRef(false);
+  useEffect(() => {
+    if (!e2eAutoJoin?.autoScreenShareAudio || !e2eAutoJoin.autoScreenShare) return;
+    if (!voiceReady || screenAudioScenarioStarted.current) return;
+    screenAudioScenarioStarted.current = true;
+
+    const PHASE_WAIT_MS = 8000;
+    let cancelled = false;
+    const wait = (ms: number): Promise<void> =>
+      new Promise((resolve) => {
+        setTimeout(resolve, ms);
+      });
+
+    void (async () => {
+      // Phase 1: share screen, audio OFF.
+      await autoStartScreenShare(false);
+      await wait(PHASE_WAIT_MS);
+      if (cancelled) return;
+
+      // Phase 2: stop sharing.
+      actions.disableScreenShare();
+      await wait(PHASE_WAIT_MS);
+      if (cancelled) return;
+
+      // Phase 3: share screen, audio ON.
+      await autoStartScreenShare(true);
+      await wait(PHASE_WAIT_MS);
+      if (cancelled) return;
+
+      // Phase 4: mute microphone — screen-audio must be unaffected (Section 19's mute-independence
+      // requirement; see the viewer-side `screenAudioPostMuteProbed` effect below).
+      actions.setMuted(true);
+      console.info('E2E_LOCAL_MIC_MUTED');
+      await wait(PHASE_WAIT_MS);
+      if (cancelled) return;
+
+      // Phase 5: unmute microphone.
+      actions.setMuted(false);
+      console.info('E2E_LOCAL_MIC_UNMUTED');
+      await wait(PHASE_WAIT_MS);
+      if (cancelled) return;
+
+      // Phase 6: stop sharing (removes both screen-video and screen-audio; voice/peer must survive).
+      actions.disableScreenShare();
+      await wait(PHASE_WAIT_MS);
+      if (cancelled) return;
+
+      // Phase 7: re-share with audio ON — proves a second cycle still produces real decoded
+      // screen-video *and* screen-audio, guarding against stale mid/transceiver/sender state left
+      // over from the first cycle (mirrors T5 stabilization's screen-video-only re-share proof).
+      await autoStartScreenShare(true);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [e2eAutoJoin, voiceReady, actions, autoStartScreenShare]);
+
+  // T6 automated screen-audio smoke test only, viewer role: a second, later re-probe of the SAME
+  // still-active screen-audio stream, timed to land during the publisher's scripted mic-mute phase
+  // — proves screen-audio remains non-silent while the publisher's microphone is muted, using a
+  // distinct marker family (`E2E_SCREEN_AUDIO_POST_MUTE_OK`) so it can never be confused with the
+  // original `E2E_SCREEN_AUDIO_OK` proof. Fires once per participant's screen-audio appearance, not
+  // re-armed on every render (`screenAudioPostMuteProbed` guard).
+  const screenAudioPostMuteProbed = useRef(new Set<string>());
+  useEffect(() => {
+    if (!e2eAutoJoin?.autoScreenShareAudio || e2eAutoJoin.autoScreenShare) return; // viewer role only
+    for (const [participantId, stream] of state.remoteScreenAudioStreams) {
+      if (!screenAudioPostMuteProbed.current.has(participantId)) {
+        screenAudioPostMuteProbed.current.add(participantId);
+        setTimeout(() => {
+          probeRemoteAudioLevel(stream, participantId, 'E2E_SCREEN_AUDIO_POST_MUTE');
+        }, 12_000);
+      }
+    }
+  }, [e2eAutoJoin, state.remoteScreenAudioStreams]);
 
   return (
     <section>
@@ -394,7 +605,9 @@ export function VoiceChannelView({
             }}
           >
             {state.screenSharingState === 'sharing'
-              ? 'Stop sharing'
+              ? state.screenShareAudioActive
+                ? 'Stop sharing (+ audio)'
+                : 'Stop sharing'
               : state.screenSharingState === 'starting'
                 ? 'Starting…'
                 : 'Share screen'}
@@ -424,6 +637,19 @@ export function VoiceChannelView({
           {[...state.remoteAudioStreams.entries()].map(([participantId, stream]) => (
             <RemoteAudio
               key={participantId}
+              participantId={participantId}
+              stream={stream}
+              muted={state.deafened}
+            />
+          ))}
+
+          {/* T6: screen/system audio has its own independent playback ownership — a distinct
+              <audio> element per participant, never mixed into the microphone element above, even
+              though both are plain `RemoteAudio` instances. Deafen suppresses both the same way;
+              microphone mute never touches this map (see `docs/architecture/WEBRTC_SCREEN_AUDIO.md`). */}
+          {[...state.remoteScreenAudioStreams.entries()].map(([participantId, stream]) => (
+            <RemoteAudio
+              key={`screen-audio-${participantId}`}
               participantId={participantId}
               stream={stream}
               muted={state.deafened}

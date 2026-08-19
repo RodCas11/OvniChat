@@ -94,6 +94,22 @@ describe('loadDesktopConfig — T5 screen-share env vars', () => {
     ).toThrow();
   });
 
+  it('parses DISCO_VOADOR_E2E_VOICE_AUTO_SCREEN_SHARE_AUDIO=1 as true', () => {
+    const config = loadDesktopConfig({
+      ...baseEnv,
+      DISCO_VOADOR_E2E_VOICE_AUTO_SCREEN_SHARE: '1',
+      DISCO_VOADOR_E2E_VOICE_AUTO_SCREEN_SHARE_AUDIO: '1',
+    });
+
+    expect(config.e2eVoiceAutoJoin?.autoScreenShareAudio).toBe(true);
+  });
+
+  it('defaults autoScreenShareAudio to false when unset', () => {
+    const config = loadDesktopConfig(baseEnv);
+
+    expect(config.e2eVoiceAutoJoin?.autoScreenShareAudio).toBe(false);
+  });
+
   it('leaves e2eVoiceAutoJoin undefined (and the new fields unreachable) with no auto-join channel configured', () => {
     const config = loadDesktopConfig({ DISCO_VOADOR_E2E_VOICE_AUTO_SCREEN_SHARE: '1' });
 

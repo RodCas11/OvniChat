@@ -4,11 +4,16 @@ import { messageIdSchema } from '../envelope.js';
 import { participantIdSchema } from '../identifiers.js';
 
 /**
- * T5: once both camera and screen-video exist, `track.kind === 'video'` no longer identifies what
- * a video track actually shows — this is the discriminator that does. Deliberately excludes audio:
- * the microphone is the only audio source, so it has never needed one.
+ * T5 introduced this for video: once both camera and screen-video exist, `track.kind === 'video'`
+ * no longer identifies what a video track actually shows. T6 extends the same discriminator to
+ * audio for the identical reason: once both microphone and screen-audio exist, `track.kind ===
+ * 'audio'` no longer identifies what an audio track carries either — inferring "the only audio
+ * source is the microphone" (true through T5) or "first/second audio track" would be exactly the
+ * absence-/order-based inference this mechanism exists to avoid. `'microphone'` is therefore an
+ * explicit member here, announced through the same `media:track-source` message as every other
+ * source, not a special unannounced default.
  */
-export const trackSourceSchema = z.enum(['camera', 'screen-video']);
+export const trackSourceSchema = z.enum(['microphone', 'camera', 'screen-video', 'screen-audio']);
 export type TrackSource = z.infer<typeof trackSourceSchema>;
 
 /**

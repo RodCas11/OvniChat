@@ -99,6 +99,15 @@ const desktopConfigSchema = z.object({
     .int()
     .positive()
     .optional(),
+  // T6: automated two-Electron-instance screen-audio smoke test only (see
+  // `apps/desktop/scripts/e2e-screen-audio-smoke.mjs`) — arms the publisher-role scripted
+  // audio-on/off/mute sequence (see `VoiceChannelView.tsx`'s `autoScreenShareAudio` orchestration)
+  // and, on both roles, auto-deafens immediately after voice connects so this machine's own remote
+  // playback never re-enters the publisher's system-audio loopback capture (same-machine feedback
+  // avoidance — see `docs/architecture/WEBRTC_SCREEN_AUDIO.md`). Meaningless without
+  // `DISCO_VOADOR_E2E_VOICE_AUTO_SCREEN_SHARE=1` also set on the publisher instance. Same
+  // `!app.isPackaged` gating as everything else here.
+  DISCO_VOADOR_E2E_VOICE_AUTO_SCREEN_SHARE_AUDIO: z.enum(['1', '0']).optional(),
 });
 
 export interface DesktopConfig {
@@ -114,6 +123,7 @@ export interface DesktopConfig {
         readonly autoScreenShare: boolean;
         readonly autoScreenShareOffAfterMs: number | undefined;
         readonly autoScreenShareReshareAfterMs: number | undefined;
+        readonly autoScreenShareAudio: boolean;
       }
     | undefined;
 }
@@ -138,6 +148,7 @@ export function loadDesktopConfig(
           autoScreenShareOffAfterMs: parsed.DISCO_VOADOR_E2E_VOICE_AUTO_SCREEN_SHARE_OFF_MS,
           autoScreenShareReshareAfterMs:
             parsed.DISCO_VOADOR_E2E_VOICE_AUTO_SCREEN_SHARE_RESHARE_AFTER_MS,
+          autoScreenShareAudio: parsed.DISCO_VOADOR_E2E_VOICE_AUTO_SCREEN_SHARE_AUDIO === '1',
         }
       : undefined,
   };

@@ -101,6 +101,33 @@ describe('Peer — offer/answer role ownership', () => {
       { targetParticipantId: 'peer-1', sdp: 'fake-answer-sdp' },
     ]);
   });
+
+  it(
+    'T6 regression: a track published before the initial handshake (e.g. microphone, seeded before ' +
+      'the first offer/answer) has its mid reported even on the *responder* side, which only ever ' +
+      'answers and never offers for that initial cycle',
+    async () => {
+      // Live-found gap: `createAndSendOffer()` always called `reportLocalTrackMids()`, but
+      // `handleRemoteOffer()` (the responder's only path for the initial handshake) never did.
+      // Harmless as long as every track needing an announcement was added *after* the initial
+      // handshake (true for camera/screen, always user-enabled post-join, so their mids were always
+      // reported via a later renegotiation `createAndSendOffer()` regardless of role) — but T6 made
+      // microphone require the same announcement mechanism, and microphone is seeded *before* the
+      // peer connection is even created, landing it in the very first offer/answer cycle. A pure
+      // responder (this test) would previously never report its own microphone's mid at all.
+      const pc = new FakePeerConnection();
+      const signalingPort = createFakeSignalingPort();
+      const callbacks = createCallbacks();
+      const peer = new Peer('peer-1', 'responder', pc, signalingPort, callbacks);
+      const micTrack = fakeAudioTrack('mic-track');
+      peer.addTrack(micTrack); // seeded before any negotiation, mirroring P2PMeshTransport.addParticipant
+
+      await peer.handleRemoteOffer('remote-offer-sdp');
+
+      const micMidEvent = callbacks.localTrackMids.find((event) => event.track === micTrack);
+      expect(micMidEvent?.mid).toBeDefined();
+    },
+  );
 });
 
 describe('Peer — ICE candidate queueing', () => {

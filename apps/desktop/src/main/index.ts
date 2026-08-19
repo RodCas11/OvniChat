@@ -39,6 +39,8 @@ const isSmokeTest = process.env['DISCO_VOADOR_SMOKE_TEST'] === '1';
 const isE2EVoiceSmoke = process.env['DISCO_VOADOR_E2E_VOICE_SMOKE'] === '1' && !app.isPackaged;
 const isE2ECameraSmoke = process.env['DISCO_VOADOR_E2E_CAMERA_SMOKE'] === '1' && !app.isPackaged;
 const isE2EScreenSmoke = process.env['DISCO_VOADOR_E2E_SCREEN_SMOKE'] === '1' && !app.isPackaged;
+const isE2EScreenAudioSmoke =
+  process.env['DISCO_VOADOR_E2E_SCREEN_AUDIO_SMOKE'] === '1' && !app.isPackaged;
 
 function rendererDirectory(): string {
   return path.join(__dirname, '../renderer', MAIN_WINDOW_VITE_NAME);
@@ -296,6 +298,159 @@ function armE2EScreenSmokeViewerExit(window: BrowserWindow): void {
   });
 }
 
+/**
+ * Drives `apps/desktop/scripts/e2e-screen-audio-smoke.mjs` (T6). Mirrors
+ * `armE2EScreenSmokeExit`'s publisher/viewer split exactly — role inferred from this instance's own
+ * `autoScreenShare` config, one publisher (real screen *and* system-audio-loopback capture, no
+ * camera — this scenario is screen(+audio)-only) plus one pure viewer. See
+ * `docs/architecture/WEBRTC_SCREEN_AUDIO.md`'s "E2E strategy" section for the full scenario and the
+ * same-machine-feedback handling (both roles auto-deafen; see `VoiceChannelView.tsx`).
+ */
+function armE2EScreenAudioSmokeExit(window: BrowserWindow): void {
+  if (!isE2EScreenAudioSmoke) return;
+
+  if (config.e2eVoiceAutoJoin?.autoScreenShare === true) {
+    armE2EScreenAudioSmokePublisherExit(window);
+  } else {
+    armE2EScreenAudioSmokeViewerExit(window);
+  }
+}
+
+/**
+ * Publisher role: proves this instance's own local lifecycle progressed through the full scripted
+ * sequence — share (audio off) -> stop -> share (audio on) -> mute mic -> unmute mic -> stop ->
+ * re-share (audio on). `screen-on-2-audio`/`screen-on-3-reshare-audio` specifically require the
+ * *audio* marker (`E2E_LOCAL_SCREEN_AUDIO_ON:<n>`), not just the screen-on marker, so a run where
+ * video shared but audio silently failed to publish is reported as a distinct, diagnosable phase
+ * failure rather than passing on video alone.
+ */
+function armE2EScreenAudioSmokePublisherExit(window: BrowserWindow): void {
+  const phases: {
+    readonly name: string;
+    seen: boolean;
+    readonly match: (message: string) => boolean;
+  }[] = [
+    { name: 'peer-connected', seen: false, match: (m) => m.startsWith('E2E_PEER_CONNECTED:') },
+    { name: 'audio-baseline', seen: false, match: (m) => m.startsWith('E2E_AUDIO_LEVEL_OK:') },
+    { name: 'screen-on-1', seen: false, match: (m) => m.startsWith('E2E_LOCAL_SCREEN_ON:1') },
+    { name: 'screen-off-1', seen: false, match: (m) => m.startsWith('E2E_LOCAL_SCREEN_OFF:1') },
+    {
+      name: 'screen-on-2-audio',
+      seen: false,
+      match: (m) => m.startsWith('E2E_LOCAL_SCREEN_AUDIO_ON:2'),
+    },
+    { name: 'mic-muted', seen: false, match: (m) => m === 'E2E_LOCAL_MIC_MUTED' },
+    { name: 'mic-unmuted', seen: false, match: (m) => m === 'E2E_LOCAL_MIC_UNMUTED' },
+    { name: 'screen-off-2', seen: false, match: (m) => m.startsWith('E2E_LOCAL_SCREEN_OFF:2') },
+    {
+      name: 'screen-on-3-reshare-audio',
+      seen: false,
+      match: (m) => m.startsWith('E2E_LOCAL_SCREEN_AUDIO_ON:3'),
+    },
+  ];
+
+  const timeout = setTimeout(() => {
+    const reached = phases.filter((p) => p.seen).map((p) => p.name);
+    console.error(
+      `E2E_SCREEN_AUDIO_SMOKE_TIMEOUT (publisher): reached [${reached.join(', ')}] of [${phases.map((p) => p.name).join(', ')}]`,
+    );
+    app.exit(1);
+  }, 120_000);
+
+  window.webContents.on('console-message', (_event, _level, message) => {
+    console.info(`[renderer] ${message}`);
+    for (const phase of phases) {
+      if (!phase.seen && phase.match(message)) phase.seen = true;
+    }
+    if (phases.every((p) => p.seen)) {
+      clearTimeout(timeout);
+      console.info('E2E_SCREEN_AUDIO_SMOKE_OK');
+      // See `armE2ECameraSmokeExit`'s comment on the same pattern: avoid this side's connection
+      // disappearing before the viewer has finished proving the final reshare cycle.
+      setTimeout(() => app.exit(0), 5_000);
+    }
+  });
+}
+
+/**
+ * Viewer role: proves it actually received and decoded the publisher's screen-video *and*
+ * screen-audio (correctly distinguished from microphone and from each other), that screen-audio was
+ * genuinely absent during the audio-off cycle (not merely "never checked"), that microphone mute
+ * does not affect screen-audio (`screenAudioPostMuteOk`, sampled during the publisher's scripted
+ * mute window), that stopping screen removes both tracks without disconnecting the peer or breaking
+ * microphone continuity, and that a re-share produces real decoded screen-video *and* screen-audio
+ * again (`screenAudioOkCount >= 2`). No camera marker is required — this scenario never enables one.
+ */
+function armE2EScreenAudioSmokeViewerExit(window: BrowserWindow): void {
+  const requiredOnceMarkers = ['E2E_PEER_CONNECTED:', 'E2E_AUDIO_LEVEL_OK:'];
+  const seenOnce = new Set<string>();
+  let screenOkCount = 0;
+  let screenAudioOkCount = 0;
+  let screenAudioAbsentSeen = false;
+  let screenAudioPostMuteOk = false;
+  let screenShareEndedWithHealthyPeer = false;
+  let screenAudioEndedWithHealthyPeer = false;
+  let audioPostScreenOk = false;
+
+  function describeProgress(): string {
+    return [
+      ...requiredOnceMarkers.map((m) => `${m}${seenOnce.has(m) ? 'seen' : 'missing'}`),
+      `screenOkCount=${String(screenOkCount)}(need >=3)`,
+      `screenAudioOkCount=${String(screenAudioOkCount)}(need >=2)`,
+      `screenAudioAbsentSeen=${String(screenAudioAbsentSeen)}`,
+      `screenAudioPostMuteOk=${String(screenAudioPostMuteOk)}`,
+      `screenShareEndedHealthy=${String(screenShareEndedWithHealthyPeer)}`,
+      `screenAudioEndedHealthy=${String(screenAudioEndedWithHealthyPeer)}`,
+      `audioPostScreenOk=${String(audioPostScreenOk)}`,
+    ].join(', ');
+  }
+
+  const timeout = setTimeout(() => {
+    console.error(`E2E_SCREEN_AUDIO_SMOKE_TIMEOUT (viewer): ${describeProgress()}`);
+    app.exit(1);
+  }, 120_000);
+
+  window.webContents.on('console-message', (_event, _level, message) => {
+    console.info(`[renderer] ${message}`);
+    for (const marker of requiredOnceMarkers) {
+      if (message.startsWith(marker)) seenOnce.add(marker);
+    }
+    if (message.startsWith('E2E_REMOTE_SCREEN_OK:')) screenOkCount += 1;
+    if (message.startsWith('E2E_SCREEN_AUDIO_OK:')) screenAudioOkCount += 1;
+    // Requires cycle 1 specifically (the audio-off cycle) — a QA review noted that this marker can
+    // also fire harmlessly during a later audio-on cycle if video settles a render tick before
+    // audio does, which would be ambiguous evidence for "audio was genuinely off" if accepted from
+    // any cycle. See `VoiceChannelView.tsx`'s `viewerScreenCycleCount`.
+    if (message.startsWith('E2E_SCREEN_AUDIO_ABSENT:') && message.includes(':cycle=1')) {
+      screenAudioAbsentSeen = true;
+    }
+    if (message.startsWith('E2E_SCREEN_AUDIO_POST_MUTE_OK:')) screenAudioPostMuteOk = true;
+    if (message.startsWith('E2E_SCREEN_SHARE_ENDED:') && message.includes('peerState=connected')) {
+      screenShareEndedWithHealthyPeer = true;
+    }
+    if (message.startsWith('E2E_SCREEN_AUDIO_ENDED:') && message.includes('peerState=connected')) {
+      screenAudioEndedWithHealthyPeer = true;
+    }
+    if (message.startsWith('E2E_AUDIO_LEVEL_POST_SCREEN_OK:')) audioPostScreenOk = true;
+
+    const allDone =
+      requiredOnceMarkers.every((m) => seenOnce.has(m)) &&
+      screenOkCount >= 3 &&
+      screenAudioOkCount >= 2 &&
+      screenAudioAbsentSeen &&
+      screenAudioPostMuteOk &&
+      screenShareEndedWithHealthyPeer &&
+      screenAudioEndedWithHealthyPeer &&
+      audioPostScreenOk;
+
+    if (allDone) {
+      clearTimeout(timeout);
+      console.info('E2E_SCREEN_AUDIO_SMOKE_OK');
+      setTimeout(() => app.exit(0), 250);
+    }
+  });
+}
+
 async function bootstrap(): Promise<void> {
   await app.whenReady();
 
@@ -315,6 +470,7 @@ async function bootstrap(): Promise<void> {
   armE2EVoiceSmokeExit(window);
   armE2ECameraSmokeExit(window);
   armE2EScreenSmokeExit(window);
+  armE2EScreenAudioSmokeExit(window);
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

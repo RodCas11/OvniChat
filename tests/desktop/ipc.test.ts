@@ -149,6 +149,7 @@ describe('registerIpcHandlers', () => {
       autoScreenShare: false,
       autoScreenShareOffAfterMs: undefined,
       autoScreenShareReshareAfterMs: undefined,
+      autoScreenShareAudio: false,
     };
     registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig, e2eVoiceConfig);
 
@@ -196,9 +197,9 @@ describe('registerIpcHandlers', () => {
     const handler = handlers.get(IPC_CHANNELS.selectScreenShareSource);
     expect(handler).toBeTypeOf('function');
 
-    const result = await handler?.(fakeEvent(1, 'app://renderer/index.html'), 'screen:0:0');
+    const result = await handler?.(fakeEvent(1, 'app://renderer/index.html'), 'screen:0:0', true);
     expect(result).toBe(true);
-    expect(selectScreenShareSourceMock).toHaveBeenCalledWith('screen:0:0');
+    expect(selectScreenShareSourceMock).toHaveBeenCalledWith('screen:0:0', true);
   });
 
   it('rejects selectScreenShareSource from an untrusted sender without calling into screen-share.ts', () => {
@@ -206,7 +207,7 @@ describe('registerIpcHandlers', () => {
     selectScreenShareSourceMock.mockClear();
 
     const handler = handlers.get(IPC_CHANNELS.selectScreenShareSource);
-    expect(() => handler?.(fakeEvent(99, 'https://evil.example/'), 'screen:0:0')).toThrow(
+    expect(() => handler?.(fakeEvent(99, 'https://evil.example/'), 'screen:0:0', false)).toThrow(
       /untrusted sender/,
     );
     expect(selectScreenShareSourceMock).not.toHaveBeenCalled();
@@ -217,7 +218,11 @@ describe('registerIpcHandlers', () => {
     selectScreenShareSourceMock.mockClear();
 
     const handler = handlers.get(IPC_CHANNELS.selectScreenShareSource);
-    const result = await handler?.(fakeEvent(1, 'app://renderer/index.html'), { evil: true });
+    const result = await handler?.(
+      fakeEvent(1, 'app://renderer/index.html'),
+      { evil: true },
+      false,
+    );
     expect(result).toBe(false);
     expect(selectScreenShareSourceMock).not.toHaveBeenCalled();
   });
@@ -227,7 +232,21 @@ describe('registerIpcHandlers', () => {
     selectScreenShareSourceMock.mockClear();
 
     const handler = handlers.get(IPC_CHANNELS.selectScreenShareSource);
-    const result = await handler?.(fakeEvent(1, 'app://renderer/index.html'), 'x'.repeat(1000));
+    const result = await handler?.(
+      fakeEvent(1, 'app://renderer/index.html'),
+      'x'.repeat(1000),
+      false,
+    );
+    expect(result).toBe(false);
+    expect(selectScreenShareSourceMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a non-boolean shareAudio argument without calling into screen-share.ts', async () => {
+    registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig);
+    selectScreenShareSourceMock.mockClear();
+
+    const handler = handlers.get(IPC_CHANNELS.selectScreenShareSource);
+    const result = await handler?.(fakeEvent(1, 'app://renderer/index.html'), 'screen:0:0', 'yes');
     expect(result).toBe(false);
     expect(selectScreenShareSourceMock).not.toHaveBeenCalled();
   });

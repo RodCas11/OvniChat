@@ -10,15 +10,21 @@ import { participantIdSchema } from '../identifiers.js';
  * signaling message just because the global per-message limit is larger.
  *
  * This was originally 8192 (8 KiB), sized for an audio-only or audio+camera (2 m-line) SDP. T5
- * live two-instance testing found a real offer negotiating all three sources at once (microphone +
- * camera + screen-video, 3 m-lines, each video m-line carrying Chromium's full modern codec/RTX/
- * extension set) measured 10,859 characters — genuinely rejected by the old bound, not a
- * theoretical concern. Raised with real headroom for further ICE candidates accumulating during
- * trickle and future codec/extension growth, while staying comfortably under
- * `REALTIME_MAX_MESSAGE_BYTES` (`services/realtime/src/config.ts`) once JSON envelope overhead and
- * `\r\n` -> `\\r\\n` escaping are accounted for (both were raised together — see that file).
+ * live two-instance testing found a real offer negotiating all three T5-era sources at once
+ * (microphone + camera + screen-video, 3 m-lines) measured 10,859 characters — genuinely rejected
+ * by that bound — and raised it to 24576 with headroom.
+ *
+ * T6 added a fourth source (screen-audio). Live two-instance testing with all four sources
+ * negotiated at once, including a screen-share stop/re-share cycle (each renegotiation restates
+ * every current m-line plus accumulated trickle-ICE candidates), measured a real offer at **25,235
+ * characters** — genuinely exceeding the 24576 bound from a real run, not a theoretical concern
+ * (the run's viewer instance failed because of it). Raised to 65536 (64 KiB) with real headroom
+ * above that measurement for further ICE candidates and additional share cycles within one call,
+ * while staying comfortably under `REALTIME_MAX_MESSAGE_BYTES`
+ * (`services/realtime/src/config.ts`) once JSON envelope overhead and `\r\n` -> `\\r\\n` escaping
+ * are accounted for (both were raised together — see that file).
  */
-export const SDP_MAX_LENGTH = 24576;
+export const SDP_MAX_LENGTH = 65536;
 export const sdpSchema = z.string().min(1).max(SDP_MAX_LENGTH);
 
 const ICE_CANDIDATE_MAX_LENGTH = 1024;

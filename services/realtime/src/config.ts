@@ -18,12 +18,14 @@ const realtimeConfigSchema = z.object({
   REALTIME_HOST: envNonEmptyString().default('127.0.0.1'),
   REALTIME_PORT: envPort().default(8090),
   REALTIME_MAX_CONNECTIONS: envPositiveInt().default(1_000),
-  // Raised from 16 KiB alongside `packages/protocol`'s `SDP_MAX_LENGTH` (see that file's doc
-  // comment for the live-measured T5 finding this fixes) — kept with real headroom above it once
-  // JSON envelope overhead and `\r\n` -> `\\r\\n` escaping are accounted for, not sized to the same
+  // Raised alongside `packages/protocol`'s `SDP_MAX_LENGTH` each time that bound has been raised
+  // (16 KiB -> 32 KiB for T5's live-measured 3-source finding; 32 KiB -> 80 KiB for T6's
+  // live-measured 4-source finding, a real offer measured at 25,235 characters against the old
+  // 24576 SDP bound — see that file's doc comment) — kept with real headroom above it once JSON
+  // envelope overhead and `\r\n` -> `\\r\\n` escaping are accounted for, not sized to the same
   // number, so a maximal-length `sdp` field never itself risks tripping this outer transport-frame
   // limit.
-  REALTIME_MAX_MESSAGE_BYTES: envPositiveInt().default(32 * 1024),
+  REALTIME_MAX_MESSAGE_BYTES: envPositiveInt().default(80 * 1024),
   REALTIME_HANDSHAKE_TIMEOUT_MS: envPositiveInt().default(5_000),
   REALTIME_HEARTBEAT_INTERVAL_MS: envPositiveInt().default(15_000),
   REALTIME_HEARTBEAT_TIMEOUT_MS: envPositiveInt().default(10_000),

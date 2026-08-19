@@ -102,19 +102,20 @@ export function registerIpcHandlers(
 
   ipcMain.handle(
     IPC_CHANNELS.selectScreenShareSource,
-    (event: IpcMainInvokeEvent, sourceId: unknown): boolean => {
+    (event: IpcMainInvokeEvent, sourceId: unknown, shareAudio: unknown): boolean => {
       assertTrustedSender(event, IPC_CHANNELS.selectScreenShareSource);
-      // Runtime-validate the renderer-supplied argument before it ever reaches
+      // Runtime-validate every renderer-supplied argument before it ever reaches
       // `selectScreenShareSource` — an invalid shape is rejected the same way an unknown/stale id
       // is (returning `false`, never throwing a detail-leaking error).
       if (
         typeof sourceId !== 'string' ||
         sourceId.length === 0 ||
-        sourceId.length > MAX_SCREEN_SOURCE_ID_LENGTH
+        sourceId.length > MAX_SCREEN_SOURCE_ID_LENGTH ||
+        typeof shareAudio !== 'boolean'
       ) {
         return false;
       }
-      return selectScreenShareSource(sourceId);
+      return selectScreenShareSource(sourceId, shareAudio);
     },
   );
 }

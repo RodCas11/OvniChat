@@ -1,21 +1,32 @@
 # Task status
 
-| Task                           | Status      | Outcome                                                     |
-| ------------------------------ | ----------- | ----------------------------------------------------------- |
-| [T0](T0_REPOSITORY_HARNESS.md) | COMPLETE    | Repository and Claude development harness                   |
-| [T1](T1_ELECTRON_SHELL.md)     | COMPLETE    | Electron desktop shell and application foundation           |
-| [T2](T2_REALTIME_PROTOCOL.md)  | COMPLETE    | Shared realtime protocol and realtime service foundation    |
-| [T3](T3_VOICE_WEBRTC.md)       | COMPLETE    | Voice channels and microphone WebRTC vertical slice         |
-| [T4](T4_CAMERA_STREAMING.md)   | COMPLETE    | Camera streaming over existing WebRTC voice sessions        |
-| [T5](T5_SCREEN_SHARE.md)       | COMPLETE    | Screen/window streaming over existing WebRTC voice sessions |
-| T6                             | NOT STARTED | Windows system audio sharing                                |
-| T7                             | NOT STARTED | Text channels, realtime messaging, and SQLite persistence   |
-| T8                             | NOT STARTED | Connection recovery, diagnostics, and device management     |
-| T9                             | NOT STARTED | Process/game-specific audio capture                         |
-| T10                            | NOT STARTED | Self-hosted deployment hardening and Coturn integration     |
-| T11                            | NOT STARTED | Windows packaging and installer hardening                   |
-| T12                            | NOT STARTED | Security, QA, and performance hardening                     |
-| T13                            | NOT STARTED | SFU evaluation/migration if measured scale requires it      |
+| Task                           | Status      | Outcome                                                            |
+| ------------------------------ | ----------- | ------------------------------------------------------------------ |
+| [T0](T0_REPOSITORY_HARNESS.md) | COMPLETE    | Repository and Claude development harness                          |
+| [T1](T1_ELECTRON_SHELL.md)     | COMPLETE    | Electron desktop shell and application foundation                  |
+| [T2](T2_REALTIME_PROTOCOL.md)  | COMPLETE    | Shared realtime protocol and realtime service foundation           |
+| [T3](T3_VOICE_WEBRTC.md)       | COMPLETE    | Voice channels and microphone WebRTC vertical slice                |
+| [T4](T4_CAMERA_STREAMING.md)   | COMPLETE    | Camera streaming over existing WebRTC voice sessions               |
+| [T5](T5_SCREEN_SHARE.md)       | COMPLETE    | Screen/window streaming over existing WebRTC voice sessions        |
+| [T6](T6_SCREEN_AUDIO.md)       | COMPLETE    | Windows system audio for screen sharing                            |
+| T7                             | NOT STARTED | Local cryptographic client identity                                |
+| T8                             | NOT STARTED | Dedicated server product boundary                                  |
+| T9                             | NOT STARTED | Server-local groups, permissions, invite/privilege tokens, bans    |
+| T10                            | NOT STARTED | Minimal/ephemeral text chat                                        |
+| T11                            | NOT STARTED | Devices, bookmarks, reconnect, and product UX                      |
+| T12                            | NOT STARTED | Windows per-process/game audio                                     |
+| T13                            | NOT STARTED | Self-hosting production package (TURN, TLS, Docker, configuration) |
+| T14                            | NOT STARTED | Windows client installer and dedicated-server releases             |
+| T15                            | NOT STARTED | UX polish / private beta                                           |
+| T16                            | NOT STARTED | SFU evaluation/migration, only if measured scale requires it       |
 
 Statuses are `NOT STARTED`, `IN PROGRESS`, `BLOCKED`, or `COMPLETE`. A status summarizes evidence;
 it is not a substitute for the task handoff.
+
+T0–T6 completed the media-engineering vertical: microphone, camera, screen-video, and screen-audio
+all working, live-verified, self-hosted, with no accounts or central infrastructure required. T7
+onward shifts focus toward the actual TeamSpeak-style product architecture — local client identity,
+a dedicated self-hosted server product, server-local permissions — per
+[`../adr/0010-no-mandatory-central-control-plane.md`](../adr/0010-no-mandatory-central-control-plane.md).
+This reflects a roadmap decision, not yet implementation; do not treat T7+ as started until their own
+task documents and STATUS.md rows say so.

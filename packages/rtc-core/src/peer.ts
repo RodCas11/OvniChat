@@ -222,6 +222,20 @@ export class Peer {
     if (this.closed) return;
     if (answer.sdp !== undefined) this.signalingPort.sendAnswer(this.participantId, answer.sdp);
     this.negotiated = true;
+    // T6 fix: a real, previously-latent gap this session found live. `createAndSendOffer()` always
+    // reported local track mids after its own `setLocalDescription()`, but this method never did
+    // after *its* `setLocalDescription(answer)` — harmless as long as every locally-published track
+    // needing an announcement was always added *after* the initial handshake (true for T4/T5's
+    // camera/screen, which are always user-enabled post-join, so their mids were always reported via
+    // a later `createAndSendOffer()` renegotiation regardless of which side answered first). T6
+    // made microphone require the same announcement mechanism (closing an absence-based-inference
+    // gap — see `packages/protocol/src/messages/media.ts`'s `TrackSource` doc comment), and
+    // microphone *is* seeded into the very first offer/answer cycle (published before
+    // `addParticipant` even creates the peer connection) — so the responder side of a pair (the one
+    // that only ever answers, never offers, for that initial cycle) was live-found to never report
+    // its own microphone's mid at all, leaving the remote side's reconciliation waiting forever for
+    // an announcement that would never arrive. Mirrors `createAndSendOffer()`'s identical call.
+    this.reportLocalTrackMids();
   }
 
   async handleRemoteAnswer(sdp: string): Promise<void> {

@@ -28,3 +28,4 @@ hypothesis. An accepted target decision may precede implementation; say so expli
 7. Windows media isolation
 8. VDO.Ninja controlled-reference policy
 9. SQLite first behind a storage boundary
+10. No mandatory central user control plane

@@ -22,8 +22,12 @@ const desktopApi: DesktopApi = {
     ipcRenderer.invoke(IPC_CHANNELS.listScreenShareSources) as Promise<
       readonly DesktopScreenSource[]
     >,
-  selectScreenShareSource: (sourceId: string) =>
-    ipcRenderer.invoke(IPC_CHANNELS.selectScreenShareSource, sourceId) as Promise<boolean>,
+  selectScreenShareSource: (sourceId: string, shareAudio: boolean) =>
+    ipcRenderer.invoke(
+      IPC_CHANNELS.selectScreenShareSource,
+      sourceId,
+      shareAudio,
+    ) as Promise<boolean>,
 };
 
 contextBridge.exposeInMainWorld('desktopApp', desktopApi);

@@ -194,6 +194,50 @@ describe('P2PMeshTransport — track publication fan-out', () => {
     }
   });
 
+  it('a participant publishing all four sources (mic + camera + screen-video + screen-audio) reaches an existing peer and a newly-added peer, and unpublishing screen-audio leaves the other three intact (T6 regression)', () => {
+    // Coverage for T6's fourth simultaneous source (screen-audio): this transport is
+    // track-kind-agnostic and was already proven for three simultaneous tracks (T5's test above) —
+    // this proves the same holds for four, including two audio tracks published side by side
+    // (mirroring T5's two-video-tracks case), with zero transport code changes.
+    const { transport, connections } = createTransport();
+    const micTrack = fakeAudioTrack('mic-track');
+    const cameraTrack = fakeAudioTrack('camera-track'); // kind is irrelevant to this transport
+    const screenVideoTrack = fakeAudioTrack('screen-video-track');
+    const screenAudioTrack = fakeAudioTrack('screen-audio-track'); // a second, independent audio-shaped track
+
+    transport.addParticipant('peer-existing', 'responder');
+    transport.publishTrack(micTrack);
+    transport.publishTrack(cameraTrack);
+    transport.publishTrack(screenVideoTrack);
+    transport.publishTrack(screenAudioTrack);
+
+    const existingPc = [...connections.values()][0];
+    expect(existingPc?.addTrackCalls).toEqual(
+      expect.arrayContaining([micTrack, cameraTrack, screenVideoTrack, screenAudioTrack]),
+    );
+    expect(existingPc?.addTrackCalls).toHaveLength(4);
+
+    // A newly-added peer, joining after all four tracks are already published, receives all four
+    // with no special-casing needed for a late joiner.
+    transport.addParticipant('peer-new', 'responder');
+    const newPc = [...connections.values()][1];
+    expect(newPc?.addTrackCalls).toEqual(
+      expect.arrayContaining([micTrack, cameraTrack, screenVideoTrack, screenAudioTrack]),
+    );
+    expect(newPc?.addTrackCalls).toHaveLength(4);
+
+    // Unpublishing just screen-audio removes only that track's sender from every peer, leaving the
+    // microphone (the *other* audio track), camera, and screen-video untouched.
+    transport.unpublishTrack(screenAudioTrack);
+
+    for (const pc of [existingPc, newPc]) {
+      expect(pc?.removeTrackCalls).toHaveLength(1);
+      expect(pc?.addTrackCalls).toEqual(
+        expect.arrayContaining([micTrack, cameraTrack, screenVideoTrack, screenAudioTrack]),
+      );
+    }
+  });
+
   it('repeated publish/unpublish/publish cycles on the same track do not accumulate sender bookkeeping (T5 regression)', () => {
     // Coverage for T5's requirement that screen share's on/off/on/off/on toggling never leaks or
     // duplicates sender state — exercises `Peer`'s own `Map<MediaStreamTrack, RTCRtpSender>`

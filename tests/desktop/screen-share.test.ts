@@ -41,9 +41,22 @@ const { installScreenShareHandlers, listScreenShareSources, selectScreenShareSou
 const ALLOWED_ORIGIN = 'app://renderer';
 
 type DisplayMediaHandler = (
-  request: { securityOrigin: string },
+  request: { securityOrigin: string; audioRequested?: boolean },
   callback: (streams: unknown) => void,
 ) => void;
+
+/** Runs `fn` with `process.platform` temporarily overridden, restoring the real value afterward —
+ * `screen-share.ts`'s Windows-only loopback gate must be exercised deterministically regardless of
+ * which OS actually runs this test suite. */
+function withPlatform<T>(platform: NodeJS.Platform, fn: () => T): T {
+  const original = process.platform;
+  Object.defineProperty(process, 'platform', { value: platform, configurable: true });
+  try {
+    return fn();
+  } finally {
+    Object.defineProperty(process, 'platform', { value: original, configurable: true });
+  }
+}
 
 function fakeSession(): { session: Session; getHandler: () => DisplayMediaHandler } {
   let handler: DisplayMediaHandler | undefined;
@@ -124,7 +137,7 @@ describe('listScreenShareSources', () => {
 
 // This block deliberately runs before `selectScreenShareSource`'s own describe block below, and
 // its first test deliberately runs before any test anywhere in this file successfully arms a
-// pending selection — `pendingSourceId` is module-private state with no test-only reset, exactly
+// pending selection — `pendingSelection` is module-private state with no test-only reset, exactly
 // like `ipc.test.ts`'s already-established "handlers is intentionally not reset between tests"
 // pattern, so test order here is load-bearing, not incidental.
 describe('installScreenShareHandlers / setDisplayMediaRequestHandler', () => {
@@ -139,25 +152,24 @@ describe('installScreenShareHandlers / setDisplayMediaRequestHandler', () => {
     expect(callback).toHaveBeenCalledWith(undefined);
   });
 
-  it('grants the real native source for a valid pending selection', async () => {
+  it('grants the real native source for a valid pending selection, audio-less by default', async () => {
     await listScreenShareSources();
-    expect(selectScreenShareSource('screen:0:0')).toBe(true);
+    expect(selectScreenShareSource('screen:0:0', false)).toBe(true);
 
     const { session, getHandler } = fakeSession();
     installScreenShareHandlers(session, [ALLOWED_ORIGIN]);
 
     const callback = vi.fn();
-    getHandler()({ securityOrigin: ALLOWED_ORIGIN }, callback);
+    getHandler()({ securityOrigin: ALLOWED_ORIGIN, audioRequested: false }, callback);
 
     expect(callback).toHaveBeenCalledWith({ video: { id: 'screen:0:0', name: 'Entire Screen' } });
-    // Never passes `audio` — screen-video only.
     const streams = callback.mock.calls[0]?.[0] as Record<string, unknown>;
     expect('audio' in streams).toBe(false);
   });
 
   it('is single-use: a second getDisplayMedia() call cannot reuse the same approved selection', async () => {
     await listScreenShareSources();
-    expect(selectScreenShareSource('screen:0:0')).toBe(true);
+    expect(selectScreenShareSource('screen:0:0', false)).toBe(true);
 
     const { session, getHandler } = fakeSession();
     installScreenShareHandlers(session, [ALLOWED_ORIGIN]);
@@ -176,7 +188,7 @@ describe('installScreenShareHandlers / setDisplayMediaRequestHandler', () => {
 
   it('denies even a valid pending selection from an unexpected origin', async () => {
     await listScreenShareSources();
-    expect(selectScreenShareSource('screen:0:0')).toBe(true);
+    expect(selectScreenShareSource('screen:0:0', false)).toBe(true);
 
     const { session, getHandler } = fakeSession();
     installScreenShareHandlers(session, [ALLOWED_ORIGIN]);
@@ -188,15 +200,83 @@ describe('installScreenShareHandlers / setDisplayMediaRequestHandler', () => {
   });
 });
 
+describe('installScreenShareHandlers — T6 system audio (Windows loopback)', () => {
+  it('grants audio: "loopback" when the armed selection, the getDisplayMedia call, and the platform all agree (win32)', async () => {
+    await listScreenShareSources();
+    expect(selectScreenShareSource('screen:0:0', true)).toBe(true);
+
+    const { session, getHandler } = fakeSession();
+    installScreenShareHandlers(session, [ALLOWED_ORIGIN]);
+
+    const callback = vi.fn();
+    withPlatform('win32', () => {
+      getHandler()({ securityOrigin: ALLOWED_ORIGIN, audioRequested: true }, callback);
+    });
+
+    expect(callback).toHaveBeenCalledWith({
+      video: { id: 'screen:0:0', name: 'Entire Screen' },
+      audio: 'loopback',
+    });
+  });
+
+  it('does not grant audio when the armed selection did not request it, even if the getDisplayMedia call did', async () => {
+    await listScreenShareSources();
+    expect(selectScreenShareSource('screen:0:0', false)).toBe(true);
+
+    const { session, getHandler } = fakeSession();
+    installScreenShareHandlers(session, [ALLOWED_ORIGIN]);
+
+    const callback = vi.fn();
+    withPlatform('win32', () => {
+      getHandler()({ securityOrigin: ALLOWED_ORIGIN, audioRequested: true }, callback);
+    });
+
+    const streams = callback.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect('audio' in streams).toBe(false);
+  });
+
+  it('does not grant audio when the armed selection requested it but the getDisplayMedia call itself did not', async () => {
+    await listScreenShareSources();
+    expect(selectScreenShareSource('screen:0:0', true)).toBe(true);
+
+    const { session, getHandler } = fakeSession();
+    installScreenShareHandlers(session, [ALLOWED_ORIGIN]);
+
+    const callback = vi.fn();
+    withPlatform('win32', () => {
+      getHandler()({ securityOrigin: ALLOWED_ORIGIN, audioRequested: false }, callback);
+    });
+
+    const streams = callback.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect('audio' in streams).toBe(false);
+  });
+
+  it('does not grant audio on a non-Windows platform even when everything else agrees', async () => {
+    await listScreenShareSources();
+    expect(selectScreenShareSource('screen:0:0', true)).toBe(true);
+
+    const { session, getHandler } = fakeSession();
+    installScreenShareHandlers(session, [ALLOWED_ORIGIN]);
+
+    const callback = vi.fn();
+    withPlatform('darwin', () => {
+      getHandler()({ securityOrigin: ALLOWED_ORIGIN, audioRequested: true }, callback);
+    });
+
+    const streams = callback.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect('audio' in streams).toBe(false);
+  });
+});
+
 describe('selectScreenShareSource', () => {
   it('rejects an id that was never enumerated', async () => {
     await listScreenShareSources();
-    expect(selectScreenShareSource('screen:99:0')).toBe(false);
+    expect(selectScreenShareSource('screen:99:0', false)).toBe(false);
   });
 
   it('rejects a stale id from a previous, now-superseded enumeration', async () => {
     await listScreenShareSources();
-    expect(selectScreenShareSource('screen:0:0')).toBe(true);
+    expect(selectScreenShareSource('screen:0:0', false)).toBe(true);
 
     // A second, distinct enumeration supersedes the first — the old id must no longer validate.
     nextSources = [
@@ -209,11 +289,11 @@ describe('selectScreenShareSource', () => {
       },
     ];
     await listScreenShareSources();
-    expect(selectScreenShareSource('screen:0:0')).toBe(false);
+    expect(selectScreenShareSource('screen:0:0', false)).toBe(false);
   });
 
   it('accepts an id from the most recent enumeration', async () => {
     await listScreenShareSources();
-    expect(selectScreenShareSource('window:1234:0')).toBe(true);
+    expect(selectScreenShareSource('window:1234:0', false)).toBe(true);
   });
 });

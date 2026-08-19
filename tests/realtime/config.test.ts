@@ -10,7 +10,7 @@ describe('loadRealtimeConfig', () => {
       host: '127.0.0.1',
       port: 8090,
       maxConnections: 1000,
-      maxMessageBytes: 32 * 1024,
+      maxMessageBytes: 80 * 1024,
       handshakeTimeoutMs: 5000,
       heartbeatIntervalMs: 15000,
       heartbeatTimeoutMs: 10000,

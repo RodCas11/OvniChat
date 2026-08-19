@@ -6,21 +6,26 @@ import type { DesktopScreenSource } from '../../shared/ipc-contract.js';
 
 /**
  * Self-contained screen/window source picker: enumerate → pick one → choose a quality preset →
- * Share. Never auto-selects anything and never calls `selectScreenShareSource` speculatively — the
- * IPC selection call only happens inside `handleShare`, so Cancel (which never calls it) can never
- * have any side effect on an already-active voice/camera session by construction, not by an extra
- * guard.
+ * optionally opt into system audio → Share. Never auto-selects anything and never calls
+ * `selectScreenShareSource` speculatively — the IPC selection call only happens inside
+ * `handleShare`, so Cancel (which never calls it) can never have any side effect on an already-active
+ * voice/camera session by construction, not by an extra guard.
  *
  * Prop contract for the caller (`VoiceChannelView.tsx`, wired by the orchestrating engineer, not
  * this component): `onSourceSelected` fires only after `desktopApp.selectScreenShareSource`
- * resolved `true` for the user's chosen source, with the user's chosen `ScreenQualityPreset` — the
- * caller is expected to then call `acquireScreen(SCREEN_QUALITY_PRESETS[quality])` (from
- * `@disco-voador/media-core`) and publish the resulting track; this component does not do that
- * itself. `onCancel` fires when the user dismisses the picker without sharing; it carries no
- * arguments and this component performs no IPC call before invoking it.
+ * resolved `true` for the user's chosen source, with the user's chosen `ScreenQualityPreset` and
+ * `shareAudio` choice — the caller is expected to then call
+ * `acquireScreen(SCREEN_QUALITY_PRESETS[quality], shareAudio)` (from `@disco-voador/media-core`) and
+ * publish the resulting track(s); this component does not do that itself. `onCancel` fires when the
+ * user dismisses the picker without sharing; it carries no arguments and this component performs no
+ * IPC call before invoking it.
+ *
+ * `shareAudio` defaults to `false` (T6 requirement: never silently share system audio) and is always
+ * an explicit user choice, armed alongside the source in the same `selectScreenShareSource` call —
+ * see `main/screen-share.ts`.
  */
 export interface ScreenSourcePickerProps {
-  readonly onSourceSelected: (quality: ScreenQualityPreset) => void;
+  readonly onSourceSelected: (quality: ScreenQualityPreset, shareAudio: boolean) => void;
   readonly onCancel: () => void;
 }
 
@@ -52,6 +57,9 @@ export function ScreenSourcePicker({
   const [activeTab, setActiveTab] = useState<SourceTab>('screen');
   const [selectedSourceId, setSelectedSourceId] = useState<string | undefined>(undefined);
   const [quality, setQuality] = useState<ScreenQualityPreset>(DEFAULT_QUALITY);
+  // T6: off by default — system audio is never shared unless the user explicitly opts in for this
+  // specific share (see this component's doc comment and docs/architecture/WEBRTC_SCREEN_AUDIO.md).
+  const [shareAudio, setShareAudio] = useState(false);
   const [sharing, setSharing] = useState(false);
   const [shareError, setShareError] = useState<string | undefined>(undefined);
 
@@ -91,7 +99,7 @@ export function ScreenSourcePicker({
     setShareError(undefined);
 
     window.desktopApp
-      .selectScreenShareSource(selectedSourceId)
+      .selectScreenShareSource(selectedSourceId, shareAudio)
       .then((accepted) => {
         setSharing(false);
         if (!accepted) {
@@ -100,7 +108,7 @@ export function ScreenSourcePicker({
           setShareError('That source is no longer available. Refresh and try again.');
           return;
         }
-        onSourceSelected(quality);
+        onSourceSelected(quality, shareAudio);
       })
       .catch((error: unknown) => {
         setSharing(false);
@@ -181,6 +189,22 @@ export function ScreenSourcePicker({
           ))}
         </select>
       </label>
+
+      <label>
+        <input
+          type="checkbox"
+          data-role="screen-share-audio-checkbox"
+          checked={shareAudio}
+          onChange={(event) => {
+            setShareAudio(event.target.checked);
+          }}
+        />
+        Share audio
+      </label>
+      {/* T6 platform finding (see docs/architecture/WEBRTC_SCREEN_AUDIO.md): Windows system-audio
+          loopback captures everything currently playing on the machine, not audio scoped to the
+          selected window — stated plainly here rather than implying window-specific audio. */}
+      <p>Shares all system sound currently playing, not audio from a specific window.</p>
 
       {shareError && <p role="alert">{shareError}</p>}
 

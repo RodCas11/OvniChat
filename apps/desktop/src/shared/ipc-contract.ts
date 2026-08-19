@@ -60,6 +60,13 @@ export interface DesktopE2EVoiceConfig {
    * `autoScreenShareOffAfterMs` are also set.
    */
   readonly autoScreenShareReshareAfterMs: number | undefined;
+  /**
+   * T6: arms the publisher-role scripted audio-on/off/mute sequence (see `VoiceChannelView.tsx`)
+   * and, on both roles, auto-deafens immediately after voice connects — same-machine feedback
+   * avoidance for `e2e:screen-audio-smoke` (see `docs/architecture/WEBRTC_SCREEN_AUDIO.md`).
+   * Meaningless unless `autoScreenShare` is also `true`.
+   */
+  readonly autoScreenShareAudio: boolean;
 }
 
 /**
@@ -105,6 +112,14 @@ export interface DesktopApi {
    * `sourceId` instead of leaking a detailed error. Does not itself start capture — the caller
    * still has to invoke `getDisplayMedia()` (via `@disco-voador/media-core`'s `acquireScreen()`)
    * afterward for the selection to take effect.
+   *
+   * `shareAudio` (T6) is the user's explicit "Share audio" choice, armed alongside the source so
+   * `main/screen-share.ts`'s `setDisplayMediaRequestHandler` callback knows whether to also resolve
+   * with Windows system-audio loopback for this specific share — it is never inferred or defaulted
+   * to `true`. The caller's own subsequent `acquireScreen()` call must request the same value
+   * (`getDisplayMedia({ audio: shareAudio })`); Main additionally cross-checks this against the
+   * platform's own `request.audioRequested` before ever granting audio (see
+   * `docs/architecture/WEBRTC_SCREEN_AUDIO.md`).
    */
-  selectScreenShareSource: (sourceId: string) => Promise<boolean>;
+  selectScreenShareSource: (sourceId: string, shareAudio: boolean) => Promise<boolean>;
 }

@@ -134,8 +134,28 @@ export class FakePeerConnection implements RtcPeerConnectionLike {
     }
   }
 
+  /**
+   * Mirrors a real platform's behavior for an *inbound offer* specifically: `mid` values are
+   * decided by the offerer and carried in the offer's SDP, so the answerer's own transceivers
+   * (matched/created while parsing that offer) already have their `mid` populated as soon as
+   * `setRemoteDescription({type: 'offer', ...})` resolves — *before* the answerer ever calls its
+   * own `setLocalDescription(answer)`. This is exactly the precondition `Peer.handleRemoteOffer`'s
+   * `reportLocalTrackMids()` call (T6 fix — a locally-published track seeded before the initial
+   * handshake, e.g. microphone, must have its mid reported after *answering* too, not only after
+   * *offering*) depends on. An answer or rollback assigns nothing here — mids are never decided by
+   * this side's own descriptions.
+   */
   setRemoteDescription(description: RTCSessionDescriptionInit): Promise<void> {
     this.setRemoteDescriptionCalls.push(description);
+    if (description.type === 'offer') {
+      let nextMid = this.transceivers.filter((t) => t.mid !== null).length;
+      for (const transceiver of this.transceivers) {
+        if (transceiver.mid === null) {
+          transceiver.mid = String(nextMid);
+          nextMid += 1;
+        }
+      }
+    }
     return this.setRemoteDescriptionImpl(description);
   }
 

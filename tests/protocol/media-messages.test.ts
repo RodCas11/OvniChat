@@ -31,6 +31,30 @@ describe('clientMediaTrackSourceMessageSchema', () => {
     ).toBe(true);
   });
 
+  it('accepts a valid microphone announcement', () => {
+    expect(
+      clientMediaTrackSourceMessageSchema.safeParse({
+        type: 'media:track-source',
+        id: 'm1',
+        targetParticipantId: 'p2',
+        mid: '0',
+        source: 'microphone',
+      }).success,
+    ).toBe(true);
+  });
+
+  it('accepts a valid screen-audio announcement', () => {
+    expect(
+      clientMediaTrackSourceMessageSchema.safeParse({
+        type: 'media:track-source',
+        id: 'm1',
+        targetParticipantId: 'p2',
+        mid: '3',
+        source: 'screen-audio',
+      }).success,
+    ).toBe(true);
+  });
+
   it('rejects an unrecognized source', () => {
     expect(
       clientMediaTrackSourceMessageSchema.safeParse({
@@ -38,7 +62,7 @@ describe('clientMediaTrackSourceMessageSchema', () => {
         id: 'm1',
         targetParticipantId: 'p2',
         mid: '1',
-        source: 'microphone',
+        source: 'system-audio',
       }).success,
     ).toBe(false);
   });

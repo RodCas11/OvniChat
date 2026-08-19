@@ -28,8 +28,12 @@ let lastEnumeratedSources: readonly DesktopCapturerSource[] = [];
  * unconditionally as the very first thing it does, before any other work, so a second concurrent
  * `getDisplayMedia()` call can never observe (and reuse) the same pending selection the first one
  * is already consuming.
+ *
+ * `shareAudio` (T6) is armed alongside the source, from the same user action (`ScreenSourcePicker`'s
+ * "Share audio" choice) — never inferred or defaulted separately from it, so a source and its audio
+ * intent always travel together as one atomic selection.
  */
-let pendingSourceId: string | undefined;
+let pendingSelection: { readonly sourceId: string; readonly shareAudio: boolean } | undefined;
 
 let installedAllowedOrigins: readonly string[] = [];
 
@@ -75,21 +79,21 @@ export async function listScreenShareSources(): Promise<readonly DesktopScreenSo
 }
 
 /**
- * Arms a single-use pending selection for `sourceId` if and only if it is present in the most
- * recently enumerated set (`lastEnumeratedSources`) — an id from a stale enumeration, or one that
- * was never returned by `listScreenShareSources` at all, is rejected by returning `false`, never
- * by throwing (so a confused/compromised Renderer never learns anything beyond "not usable" from
- * the response shape).
+ * Arms a single-use pending selection for `sourceId` (and, alongside it, whether this share should
+ * also request system audio) if and only if `sourceId` is present in the most recently enumerated
+ * set (`lastEnumeratedSources`) — an id from a stale enumeration, or one that was never returned by
+ * `listScreenShareSources` at all, is rejected by returning `false`, never by throwing (so a
+ * confused/compromised Renderer never learns anything beyond "not usable" from the response shape).
  */
-export function selectScreenShareSource(sourceId: string): boolean {
+export function selectScreenShareSource(sourceId: string, shareAudio: boolean): boolean {
   const match = lastEnumeratedSources.some((source) => source.id === sourceId);
   if (!match) return false;
-  pendingSourceId = sourceId;
+  pendingSelection = { sourceId, shareAudio };
   return true;
 }
 
 /**
- * Read-only — deliberately never consumes `pendingSourceId` (only
+ * Read-only — deliberately never consumes `pendingSelection` (only
  * `installScreenShareHandlers`'s `setDisplayMediaRequestHandler` callback does that). Lets
  * `permissions.ts`'s media-permission grant additionally require a real armed selection to be
  * present (see that file's `isDisplayCaptureRequest` doc comment for why: a security review found
@@ -101,7 +105,7 @@ export function selectScreenShareSource(sourceId: string): boolean {
  * suggested follow-up for the remaining gap.
  */
 export function hasPendingScreenShareSelection(): boolean {
-  return pendingSourceId !== undefined;
+  return pendingSelection !== undefined;
 }
 
 /**
@@ -111,6 +115,21 @@ export function hasPendingScreenShareSelection(): boolean {
  * selection is currently armed. `useSystemPicker` is deliberately not passed: it is an
  * experimental macOS-15+-only option (see Electron's `session.md`) with no effect on this
  * Windows-only target.
+ *
+ * T6 (system audio): `audio: 'loopback'` — Electron's documented Windows-only system-audio-loopback
+ * mechanism (`Streams.audio`, see `docs/architecture/WEBRTC_SCREEN_AUDIO.md` for the researched
+ * platform investigation) — is included only when *three* independent things all agree: the armed
+ * selection itself requested audio (`pendingSelection.shareAudio`), the platform's own request
+ * object confirms the Renderer's `getDisplayMedia()` call actually asked for an audio stream
+ * (`request.audioRequested`), and this process is genuinely running on Windows
+ * (`process.platform === 'win32'`) — Electron's own docs state the mechanism has no effect
+ * elsewhere, and this app's Windows-only target means the check is defensive, not a real
+ * cross-platform code path. Deliberately plain `'loopback'`, not `'loopbackWithMute'`: Electron's
+ * own documentation does not clearly specify what the latter mutes, and nothing in this app's
+ * requirements calls for changing the sharer's own local audio playback as a side effect of
+ * sharing it — see the architecture doc for the full reasoning. Never the legacy `chromeMediaSource`
+ * constraint form (see `permissions.ts`'s `isDisplayCaptureRequest` for why that path is avoided
+ * entirely, not merely unused here).
  */
 export function installScreenShareHandlers(
   session: Session,
@@ -130,25 +149,29 @@ export function installScreenShareHandlers(
       callback(undefined as unknown as Streams);
     };
 
-    const selectedSourceId = pendingSourceId;
-    pendingSourceId = undefined;
+    const selection = pendingSelection;
+    pendingSelection = undefined;
 
-    if (!selectedSourceId || !isAllowedOrigin(request.securityOrigin, installedAllowedOrigins)) {
+    if (!selection || !isAllowedOrigin(request.securityOrigin, installedAllowedOrigins)) {
       deny();
       return;
     }
 
     // Re-resolve the id against Main's own cached native source list — never reconstruct a
     // `DesktopCapturerSource`-shaped object from the sanitized IPC data the Renderer holds.
-    const source = lastEnumeratedSources.find((candidate) => candidate.id === selectedSourceId);
+    const source = lastEnumeratedSources.find((candidate) => candidate.id === selection.sourceId);
     if (!source) {
       deny();
       return;
     }
 
-    // Screen-video only. System/game audio capture is explicitly out of scope for this task (see
-    // docs/tasks/T5_SCREEN_SHARE.md's "Out of scope") — `audio` is never passed here, not even
-    // `undefined`-with-a-key, so this call can never grant an audio stream.
-    callback({ video: { id: source.id, name: source.name } });
+    const grantAudio =
+      selection.shareAudio && request.audioRequested && process.platform === 'win32';
+
+    callback(
+      grantAudio
+        ? { video: { id: source.id, name: source.name }, audio: 'loopback' }
+        : { video: { id: source.id, name: source.name } },
+    );
   });
 }

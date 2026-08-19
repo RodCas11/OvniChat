@@ -29,10 +29,28 @@ function fakeVideoTrack(overrides: Partial<MediaStreamTrack> = {}): MediaStreamT
   return track;
 }
 
-function fakeStream(tracks: MediaStreamTrack[]): MediaStream {
+function fakeAudioTrack(overrides: Partial<MediaStreamTrack> = {}): MediaStreamTrack {
+  const track = {
+    id: 'audio-track-1',
+    kind: 'audio',
+    enabled: true,
+    readyState: 'live' as MediaStreamTrackState,
+    stop: vi.fn(function (this: { readyState: MediaStreamTrackState }) {
+      this.readyState = 'ended';
+    }),
+    ...overrides,
+  } as unknown as MediaStreamTrack;
+  return track;
+}
+
+function fakeStream(
+  videoTracks: MediaStreamTrack[],
+  audioTracks: MediaStreamTrack[] = [],
+): MediaStream {
   return {
-    getVideoTracks: () => tracks,
-    getTracks: () => tracks,
+    getVideoTracks: () => videoTracks,
+    getAudioTracks: () => audioTracks,
+    getTracks: () => [...videoTracks, ...audioTracks],
   } as unknown as MediaStream;
 }
 
@@ -79,7 +97,7 @@ describe('acquireScreen — default constraints', () => {
     });
   });
 
-  it('always requests audio: false, unconditionally, with no way for a caller to override it', async () => {
+  it('requests audio: false by default when shareAudio is omitted', async () => {
     const track = fakeVideoTrack();
     let seenConstraints: MediaStreamConstraints | undefined;
     stubGetDisplayMedia((constraints) => {
@@ -87,11 +105,76 @@ describe('acquireScreen — default constraints', () => {
       return Promise.resolve(fakeStream([track]));
     });
 
-    // ScreenConstraints has no `audio` field at all — this proves the call site, not just the
-    // type, never sends `audio: true`.
     await acquireScreen({});
 
     expect(seenConstraints?.audio).toBe(false);
+  });
+
+  it('requests audio: true when shareAudio is explicitly true', async () => {
+    const track = fakeVideoTrack();
+    let seenConstraints: MediaStreamConstraints | undefined;
+    stubGetDisplayMedia((constraints) => {
+      seenConstraints = constraints;
+      return Promise.resolve(fakeStream([track]));
+    });
+
+    await acquireScreen({}, true);
+
+    expect(seenConstraints?.audio).toBe(true);
+  });
+});
+
+describe('acquireScreen — optional screen audio (T6)', () => {
+  it('exposes audioTrack when the platform actually supplied one', async () => {
+    const videoTrack = fakeVideoTrack();
+    const audioTrack = fakeAudioTrack();
+    stubGetDisplayMedia(() => Promise.resolve(fakeStream([videoTrack], [audioTrack])));
+
+    const screen = await acquireScreen({}, true);
+
+    expect(screen.audioTrack).toBe(audioTrack);
+  });
+
+  it('leaves audioTrack undefined — not an error — when audio was requested but the platform supplied none', async () => {
+    const videoTrack = fakeVideoTrack();
+    stubGetDisplayMedia(() => Promise.resolve(fakeStream([videoTrack])));
+
+    const screen = await acquireScreen({}, true);
+
+    expect(screen.audioTrack).toBeUndefined();
+    expect(screen.track).toBe(videoTrack);
+  });
+
+  it('stop() stops both the video and audio tracks', async () => {
+    const videoTrack = fakeVideoTrack();
+    const audioTrack = fakeAudioTrack();
+    stubGetDisplayMedia(() => Promise.resolve(fakeStream([videoTrack], [audioTrack])));
+    const screen = await acquireScreen({}, true);
+
+    screen.stop();
+
+    expect(videoTrack.stop).toHaveBeenCalledTimes(1);
+    expect(audioTrack.stop).toHaveBeenCalledTimes(1);
+    expect(screen.stopped).toBe(true);
+  });
+
+  it('preserves shareAudio across the overconstrained-fallback retry', async () => {
+    const videoTrack = fakeVideoTrack();
+    const calls: MediaStreamConstraints[] = [];
+    stubGetDisplayMedia((constraints) => {
+      calls.push(constraints);
+      if (calls.length === 1) {
+        return Promise.reject(new DOMException('constraint not satisfied', 'OverconstrainedError'));
+      }
+      return Promise.resolve(fakeStream([videoTrack]));
+    });
+
+    await acquireScreen({}, true);
+
+    expect(calls).toEqual([
+      { video: { width: 1920, height: 1080, frameRate: 30 }, audio: true },
+      { video: true, audio: true },
+    ]);
   });
 });
 

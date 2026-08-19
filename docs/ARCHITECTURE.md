@@ -1,10 +1,12 @@
 # Target architecture
 
 > This document describes the intended architecture. The Electron desktop shell (T1), the realtime
-> connection/protocol foundation (T2), voice channels/microphone/P2P WebRTC (T3), and camera
-> streaming (T4) are implemented and live-verified — see
-> [`tasks/T3_VOICE_WEBRTC.md`](tasks/T3_VOICE_WEBRTC.md) and
-> [`tasks/T4_CAMERA_STREAMING.md`](tasks/T4_CAMERA_STREAMING.md). See
+> connection/protocol foundation (T2), voice channels/microphone/P2P WebRTC (T3), camera streaming
+> (T4), screen/window video sharing (T5), and screen/system audio (T6) are implemented and
+> live-verified — see [`tasks/T3_VOICE_WEBRTC.md`](tasks/T3_VOICE_WEBRTC.md),
+> [`tasks/T4_CAMERA_STREAMING.md`](tasks/T4_CAMERA_STREAMING.md),
+> [`tasks/T5_SCREEN_SHARE.md`](tasks/T5_SCREEN_SHARE.md), and
+> [`tasks/T6_SCREEN_AUDIO.md`](tasks/T6_SCREEN_AUDIO.md). See
 > [`tasks/STATUS.md`](tasks/STATUS.md) for what remains a marker or is not yet started. Treat any
 > capability this document describes as unimplemented unless STATUS.md says otherwise.
 
@@ -194,7 +196,15 @@ simultaneous source (screen-video) — see
 prerequisite fix T4's own security review had already flagged: `createAndSendOffer()`'s offer
 creation is now the atomic parameterless `setLocalDescription()` rather than a two-step
 `createOffer()`/`setLocalDescription(offer)`, closing a stale-offer race under renegotiation
-collision before screen sharing added more dynamic renegotiation on top of it.
+collision before screen sharing added more dynamic renegotiation on top of it. T6 proved the same
+**zero further transport change** result for a fourth simultaneous source (screen-audio) — see
+[`architecture/WEBRTC_SCREEN_AUDIO.md`](architecture/WEBRTC_SCREEN_AUDIO.md) — but did find one real,
+previously-latent `Peer` bug live testing surfaced: `handleRemoteOffer()` (the responder's path for
+the initial handshake) never reported local track mids after answering, only `createAndSendOffer()`
+did after offering — harmless while every mid-announced track was added post-handshake (true through
+T5), but microphone is seeded _before_ the initial offer/answer cycle, so a pure responder never
+announced its own microphone's mid at all once microphone required the same announcement mechanism.
+Fixed with one added `reportLocalTrackMids()` call mirroring the existing one.
 
 ## Semantic media-source model
 
@@ -202,7 +212,7 @@ collision before screen sharing added more dynamic renegotiation on top of it.
 microphone    independent audio source   — implemented (T3)
 camera        independent video source   — implemented (T4)
 screen-video  selected monitor/window video source   — implemented (T5)
-screen-audio  optional system or process-tree audio source   — not yet implemented (T6)
+screen-audio  optional system audio source (process-tree audio is a later stage) — implemented (T6)
 ```
 
 The target supports all four simultaneously. A camera track must not be replaced by a screen track;
@@ -215,23 +225,38 @@ source replacement, and cleanup belong to the source/transport lifecycle, while 
 semantic state.
 
 Once a second video-kind source (screen) exists alongside camera, `track.kind === 'video'` alone no
-longer identifies what a track shows. T5 resolves this with a semantic identity mechanism — see
+longer identifies what a track shows — and, once T6 added a second audio-kind source (screen-audio)
+alongside microphone, the identical problem applies to audio. T5 resolved this for video with a
+semantic identity mechanism; T6 extended the same mechanism to audio, including announcing
+microphone explicitly (previously an unannounced, kind-inferred default) rather than reintroducing
+absence-based inference now that two audio sources exist — see
 [`architecture/WEBRTC_SCREEN_SHARE.md`](architecture/WEBRTC_SCREEN_SHARE.md)'s "Media source
-identity" section for the full design and a real live-found platform finding that shaped it: an
+identity" section for the full design and a real live-found platform finding that shaped it (an
 earlier `MediaStreamTrack.id`-based design was live-tested and found unreliable on this
-Electron/Chromium build, and was replaced with one anchored to `RTCRtpTransceiver.mid` instead.
+Electron/Chromium build, replaced with one anchored to `RTCRtpTransceiver.mid`), and
+[`architecture/WEBRTC_SCREEN_AUDIO.md`](architecture/WEBRTC_SCREEN_AUDIO.md) for T6's extension.
 
 ## Windows audio stages
 
-1. **SystemLoopbackAudioCapture:** initial Windows 10/11 path, using documented Electron/Chromium
-   system loopback where suitable. It captures the output endpoint mix, not the selected window.
+1. **SystemLoopbackAudioCapture — implemented (T6).** Uses Electron's own documented
+   `session.setDisplayMediaRequestHandler` system-loopback mechanism (`Streams.audio: 'loopback'`),
+   confirmed against this app's pinned Electron version's own type definitions — not the deprecated
+   `chromeMediaSource` constraint form. It captures the output endpoint mix, not the selected
+   window/source (a real, researched platform limit, not an implementation gap — see
+   `architecture/WEBRTC_SCREEN_AUDIO.md`). This stage needed **no code in `packages/windows-media`**:
+   Electron/Chromium perform the entire WASAPI loopback capture internally, and Main's existing
+   `apps/desktop/src/main/screen-share.ts` (which already owns the video source-selection decision
+   this audio grant is inherently coupled to) is the correct, sufficient owner — introducing a
+   `packages/windows-media` module with no actual native/PID-handling logic behind it would be
+   exactly the premature abstraction this repository's workflow guidance warns against. ADR 0007's
+   principle (native/process-level Windows capture belongs in `packages/windows-media`) still governs
+   stage 2 below, which genuinely needs it.
 2. **ProcessLoopbackAudioCapture:** later process-tree capture using supported Windows APIs or a
    justified helper. The Microsoft API requires build 20348+, which means practical client support
-   is Windows 11; runtime capability detection is mandatory.
-
-Both stay behind `packages/windows-media`. T9 decides native addon versus isolated helper after a
-Windows spike. UI receives opaque targets/capabilities, never raw PIDs or generic command execution.
-See [`references/WINDOWS_MEDIA.md`](references/WINDOWS_MEDIA.md).
+   is Windows 11; runtime capability detection is mandatory. This stage belongs in
+   `packages/windows-media` per ADR 0007. T9 decides native addon versus isolated helper after a
+   Windows spike. UI receives opaque targets/capabilities, never raw PIDs or generic command
+   execution. See [`references/WINDOWS_MEDIA.md`](references/WINDOWS_MEDIA.md).
 
 ## Deployment shape
 

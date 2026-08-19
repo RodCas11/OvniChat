@@ -73,14 +73,14 @@ describe('preload bridge', () => {
     expect(result).toEqual([]);
   });
 
-  it('selectScreenShareSource forwards exactly the caller-supplied sourceId and nothing else', async () => {
+  it('selectScreenShareSource forwards exactly the caller-supplied sourceId and shareAudio', async () => {
     const api = exposed.get('desktopApp') as {
-      selectScreenShareSource: (sourceId: string) => Promise<unknown>;
+      selectScreenShareSource: (sourceId: string, shareAudio: boolean) => Promise<unknown>;
     };
 
-    const result = await api.selectScreenShareSource('screen:0:0');
+    const result = await api.selectScreenShareSource('screen:0:0', true);
 
-    expect(invoke).toHaveBeenCalledWith(IPC_CHANNELS.selectScreenShareSource, 'screen:0:0');
+    expect(invoke).toHaveBeenCalledWith(IPC_CHANNELS.selectScreenShareSource, 'screen:0:0', true);
     expect(result).toBe(true);
   });
 });
