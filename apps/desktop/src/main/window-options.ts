@@ -28,6 +28,16 @@ export function buildWindowOptions(
       webSecurity: true,
       devTools: overrides.devToolsEnabled,
       spellcheck: false,
+      // A real-time voice/video call must keep decoding and rendering remote media at full rate
+      // even when this window is occluded or not the OS-focused window (e.g. the other party's
+      // window is on top, or the app is in the background) — Chromium's default background
+      // throttling (reduced timer/rAF/requestVideoFrameCallback rate for non-visible/unfocused
+      // content) is meant for ordinary background tabs, not an active call. Live-measured during
+      // T5 stabilization: running two Electron instances side by side, the non-focused instance's
+      // remote video decode/frame-callback rate dropped enough to miss an 8s frame-delta proof
+      // window entirely, while the focused instance passed the same check quickly every time —
+      // disabling this resolved it.
+      backgroundThrottling: false,
     },
   };
 }

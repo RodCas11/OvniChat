@@ -79,6 +79,26 @@ const desktopConfigSchema = z.object({
   // deterministic camera-off proof for the camera smoke test, meaningless without
   // `DISCO_VOADOR_E2E_VOICE_AUTO_CAMERA=1`. Same `!app.isPackaged` gating as everything else here.
   DISCO_VOADOR_E2E_VOICE_AUTO_CAMERA_OFF_MS: z.coerce.number().int().positive().optional(),
+  // T5: automated two-Electron-instance screen-share smoke test only — mirrors
+  // `DISCO_VOADOR_E2E_VOICE_AUTO_CAMERA` exactly, but for screen sharing. Meaningless without an
+  // auto-join channel also configured; gated behind `!app.isPackaged` at the same point as
+  // everything else here. Does not skip `listScreenShareSources`/`selectScreenShareSource` — the
+  // Renderer still drives the real production IPC, just without a human clicking the picker.
+  DISCO_VOADOR_E2E_VOICE_AUTO_SCREEN_SHARE: z.enum(['1', '0']).optional(),
+  // T5: automatically disables screen sharing again this many milliseconds after it turns on —
+  // deterministic screen-share-off proof, meaningless without
+  // `DISCO_VOADOR_E2E_VOICE_AUTO_SCREEN_SHARE=1`. Same `!app.isPackaged` gating as everything else
+  // here.
+  DISCO_VOADOR_E2E_VOICE_AUTO_SCREEN_SHARE_OFF_MS: z.coerce.number().int().positive().optional(),
+  // T5 stabilization: automatically re-enables screen sharing this many milliseconds after the
+  // auto-off above fires — deterministic re-share proof (a second share cycle must still produce
+  // real decoded remote frames, guarding against stale mid/transceiver/sender state left over from
+  // the first cycle). Meaningless without both of the two flags above also set. Same gating.
+  DISCO_VOADOR_E2E_VOICE_AUTO_SCREEN_SHARE_RESHARE_AFTER_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .optional(),
 });
 
 export interface DesktopConfig {
@@ -91,6 +111,9 @@ export interface DesktopConfig {
         readonly displayName: string;
         readonly autoCamera: boolean;
         readonly autoCameraOffAfterMs: number | undefined;
+        readonly autoScreenShare: boolean;
+        readonly autoScreenShareOffAfterMs: number | undefined;
+        readonly autoScreenShareReshareAfterMs: number | undefined;
       }
     | undefined;
 }
@@ -111,6 +134,10 @@ export function loadDesktopConfig(
           displayName: parsed.DISCO_VOADOR_E2E_VOICE_DISPLAY_NAME ?? 'e2e-tester',
           autoCamera: parsed.DISCO_VOADOR_E2E_VOICE_AUTO_CAMERA === '1',
           autoCameraOffAfterMs: parsed.DISCO_VOADOR_E2E_VOICE_AUTO_CAMERA_OFF_MS,
+          autoScreenShare: parsed.DISCO_VOADOR_E2E_VOICE_AUTO_SCREEN_SHARE === '1',
+          autoScreenShareOffAfterMs: parsed.DISCO_VOADOR_E2E_VOICE_AUTO_SCREEN_SHARE_OFF_MS,
+          autoScreenShareReshareAfterMs:
+            parsed.DISCO_VOADOR_E2E_VOICE_AUTO_SCREEN_SHARE_RESHARE_AFTER_MS,
         }
       : undefined,
   };

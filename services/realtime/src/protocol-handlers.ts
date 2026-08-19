@@ -4,6 +4,7 @@ import {
   CURRENT_PROTOCOL_VERSION,
   isSupportedProtocolVersion,
   type ClientHelloMessage,
+  type ClientMediaTrackSourceMessage,
   type ClientMessage,
   type ClientPingMessage,
   type ClientVoiceJoinMessage,
@@ -185,6 +186,41 @@ function handleWebrtcSignal(message: ClientWebrtcMessage, ctx: HandlerContext): 
 }
 
 /**
+ * Forwards a track's semantic source (camera vs. screen-video — see `media.ts` in
+ * `packages/protocol`) to the one peer it concerns, with the sender's identity substituted
+ * server-side — structurally identical to `handleWebrtcSignal`, and deliberately so: `mid` is
+ * scoped to a single peer connection (see `midSchema`'s doc comment), so unlike an earlier
+ * broadcast-based design, this has exactly one correct target, the same as an offer/answer/ICE
+ * candidate.
+ */
+function handleMediaTrackSource(
+  message: ClientMediaTrackSourceMessage,
+  ctx: HandlerContext,
+): RouteResult {
+  const resolved = ctx.voiceRegistry.resolveSignalingTarget(
+    ctx.connectionId,
+    message.targetParticipantId,
+  );
+  if (!resolved.ok) {
+    return { ok: false, code: resolved.code, message: resolved.reason };
+  }
+
+  const forwarded: ServerMessage = {
+    type: 'media:track-source',
+    id: randomUUID(),
+    sourceParticipantId: resolved.sourceParticipantId,
+    mid: message.mid,
+    source: message.source,
+  };
+
+  return {
+    ok: true,
+    nextState: 'ready',
+    actions: [deliver(resolved.targetConnectionId, forwarded)],
+  };
+}
+
+/**
  * The single decision table for "given this validated message and the connection's current
  * state, what happens." Pure and Electron/WebSocket-free — the full state x message-type matrix,
  * including voice/signaling authorization, is unit-testable without any real socket. Whether a
@@ -230,5 +266,7 @@ export function routeClientMessage(
     case 'webrtc:answer':
     case 'webrtc:ice-candidate':
       return handleWebrtcSignal(message, ctx);
+    case 'media:track-source':
+      return handleMediaTrackSource(message, ctx);
   }
 }

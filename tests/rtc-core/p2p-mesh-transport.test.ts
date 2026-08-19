@@ -152,6 +152,74 @@ describe('P2PMeshTransport — track publication fan-out', () => {
     }
   });
 
+  it('a participant publishing mic + camera + a second independent video track (screen) reaches an existing peer and a newly-added peer, and unpublishing one video track leaves the other two intact (T5 regression)', () => {
+    // Coverage for T5's three-simultaneous-source scenario (microphone + camera + screen-video):
+    // this transport is track-kind-agnostic and was already proven for two simultaneous tracks
+    // (T4's camera-as-a-second-track case above) — this proves the same holds for three, including
+    // two video tracks published side by side, with zero transport code changes.
+    const { transport, connections } = createTransport();
+    const micTrack = fakeAudioTrack('mic-track');
+    const cameraTrack = fakeAudioTrack('camera-track'); // kind is irrelevant to this transport
+    const screenTrack = fakeAudioTrack('screen-track'); // a second, independent video-shaped track
+
+    transport.addParticipant('peer-existing', 'responder');
+    transport.publishTrack(micTrack);
+    transport.publishTrack(cameraTrack);
+    transport.publishTrack(screenTrack);
+
+    const existingPc = [...connections.values()][0];
+    expect(existingPc?.addTrackCalls).toEqual(
+      expect.arrayContaining([micTrack, cameraTrack, screenTrack]),
+    );
+    expect(existingPc?.addTrackCalls).toHaveLength(3);
+
+    // A newly-added peer, joining after all three tracks are already published, receives all three
+    // with no special-casing needed for a late joiner.
+    transport.addParticipant('peer-new', 'responder');
+    const newPc = [...connections.values()][1];
+    expect(newPc?.addTrackCalls).toEqual(
+      expect.arrayContaining([micTrack, cameraTrack, screenTrack]),
+    );
+    expect(newPc?.addTrackCalls).toHaveLength(3);
+
+    // Unpublishing just the screen track removes only that track's sender from every peer, leaving
+    // the microphone and camera tracks (in particular, the *other* video track) untouched.
+    transport.unpublishTrack(screenTrack);
+
+    for (const pc of [existingPc, newPc]) {
+      expect(pc?.removeTrackCalls).toHaveLength(1);
+      expect(pc?.addTrackCalls).toEqual(
+        expect.arrayContaining([micTrack, cameraTrack, screenTrack]),
+      );
+    }
+  });
+
+  it('repeated publish/unpublish/publish cycles on the same track do not accumulate sender bookkeeping (T5 regression)', () => {
+    // Coverage for T5's requirement that screen share's on/off/on/off/on toggling never leaks or
+    // duplicates sender state — exercises `Peer`'s own `Map<MediaStreamTrack, RTCRtpSender>`
+    // bookkeeping (`packages/rtc-core/src/peer.ts`) across several cycles on the *same* track
+    // object, the shape a repeated screen-share toggle actually produces (unlike camera/mic, which
+    // acquire a fresh track each time, screen sharing's own `acquireScreen()` also always returns a
+    // fresh track per T5's design — this test additionally covers the same-track-object case in
+    // case a future caller ever reuses one).
+    const { transport, connections } = createTransport();
+    transport.addParticipant('peer-1', 'responder');
+    const track = fakeAudioTrack('screen-track');
+
+    transport.publishTrack(track);
+    transport.unpublishTrack(track);
+    transport.publishTrack(track);
+    transport.unpublishTrack(track);
+    transport.publishTrack(track);
+
+    const pc = [...connections.values()][0];
+    // Three publishes, two unpublishes — each cycle re-adds cleanly with no extra or missing calls
+    // from stale bookkeeping (e.g. a later `addTrack` silently no-op'ing because `Peer.senders`
+    // still held a reference from a previous, already-unpublished cycle).
+    expect(pc?.addTrackCalls).toHaveLength(3);
+    expect(pc?.removeTrackCalls).toHaveLength(2);
+  });
+
   it('unpublishing a track that was never published is a no-op', () => {
     const { transport, connections } = createTransport();
     transport.addParticipant('peer-1', 'responder');
@@ -182,8 +250,8 @@ describe('P2PMeshTransport — renegotiation wiring (T4)', () => {
   it('does not double-offer when negotiationneeded fires before the initial offer is sent', () => {
     const { transport, connections, signalingPort } = createTransport();
     transport.addParticipant('peer-1', 'initiator');
-    // Fires synchronously, before the initial createAndSendOffer's awaited createOffer() resolves —
-    // negotiated is still false at this point.
+    // Fires synchronously, before the initial createAndSendOffer's awaited setLocalDescription()
+    // resolves — negotiated is still false at this point.
     const pc = [...connections.values()][0];
     pc?.onnegotiationneeded?.(new Event('negotiationneeded'));
 
@@ -287,7 +355,7 @@ describe('P2PMeshTransport — remote track / state events carry the participant
   it('attributes a remote track to the correct participant', () => {
     const { transport, connections } = createTransport();
     transport.addParticipant('peer-1', 'responder');
-    const events: { participantId: string; track: MediaStreamTrack }[] = [];
+    const events: { participantId: string; track: MediaStreamTrack; mid: string | null }[] = [];
     transport.on('remoteTrack', (event) => events.push(event));
 
     const pc = [...connections.values()][0];
@@ -295,8 +363,96 @@ describe('P2PMeshTransport — remote track / state events carry the participant
     const stream = {} as MediaStream;
     pc?.ontrack?.({ track, streams: [stream] } as unknown as RTCTrackEvent);
 
-    expect(events).toEqual([{ participantId: 'peer-1', track, stream }]);
+    expect(events).toEqual([{ participantId: 'peer-1', track, stream, mid: null }]);
   });
+
+  it('attributes a remote track to its negotiated mid when the platform reports one', () => {
+    const { transport, connections } = createTransport();
+    transport.addParticipant('peer-1', 'responder');
+    const events: { participantId: string; track: MediaStreamTrack; mid: string | null }[] = [];
+    transport.on('remoteTrack', (event) => events.push(event));
+
+    const pc = [...connections.values()][0];
+    const track = fakeAudioTrack();
+    const stream = {} as MediaStream;
+    pc?.ontrack?.({
+      track,
+      streams: [stream],
+      transceiver: { mid: '2' },
+    } as unknown as RTCTrackEvent);
+
+    expect(events).toEqual([{ participantId: 'peer-1', track, stream, mid: '2' }]);
+  });
+
+  it('reports a local track mid once this side sends an offer that includes it (T5)', async () => {
+    const { transport, signalingPort } = createTransport();
+    const midEvents: { participantId: string; track: MediaStreamTrack; mid: string }[] = [];
+    transport.on('localTrackMid', (event) => midEvents.push(event));
+
+    const track = fakeAudioTrack('screen-track');
+    transport.publishTrack(track);
+    transport.addParticipant('peer-1', 'initiator'); // seeds the track, then sends the initial offer
+    await flushMicrotasks();
+
+    expect(signalingPort.offers).toHaveLength(1);
+    expect(midEvents).toEqual([{ participantId: 'peer-1', track, mid: '0' }]);
+  });
+
+  it(
+    'QA regression (T5 finding): unpublishing one video-shaped track and publishing a ' +
+      'different one reuses the freed transceiver and its already-negotiated mid, exactly like a ' +
+      'real platform reusing a transceiver whose sender track was cleared',
+    async () => {
+      // This is deliberately NOT exercised by the higher-level renderer reconciliation
+      // (`use-voice-channel.ts`) or by the T5 E2E smoke test, which never frees and then reuses a
+      // video-kind transceiver for a *different* semantic source in the same run (camera stays on
+      // for the whole scenario; screen always gets its own fresh transceiver). This test only
+      // establishes the mid-reuse *precondition* is real and reachable through the actual
+      // `P2PMeshTransport`/`Peer` product code path — see `FakePeerConnection.addTrack`'s doc
+      // comment for why the fake now models this (it previously always created a brand-new
+      // transceiver per `addTrack`, which could never represent this case). It intentionally does
+      // NOT assert anything about `use-voice-channel.ts`'s `wireRemoteVideoTrack` reconciliation,
+      // which lives in the renderer and has no test harness yet (flagged separately in QA review) —
+      // if that reconciliation's 'mute'/'unmute' listeners are bound once at first-wire time using
+      // the source known *then*, this mid-reuse precondition is what would let a later, different
+      // source's frames be delivered under a stale camera/screen classification.
+      const { transport, connections, signalingPort } = createTransport();
+      const midEvents: { participantId: string; track: MediaStreamTrack; mid: string }[] = [];
+      transport.on('localTrackMid', (event) => midEvents.push(event));
+
+      transport.addParticipant('peer-1', 'initiator');
+      await flushMicrotasks();
+      expect(signalingPort.offers).toHaveLength(1);
+
+      const pc = [...connections.values()][0];
+      const cameraTrack = fakeAudioTrack('camera-track'); // kind is irrelevant to this transport/fake
+      transport.publishTrack(cameraTrack);
+      pc?.onnegotiationneeded?.(new Event('negotiationneeded'));
+      await flushMicrotasks();
+      expect(signalingPort.offers).toHaveLength(2);
+      const cameraMidEvent = midEvents.find((event) => event.track === cameraTrack);
+      expect(cameraMidEvent?.mid).toBeDefined();
+      const cameraMid = cameraMidEvent?.mid;
+
+      transport.unpublishTrack(cameraTrack);
+      pc?.onnegotiationneeded?.(new Event('negotiationneeded'));
+      await flushMicrotasks();
+      expect(signalingPort.offers).toHaveLength(3);
+
+      const screenTrack = fakeAudioTrack('screen-track'); // a different track, a different source
+      transport.publishTrack(screenTrack);
+      pc?.onnegotiationneeded?.(new Event('negotiationneeded'));
+      await flushMicrotasks();
+      expect(signalingPort.offers).toHaveLength(4);
+
+      const screenMidEvent = midEvents.find((event) => event.track === screenTrack);
+      // The crux of the finding: the *different* track (screen) is reported under the exact same
+      // mid the camera track previously held — this is real transceiver reuse, not a fresh m-line —
+      // proving `(participantId, mid)` alone cannot assume it always identifies a *single* logical
+      // track's lifetime; the same key can legitimately carry a different semantic source over time.
+      expect(screenMidEvent?.mid).toBe(cameraMid);
+    },
+  );
 
   it('a peer reaching "failed" both emits peerStateChanged and triggers cleanup/peerClosed', () => {
     const { transport, connections } = createTransport();

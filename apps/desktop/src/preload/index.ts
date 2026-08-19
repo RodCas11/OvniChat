@@ -5,6 +5,7 @@ import {
   type DesktopApi,
   type DesktopE2EVoiceConfig,
   type DesktopRealtimeConfig,
+  type DesktopScreenSource,
   type DesktopVersionInfo,
 } from '../shared/ipc-contract.js';
 
@@ -17,6 +18,12 @@ const desktopApi: DesktopApi = {
     ipcRenderer.invoke(IPC_CHANNELS.getE2EVoiceConfig) as Promise<
       DesktopE2EVoiceConfig | undefined
     >,
+  listScreenShareSources: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.listScreenShareSources) as Promise<
+      readonly DesktopScreenSource[]
+    >,
+  selectScreenShareSource: (sourceId: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.selectScreenShareSource, sourceId) as Promise<boolean>,
 };
 
 contextBridge.exposeInMainWorld('desktopApp', desktopApi);

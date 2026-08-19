@@ -188,26 +188,38 @@ first (T3) implementation was still missing: renegotiation. `Peer` now listens f
 `negotiationneeded` event (standard "perfect negotiation" glare handling, anchored to the same
 deterministic `role` T3 already computes — see [`architecture/WEBRTC_CAMERA.md`](architecture/WEBRTC_CAMERA.md)),
 so `publishTrack`/`unpublishTrack` correctly renegotiate a track added to or removed from an
-already-`'connected'` peer — required for camera on/off mid-call, and available to any future media
-source (screen-video/screen-audio) with no further transport change.
+already-`'connected'` peer. T5 proved this needed **zero further transport change** for a third
+simultaneous source (screen-video) — see
+[`architecture/WEBRTC_SCREEN_SHARE.md`](architecture/WEBRTC_SCREEN_SHARE.md) — beyond one
+prerequisite fix T4's own security review had already flagged: `createAndSendOffer()`'s offer
+creation is now the atomic parameterless `setLocalDescription()` rather than a two-step
+`createOffer()`/`setLocalDescription(offer)`, closing a stale-offer race under renegotiation
+collision before screen sharing added more dynamic renegotiation on top of it.
 
 ## Semantic media-source model
 
 ```text
 microphone    independent audio source   — implemented (T3)
 camera        independent video source   — implemented (T4)
-screen-video  selected monitor/window video source   — not yet implemented (T5)
-screen-audio  optional system or process-tree audio source   — not yet implemented (T5/T6)
+screen-video  selected monitor/window video source   — implemented (T5)
+screen-audio  optional system or process-tree audio source   — not yet implemented (T6)
 ```
 
 The target supports all four simultaneously. A camera track must not be replaced by a screen track;
 starting or stopping screen capture must not stop voice — T3/T4 already establish this pattern for
-microphone and camera: microphone muting sets `track.enabled = false` (never stops/reacquires the
-device); camera on/off fully stops/reacquires the device (see `WEBRTC_CAMERA.md` for why that
-differs from microphone) but never touches the peer connection itself, only renegotiates the one
-affected track. Joining/leaving a screen share (once implemented) must not touch the voice/camera
-`RTCPeerConnection`s at all. Track end, mute, source replacement, and cleanup belong to the
-source/transport lifecycle, while UI observes semantic state.
+microphone and camera, and T5 extends it identically for screen: microphone muting sets
+`track.enabled = false` (never stops/reacquires the device); camera and screen-share on/off both
+fully stop/reacquire the device (see `WEBRTC_CAMERA.md` for why that differs from microphone) but
+never touch the peer connection itself, only renegotiate the one affected track. Track end, mute,
+source replacement, and cleanup belong to the source/transport lifecycle, while UI observes
+semantic state.
+
+Once a second video-kind source (screen) exists alongside camera, `track.kind === 'video'` alone no
+longer identifies what a track shows. T5 resolves this with a semantic identity mechanism — see
+[`architecture/WEBRTC_SCREEN_SHARE.md`](architecture/WEBRTC_SCREEN_SHARE.md)'s "Media source
+identity" section for the full design and a real live-found platform finding that shaped it: an
+earlier `MediaStreamTrack.id`-based design was live-tested and found unreliable on this
+Electron/Chromium build, and was replaced with one anchored to `RTCRtpTransceiver.mid` instead.
 
 ## Windows audio stages
 

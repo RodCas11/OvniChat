@@ -36,7 +36,16 @@ const realtimeEntry = path.join(repoRoot, 'services', 'realtime', 'dist', 'index
 
 const REALTIME_START_TIMEOUT_MS = 15_000;
 const INSTANCE_TIMEOUT_MS = 120_000;
-const AUTO_CAMERA_OFF_AFTER_MS = 5_000;
+// Was 5s. Live-measured regression from T5 stabilization's delta-based video probe (see
+// `e2e-video-probe.ts`): that probe now requires observing 2 *additional* decoded frames after
+// `ontrack`, not just one, so it needs negotiation time (peer connect + SDP renegotiation to add
+// the video track) plus a small decode window before the camera is allowed to turn off again. At
+// 5s, a run was observed where the remote track's `E2E_REMOTE_VIDEO_ENDED` fired before the probe
+// ever reached 2 frames of delta, so it timed out `SILENT` instead of `OK` even though the camera
+// and peer connection both worked correctly — an artifact of the deadline, not a real regression.
+// Raised with headroom to give negotiation + delta-proof room to complete before the deliberate
+// camera-off.
+const AUTO_CAMERA_OFF_AFTER_MS = 10_000;
 
 function fail(message) {
   console.error(message);

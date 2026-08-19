@@ -49,6 +49,15 @@ export {
   type VoiceParticipant,
 } from './messages/voice.js';
 export {
+  clientMediaTrackSourceMessageSchema,
+  midSchema,
+  serverMediaTrackSourceMessageSchema,
+  trackSourceSchema,
+  type ClientMediaTrackSourceMessage,
+  type ServerMediaTrackSourceMessage,
+  type TrackSource,
+} from './messages/media.js';
+export {
   SDP_MAX_LENGTH,
   clientWebrtcAnswerMessageSchema,
   clientWebrtcIceCandidateMessageSchema,

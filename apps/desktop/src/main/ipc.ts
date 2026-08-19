@@ -5,9 +5,16 @@ import {
   IPC_CHANNELS,
   type DesktopE2EVoiceConfig,
   type DesktopRealtimeConfig,
+  type DesktopScreenSource,
   type DesktopVersionInfo,
 } from '../shared/ipc-contract.js';
 import { isAllowedOrigin } from './origins.js';
+import { listScreenShareSources, selectScreenShareSource } from './screen-share.js';
+
+/** Bounds the IPC argument before it ever reaches `selectScreenShareSource` — real
+ * `DesktopCapturerSource` ids are short (`window:1234:0`/`screen:0:0`-shaped); this is generous
+ * headroom, not a real expected length, purely to reject an absurd payload cheaply. */
+const MAX_SCREEN_SOURCE_ID_LENGTH = 256;
 
 /**
  * A sender is trusted only if the invoking WebContents is the one main-process window we created
@@ -82,6 +89,32 @@ export function registerIpcHandlers(
     (event: IpcMainInvokeEvent): DesktopE2EVoiceConfig | undefined => {
       assertTrustedSender(event, IPC_CHANNELS.getE2EVoiceConfig);
       return currentE2EVoiceConfig;
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.listScreenShareSources,
+    async (event: IpcMainInvokeEvent): Promise<readonly DesktopScreenSource[]> => {
+      assertTrustedSender(event, IPC_CHANNELS.listScreenShareSources);
+      return listScreenShareSources();
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.selectScreenShareSource,
+    (event: IpcMainInvokeEvent, sourceId: unknown): boolean => {
+      assertTrustedSender(event, IPC_CHANNELS.selectScreenShareSource);
+      // Runtime-validate the renderer-supplied argument before it ever reaches
+      // `selectScreenShareSource` — an invalid shape is rejected the same way an unknown/stale id
+      // is (returning `false`, never throwing a detail-leaking error).
+      if (
+        typeof sourceId !== 'string' ||
+        sourceId.length === 0 ||
+        sourceId.length > MAX_SCREEN_SOURCE_ID_LENGTH
+      ) {
+        return false;
+      }
+      return selectScreenShareSource(sourceId);
     },
   );
 }

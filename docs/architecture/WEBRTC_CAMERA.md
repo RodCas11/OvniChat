@@ -196,17 +196,13 @@ seconds later. Each instance must prove, not merely assert:
 
 ## Known gaps / deliberately deferred
 
-- **Renegotiation offer atomicity** — `Peer.createAndSendOffer()` calls `createOffer()` then
-  `setLocalDescription(offer)` as two separate awaited steps, rather than the atomic parameterless
-  `setLocalDescription()` MDN's reference "perfect negotiation" pattern uses. A security review
-  found this theoretically allows a stale offer to be applied if a remote collision resolves
-  entirely between the two steps — worst plausible impact is a stalled/duplicated renegotiation
-  round for one peer pair, not a crash or security bypass. Not reproduced across 4 consecutive live
-  two-instance camera E2E runs. Fix requires reworking `tests/rtc-core/fake-peer-connection.ts`'s
-  simulation model (the existing glare/collision tests control `createOffer()`'s timing as a
-  separate injectable step) — tracked as a follow-up, not fixed here to avoid a rushed change to a
-  security-sensitive, already-well-tested negotiation path. See
-  [`../tasks/T4_CAMERA_STREAMING.md`](../tasks/T4_CAMERA_STREAMING.md) for the full finding.
+- **Renegotiation offer atomicity — fixed in T5.** `Peer.createAndSendOffer()` used to call
+  `createOffer()` then `setLocalDescription(offer)` as two separate awaited steps. T5 required this
+  fixed before screen sharing added more dynamic renegotiation on top of it (screen share increases
+  the odds of hitting the race). The fix and its regression test
+  (`tests/rtc-core/peer.test.ts`, "the polite side handles a colliding remote offer while its own
+  offer synthesis is still pending") are described in
+  [`WEBRTC_SCREEN_SHARE.md`](WEBRTC_SCREEN_SHARE.md).
 - No device-picker UI (architecture supports a `deviceId` constraint; T4 doesn't build the picker).
 - No `RTCRtpSender.replaceTrack`-based device switching without renegotiation — T4's on/off model
   (stop + fresh `acquireCamera()`) always renegotiates; a future device-switch feature could add

@@ -42,22 +42,49 @@ handlers and grants exactly two cases — `permission === 'media'` where the req
 **or** video-only (never both in the same `mediaTypes` array; microphone and camera are always two
 independent `getUserMedia` calls, never one combined request) **and** the requesting origin matches
 the app's own allowed-origins list. Every other permission kind, and every other media/origin
-combination, is denied. Screen-capture permission gating (indicator, stop control, source-choice
-consent) remains unimplemented until T5.
+combination, is denied.
+
+**Implemented (T5 screen/window capture):** display capture is a materially different grant path
+from `getUserMedia` — see `permissions.ts`'s `isDisplayCaptureRequest` doc comment for the research
+this is based on (this app's pinned Electron version's own C++ source). The actual grant decision
+lives in `apps/desktop/src/main/screen-share.ts`'s `session.setDisplayMediaRequestHandler()`, not
+in the permission handlers: source enumeration (`desktopCapturer.getSources()`) is sanitized to
+plain data before ever reaching the Renderer, a source can only be selected from the _most recent_
+enumeration (a stale/previous-enumeration id is rejected), a successful selection is single-use
+(consumed synchronously as the first thing the handler does, so a second concurrent
+`getDisplayMedia()` call can never observe or reuse it), the id is re-resolved against Main's own
+cached native source list before granting (never trusting the sanitized data the Renderer holds),
+the request's origin is checked, and no source ever satisfies a request without an explicit prior
+`selectScreenShareSource` call from a trusted sender — there is no default/first-enumerated-source
+grant. Audio is never included in the grant (`audio` is never passed to the callback); system/game
+audio capture is out of scope until a future task. A researched, documented residual finding
+(`permissions.ts`'s `isDisplayCaptureRequest` doc comment) about a legacy `chromeMediaSource:
+'screen'` `getUserMedia()` constraint form that does not route through
+`setDisplayMediaRequestHandler` at all is flagged for ongoing `security-reviewer` attention — this
+app's Renderer never invokes that legacy form itself, and is defended in depth against reaching a
+state where it could (`sandbox: true`, `contextIsolation: true`, `script-src 'self'` CSP, no Node/
+filesystem exposure through Preload), but the residual risk is documented rather than silently
+accepted. Source titles/names are rendered as plain text content only, never interpolated into
+markup/attributes, and are not logged (see `ScreenSourcePicker.tsx`).
 
 **Test-only automation flags, and why they can't leak into a real build:** `DISCO_VOADOR_E2E_FAKE_MEDIA`
 (Chromium's fake-microphone-and-camera command-line switches — the same single switch provides
-both) and `DISCO_VOADOR_E2E_VOICE_AUTO_JOIN_CHANNEL`/`_DISPLAY_NAME`/`_AUTO_CAMERA`/
-`_AUTO_CAMERA_OFF_MS` (auto-join a voice channel and optionally auto-toggle the camera with no user
-interaction, for the scripted two-instance voice/camera smoke tests) are all read from the
-environment but gated a second time behind `!app.isPackaged` before they can take effect —
-`app.isPackaged` reflects how the binary was actually built/launched, not anything an environment
-variable can spoof, so a packaged/distributed build can never activate any of them regardless of
-what surrounds its environment. This is the reusable pattern for any future test-only automation
-hook: gate on the env var for opt-in, and separately on `!app.isPackaged` for an unspoofable
-production kill-switch, checked at every point that matters (command-line switches in
-`main/index.ts`, and again before the IPC channel that exposes the config to the Renderer in
-`main/window.ts`).
+both), `DISCO_VOADOR_E2E_VOICE_AUTO_JOIN_CHANNEL`/`_DISPLAY_NAME`/`_AUTO_CAMERA`/
+`_AUTO_CAMERA_OFF_MS`/`_AUTO_SCREEN_SHARE`/`_AUTO_SCREEN_SHARE_OFF_MS` (auto-join a voice channel
+and optionally auto-toggle the camera/screen share with no user interaction, for the scripted
+two-instance voice/camera/screen smoke tests), and `DISCO_VOADOR_E2E_SCREEN_SMOKE` (arms the
+screen-share smoke test's console-relay exit watcher) are all read from the environment but gated a
+second time behind `!app.isPackaged` before they can take effect — `app.isPackaged` reflects how
+the binary was actually built/launched, not anything an environment variable can spoof, so a
+packaged/distributed build can never activate any of them regardless of what surrounds its
+environment. T5's screen-share auto-selection deliberately does **not** add a special test-only IPC
+channel for this — the E2E flow drives the exact same `listScreenShareSources`/
+`selectScreenShareSource` production IPC a real picker uses, just choosing whichever screen source
+sorts first automatically, so there is no additional privileged surface introduced purely for
+testing. This is the reusable pattern for any future test-only automation hook: gate on the env var
+for opt-in, and separately on `!app.isPackaged` for an unspoofable production kill-switch, checked
+at every point that matters (command-line switches in `main/index.ts`, and again before the IPC
+channel that exposes the config to the Renderer in `main/window.ts`).
 
 ## Realtime and protocol
 
@@ -78,8 +105,21 @@ between two connections confirmed to be in the _same_ voice channel
 channel, or a self-targeted signal are all rejected without closing the connection (non-fatal, per
 the closed error-code-to-close-code mapping in `packages/protocol/src/errors.ts`). SDP and ICE
 candidates are bounded opaque strings/structures the server never parses semantically — only their
-size is bounded (8192 / 1024 bytes) so a hostile client cannot smuggle an oversized payload inside an
-otherwise-small signaling message.
+size is bounded (24576 / 1024 bytes; the SDP bound was raised from an original 8192 in T5 after live
+testing found a genuine 3-media-source offer exceeding it — see
+`packages/protocol/src/messages/webrtc.ts`'s `SDP_MAX_LENGTH` doc comment) so a hostile client
+cannot smuggle an oversized payload inside an otherwise-small signaling message. The realtime
+service's transport-level `REALTIME_MAX_MESSAGE_BYTES` (`services/realtime/src/config.ts`) was
+raised alongside it (16 KiB → 32 KiB) and deliberately kept with headroom above the SDP bound, not
+sized identically to it, once JSON envelope overhead and `\r\n` escaping are accounted for.
+
+**Implemented (T5):** `media:track-source` (the semantic camera-vs-screen-video identity
+announcement — see `docs/architecture/WEBRTC_SCREEN_SHARE.md`) follows the exact same
+never-trust-client-identity pattern as `webrtc:offer`/`answer`/`ice-candidate`: the forwarded
+message's `sourceParticipantId` is always server-derived from the sender's own voice-registry
+membership, never read from the client's message body, and delivery is targeted (resolved via the
+same `resolveSignalingTarget`, same same-channel-only authorization) rather than a channel-wide
+broadcast.
 
 Authentication and authorization details remain open for T2/T7 and require an explicit threat
 review before public exposure.

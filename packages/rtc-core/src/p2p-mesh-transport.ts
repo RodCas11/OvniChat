@@ -37,6 +37,7 @@ export class P2PMeshTransport implements MediaTransport {
   private readonly publishedTracks = new Set<MediaStreamTrack>();
 
   private readonly remoteTrackListeners = new Set<MediaTransportEvents['remoteTrack']>();
+  private readonly localTrackMidListeners = new Set<MediaTransportEvents['localTrackMid']>();
   private readonly peerStateChangedListeners = new Set<MediaTransportEvents['peerStateChanged']>();
   private readonly peerClosedListeners = new Set<MediaTransportEvents['peerClosed']>();
 
@@ -57,9 +58,14 @@ export class P2PMeshTransport implements MediaTransport {
 
     const pc = this.createPeerConnection(this.config);
     const peer = new Peer(participantId, role, pc, this.signalingPort, {
-      onRemoteTrack: (track, stream) => {
+      onRemoteTrack: (track, stream, mid) => {
         for (const listener of [...this.remoteTrackListeners]) {
-          listener({ participantId, track, stream });
+          listener({ participantId, track, stream, mid });
+        }
+      },
+      onLocalTrackMid: (track, mid) => {
+        for (const listener of [...this.localTrackMidListeners]) {
+          listener({ participantId, track, mid });
         }
       },
       onStateChanged: (connectionState, iceConnectionState) => {
@@ -182,6 +188,8 @@ export class P2PMeshTransport implements MediaTransport {
     switch (event) {
       case 'remoteTrack':
         return this.remoteTrackListeners as Set<MediaTransportEvents[K]>;
+      case 'localTrackMid':
+        return this.localTrackMidListeners as Set<MediaTransportEvents[K]>;
       case 'peerStateChanged':
         return this.peerStateChangedListeners as Set<MediaTransportEvents[K]>;
       case 'peerClosed':

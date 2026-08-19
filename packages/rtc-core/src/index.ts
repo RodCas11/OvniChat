@@ -4,6 +4,7 @@ export { P2PMeshTransport, type P2PMeshTransportOptions } from './p2p-mesh-trans
 export { Peer, type PeerCallbacks } from './peer.js';
 export { createRtcPeerConnection, type RtcPeerConnectionLike } from './rtc-peer-connection.js';
 export type {
+  LocalTrackMidEvent,
   MediaTransport,
   MediaTransportEvents,
   ParticipantId,

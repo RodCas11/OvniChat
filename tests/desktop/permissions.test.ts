@@ -1,10 +1,19 @@
 import type { Session } from 'electron';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { installPermissionHandlers } from '../../apps/desktop/src/main/permissions.js';
+const hasPendingScreenShareSelectionMock = vi.fn(() => false);
+vi.mock('../../apps/desktop/src/main/screen-share.js', () => ({
+  hasPendingScreenShareSelection: hasPendingScreenShareSelectionMock,
+}));
+
+const { installPermissionHandlers } = await import('../../apps/desktop/src/main/permissions.js');
 
 const ALLOWED_ORIGIN = 'app://renderer';
 const allowedOrigins = [ALLOWED_ORIGIN];
+
+beforeEach(() => {
+  hasPendingScreenShareSelectionMock.mockReturnValue(false);
+});
 
 describe('installPermissionHandlers', () => {
   describe('permission checks', () => {
@@ -110,6 +119,55 @@ describe('installPermissionHandlers', () => {
       requestHandler(null, 'media', callback, {
         requestingUrl: ALLOWED_ORIGIN,
         mediaTypes: ['audio', 'video'],
+      });
+
+      expect(callback).toHaveBeenCalledWith(false);
+    });
+
+    it('grants a getDisplayMedia()-shaped request (empty mediaTypes) from the allowed origin when a source is armed', () => {
+      // A real `getDisplayMedia()` call reaches this handler as `permission === 'media'` with an
+      // *empty* `mediaTypes` array — see `isDisplayCaptureRequest`'s doc comment in
+      // `main/permissions.ts` for the Electron-source-level research behind this. Per a security
+      // review's follow-up, this also requires a currently-armed `screen-share.ts` selection
+      // (this app's own sanctioned flow always arms one via `selectScreenShareSource` immediately
+      // before calling `getDisplayMedia()`) — granting this permission only lets the request
+      // continue to `screen-share.ts`'s own (default-deny) `setDisplayMediaRequestHandler` gate.
+      hasPendingScreenShareSelectionMock.mockReturnValue(true);
+      const requestHandler = install();
+      const callback = vi.fn();
+
+      requestHandler(null, 'media', callback, {
+        requestingUrl: ALLOWED_ORIGIN,
+        mediaTypes: [],
+      });
+
+      expect(callback).toHaveBeenCalledWith(true);
+    });
+
+    it('denies a getDisplayMedia()-shaped request when no source is currently armed', () => {
+      // Covers both a genuinely stray/direct call and the documented legacy `chromeMediaSource:
+      // 'screen'` bypass this handler cannot otherwise distinguish from a real `getDisplayMedia()`
+      // call — see `isDisplayCaptureRequest`'s doc comment.
+      hasPendingScreenShareSelectionMock.mockReturnValue(false);
+      const requestHandler = install();
+      const callback = vi.fn();
+
+      requestHandler(null, 'media', callback, {
+        requestingUrl: ALLOWED_ORIGIN,
+        mediaTypes: [],
+      });
+
+      expect(callback).toHaveBeenCalledWith(false);
+    });
+
+    it('denies a getDisplayMedia()-shaped request from an origin outside the allowlist even when a source is armed', () => {
+      hasPendingScreenShareSelectionMock.mockReturnValue(true);
+      const requestHandler = install();
+      const callback = vi.fn();
+
+      requestHandler(null, 'media', callback, {
+        requestingUrl: 'https://evil.example',
+        mediaTypes: [],
       });
 
       expect(callback).toHaveBeenCalledWith(false);

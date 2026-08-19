@@ -1,16 +1,33 @@
 import type { IpcMainInvokeEvent, WebContents } from 'electron';
 import { describe, expect, it, vi } from 'vitest';
 
-type Handler = (event: IpcMainInvokeEvent) => unknown;
+type Handler = (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown;
 
 const handlers = new Map<string, Handler>();
 const ipcHandleSpy = vi.fn((channel: string, listener: Handler) => {
   handlers.set(channel, listener);
 });
 
+const listScreenShareSourcesMock = vi.fn(async () => [
+  {
+    id: 'screen:0:0',
+    name: 'Entire Screen',
+    type: 'screen' as const,
+    thumbnailDataUrl: 'data:image/png;base64,abc',
+    appIconDataUrl: undefined,
+    displayId: undefined,
+  },
+]);
+const selectScreenShareSourceMock = vi.fn((sourceId: string) => sourceId === 'screen:0:0');
+
 vi.mock('electron', () => ({
   app: { getVersion: () => '0.0.0' },
   ipcMain: { handle: ipcHandleSpy },
+}));
+
+vi.mock('../../apps/desktop/src/main/screen-share.js', () => ({
+  listScreenShareSources: listScreenShareSourcesMock,
+  selectScreenShareSource: selectScreenShareSourceMock,
 }));
 
 const { IPC_CHANNELS } = await import('../../apps/desktop/src/shared/ipc-contract.js');
@@ -91,9 +108,10 @@ describe('registerIpcHandlers', () => {
     expect(() =>
       registerIpcHandlers(fakeMainWebContents(2), allowedOrigins, realtimeConfig),
     ).not.toThrow();
-    // Three channels (getVersionInfo, getRealtimeConfig, getE2EVoiceConfig) are each registered
-    // exactly once, ever — not once per `registerIpcHandlers` call.
-    expect(ipcHandleSpy).toHaveBeenCalledTimes(3);
+    // Five channels (getVersionInfo, getRealtimeConfig, getE2EVoiceConfig,
+    // listScreenShareSources, selectScreenShareSource) are each registered exactly once, ever —
+    // not once per `registerIpcHandlers` call.
+    expect(ipcHandleSpy).toHaveBeenCalledTimes(5);
 
     const handler = handlers.get(IPC_CHANNELS.getVersionInfo);
     expect(() => handler?.(fakeEvent(1, 'app://renderer/index.html'))).toThrow(/untrusted sender/);
@@ -128,11 +146,89 @@ describe('registerIpcHandlers', () => {
       displayName: 'e2e-tester',
       autoCamera: false,
       autoCameraOffAfterMs: undefined,
+      autoScreenShare: false,
+      autoScreenShareOffAfterMs: undefined,
+      autoScreenShareReshareAfterMs: undefined,
     };
     registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig, e2eVoiceConfig);
 
     const handler = handlers.get(IPC_CHANNELS.getE2EVoiceConfig);
     const result = await handler?.(fakeEvent(1, 'app://renderer/index.html'));
     expect(result).toEqual(e2eVoiceConfig);
+  });
+
+  it('lists screen share sources for a trusted sender', async () => {
+    registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig);
+
+    const handler = handlers.get(IPC_CHANNELS.listScreenShareSources);
+    expect(handler).toBeTypeOf('function');
+
+    const result = await handler?.(fakeEvent(1, 'app://renderer/index.html'));
+    expect(result).toEqual([
+      {
+        id: 'screen:0:0',
+        name: 'Entire Screen',
+        type: 'screen',
+        thumbnailDataUrl: 'data:image/png;base64,abc',
+        appIconDataUrl: undefined,
+        displayId: undefined,
+      },
+    ]);
+  });
+
+  it('rejects listScreenShareSources from an untrusted sender', async () => {
+    registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig);
+
+    // Unlike the other handlers above, this one is `async` (it awaits real source enumeration in
+    // production) — the sender check still runs first, but throwing inside an `async function`
+    // always surfaces as a rejected promise, never a synchronous throw, so this must be asserted
+    // with `rejects` rather than the synchronous `expect(() => ...).toThrow()` pattern used
+    // elsewhere in this file for the non-async handlers.
+    const handler = handlers.get(IPC_CHANNELS.listScreenShareSources);
+    await expect(handler?.(fakeEvent(99, 'https://evil.example/'))).rejects.toThrow(
+      /untrusted sender/,
+    );
+  });
+
+  it('selects a screen share source for a trusted sender with a valid string id', async () => {
+    registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig);
+
+    const handler = handlers.get(IPC_CHANNELS.selectScreenShareSource);
+    expect(handler).toBeTypeOf('function');
+
+    const result = await handler?.(fakeEvent(1, 'app://renderer/index.html'), 'screen:0:0');
+    expect(result).toBe(true);
+    expect(selectScreenShareSourceMock).toHaveBeenCalledWith('screen:0:0');
+  });
+
+  it('rejects selectScreenShareSource from an untrusted sender without calling into screen-share.ts', () => {
+    registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig);
+    selectScreenShareSourceMock.mockClear();
+
+    const handler = handlers.get(IPC_CHANNELS.selectScreenShareSource);
+    expect(() => handler?.(fakeEvent(99, 'https://evil.example/'), 'screen:0:0')).toThrow(
+      /untrusted sender/,
+    );
+    expect(selectScreenShareSourceMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a non-string selectScreenShareSource argument without calling into screen-share.ts', async () => {
+    registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig);
+    selectScreenShareSourceMock.mockClear();
+
+    const handler = handlers.get(IPC_CHANNELS.selectScreenShareSource);
+    const result = await handler?.(fakeEvent(1, 'app://renderer/index.html'), { evil: true });
+    expect(result).toBe(false);
+    expect(selectScreenShareSourceMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects an oversized selectScreenShareSource argument without calling into screen-share.ts', async () => {
+    registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig);
+    selectScreenShareSourceMock.mockClear();
+
+    const handler = handlers.get(IPC_CHANNELS.selectScreenShareSource);
+    const result = await handler?.(fakeEvent(1, 'app://renderer/index.html'), 'x'.repeat(1000));
+    expect(result).toBe(false);
+    expect(selectScreenShareSourceMock).not.toHaveBeenCalled();
   });
 });

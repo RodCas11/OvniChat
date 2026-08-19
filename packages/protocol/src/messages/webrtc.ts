@@ -7,10 +7,18 @@ import { participantIdSchema } from '../identifiers.js';
  * SDP and ICE are untrusted network payloads carried as bounded opaque strings — this server
  * never parses their semantic content (that's `RTCPeerConnection`'s job in the Renderer); it only
  * bounds their size so a hostile client cannot smuggle an oversized blob inside an otherwise-tiny
- * signaling message just because the global per-message limit is larger. A real audio-only SDP is
- * typically a few KB; 8 KiB leaves comfortable headroom.
+ * signaling message just because the global per-message limit is larger.
+ *
+ * This was originally 8192 (8 KiB), sized for an audio-only or audio+camera (2 m-line) SDP. T5
+ * live two-instance testing found a real offer negotiating all three sources at once (microphone +
+ * camera + screen-video, 3 m-lines, each video m-line carrying Chromium's full modern codec/RTX/
+ * extension set) measured 10,859 characters — genuinely rejected by the old bound, not a
+ * theoretical concern. Raised with real headroom for further ICE candidates accumulating during
+ * trickle and future codec/extension growth, while staying comfortably under
+ * `REALTIME_MAX_MESSAGE_BYTES` (`services/realtime/src/config.ts`) once JSON envelope overhead and
+ * `\r\n` -> `\\r\\n` escaping are accounted for (both were raised together — see that file).
  */
-export const SDP_MAX_LENGTH = 8192;
+export const SDP_MAX_LENGTH = 24576;
 export const sdpSchema = z.string().min(1).max(SDP_MAX_LENGTH);
 
 const ICE_CANDIDATE_MAX_LENGTH = 1024;

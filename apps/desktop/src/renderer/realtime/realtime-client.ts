@@ -3,6 +3,7 @@ import {
   parseServerMessage,
   type ClientMessage,
   type ServerErrorMessage,
+  type ServerMediaTrackSourceMessage,
   type ServerMessage,
   type ServerVoiceCatalogMessage,
   type ServerVoiceJoinedMessage,
@@ -12,6 +13,7 @@ import {
   type ServerWebrtcAnswerMessage,
   type ServerWebrtcIceCandidateMessage,
   type ServerWebrtcOfferMessage,
+  type TrackSource,
 } from '@disco-voador/protocol';
 import type { ParticipantId, SignalingPort } from '@disco-voador/rtc-core';
 
@@ -27,6 +29,7 @@ interface RealtimeClientEvents {
   webrtcOffer: (message: ServerWebrtcOfferMessage) => void;
   webrtcAnswer: (message: ServerWebrtcAnswerMessage) => void;
   webrtcIceCandidate: (message: ServerWebrtcIceCandidateMessage) => void;
+  mediaTrackSource: (message: ServerMediaTrackSourceMessage) => void;
   serverError: (message: ServerErrorMessage) => void;
 }
 
@@ -57,6 +60,7 @@ export class RealtimeClient implements SignalingPort {
       webrtcOffer: new Set(),
       webrtcAnswer: new Set(),
       webrtcIceCandidate: new Set(),
+      mediaTrackSource: new Set(),
       serverError: new Set(),
     };
 
@@ -142,6 +146,25 @@ export class RealtimeClient implements SignalingPort {
     });
   }
 
+  /**
+   * Announces the semantic source (camera vs. screen-video — see `packages/protocol`'s `media.ts`
+   * and `docs/architecture/WEBRTC_SCREEN_SHARE.md`) of a local track, by the `mid` that track's
+   * transceiver negotiated *for the connection to `targetParticipantId`* — mid is scoped to one
+   * peer connection (the same local track can have a different mid on a different peer connection
+   * in the mesh), so this is targeted per-peer, not a channel-wide broadcast. Sent directly rather
+   * than through `SignalingPort`/`Peer` since `rtc-core` stays protocol-agnostic; `Peer`'s
+   * `localTrackMid` event (via `P2PMeshTransport`) is what tells the caller when/what to announce.
+   */
+  announceTrackSource(targetParticipantId: ParticipantId, mid: string, source: TrackSource): void {
+    this.send({
+      type: 'media:track-source',
+      id: generateMessageId(),
+      targetParticipantId,
+      mid,
+      source,
+    });
+  }
+
   private send(message: ClientMessage): void {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
       console.error('realtime-client: dropped a message because the socket is not open', {
@@ -208,6 +231,9 @@ export class RealtimeClient implements SignalingPort {
         return;
       case 'webrtc:ice-candidate':
         this.emit('webrtcIceCandidate', message);
+        return;
+      case 'media:track-source':
+        this.emit('mediaTrackSource', message);
         return;
     }
   }

@@ -398,3 +398,90 @@ describe('routeClientMessage — webrtc signaling', () => {
     if (!result.ok) expect(result.code).toBe('SIGNALING_TARGET_INVALID');
   });
 });
+
+describe('routeClientMessage — media:track-source (T5)', () => {
+  function joinedRegistry(): {
+    registry: VoiceRegistry;
+    participantIdA: string;
+    participantIdB: string;
+  } {
+    const registry = new VoiceRegistry(DEFAULT_VOICE_CHANNELS);
+    const a = registry.join('conn-a', 'general', 'A');
+    const b = registry.join('conn-b', 'general', 'B');
+    if (!a.ok || !b.ok) throw new Error('setup failed');
+    return { registry, participantIdA: a.participantId, participantIdB: b.participantId };
+  }
+
+  it('forwards to the target only, attributing the server-verified sender', () => {
+    const { registry, participantIdB } = joinedRegistry();
+    const ctx = makeContext({ connectionId: 'conn-a', voiceRegistry: registry });
+
+    const result = routeClientMessage(
+      {
+        type: 'media:track-source',
+        id: 'm1',
+        targetParticipantId: participantIdB,
+        mid: '1',
+        source: 'screen-video',
+      },
+      'ready',
+      ctx,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(replies(result.actions)).toEqual([]);
+
+    const notified = deliveries(result.actions);
+    expect(notified).toHaveLength(1);
+    expect(notified[0]?.connectionId).toBe('conn-b');
+    const participantIdA = registry.getParticipant('conn-a')?.participantId;
+    expect(notified[0]?.message).toEqual({
+      type: 'media:track-source',
+      id: expect.any(String) as unknown as string,
+      sourceParticipantId: participantIdA,
+      mid: '1',
+      source: 'screen-video',
+    });
+  });
+
+  it('rejects an announcement from a sender not currently in a voice channel (non-fatal)', () => {
+    const ctx = makeContext();
+    const result = routeClientMessage(
+      {
+        type: 'media:track-source',
+        id: 'm1',
+        targetParticipantId: 'whoever',
+        mid: '1',
+        source: 'camera',
+      },
+      'ready',
+      ctx,
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe('NOT_IN_VOICE_CHANNEL');
+  });
+
+  it('rejects an announcement toward a participant in a different channel (non-fatal)', () => {
+    const registry = new VoiceRegistry(DEFAULT_VOICE_CHANNELS);
+    const a = registry.join('conn-a', 'general', 'A');
+    const c = registry.join('conn-c', 'games', 'C');
+    if (!a.ok || !c.ok) throw new Error('setup failed');
+
+    const ctx = makeContext({ connectionId: 'conn-a', voiceRegistry: registry });
+    const result = routeClientMessage(
+      {
+        type: 'media:track-source',
+        id: 'm1',
+        targetParticipantId: c.participantId,
+        mid: '1',
+        source: 'camera',
+      },
+      'ready',
+      ctx,
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe('SIGNALING_TARGET_INVALID');
+  });
+});

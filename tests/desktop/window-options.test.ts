@@ -27,4 +27,10 @@ describe('buildWindowOptions', () => {
 
     expect(options.show).toBe(false);
   });
+
+  it('disables background throttling so remote call media keeps decoding at full rate when unfocused', () => {
+    const options = buildWindowOptions('/preload.cjs', { devToolsEnabled: false });
+
+    expect(options.webPreferences?.backgroundThrottling).toBe(false);
+  });
 });

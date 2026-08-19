@@ -9,7 +9,8 @@ afterEach(() => {
 });
 
 function createCallbacks(): PeerCallbacks & {
-  remoteTracks: { track: MediaStreamTrack; stream: MediaStream }[];
+  remoteTracks: { track: MediaStreamTrack; stream: MediaStream; mid: string | null }[];
+  localTrackMids: { track: MediaStreamTrack; mid: string }[];
   stateChanges: {
     connectionState: RTCPeerConnectionState;
     iceConnectionState: RTCIceConnectionState;
@@ -17,7 +18,8 @@ function createCallbacks(): PeerCallbacks & {
   terminalCount: number;
   iceCandidates: (RTCIceCandidateInit | null)[];
 } {
-  const remoteTracks: { track: MediaStreamTrack; stream: MediaStream }[] = [];
+  const remoteTracks: { track: MediaStreamTrack; stream: MediaStream; mid: string | null }[] = [];
+  const localTrackMids: { track: MediaStreamTrack; mid: string }[] = [];
   const stateChanges: {
     connectionState: RTCPeerConnectionState;
     iceConnectionState: RTCIceConnectionState;
@@ -25,11 +27,15 @@ function createCallbacks(): PeerCallbacks & {
   const iceCandidates: (RTCIceCandidateInit | null)[] = [];
   const callbacks = {
     remoteTracks,
+    localTrackMids,
     stateChanges,
     iceCandidates,
     terminalCount: 0,
-    onRemoteTrack: (track: MediaStreamTrack, stream: MediaStream) => {
-      remoteTracks.push({ track, stream });
+    onRemoteTrack: (track: MediaStreamTrack, stream: MediaStream, mid: string | null) => {
+      remoteTracks.push({ track, stream, mid });
+    },
+    onLocalTrackMid: (track: MediaStreamTrack, mid: string) => {
+      localTrackMids.push({ track, mid });
     },
     onStateChanged: (
       connectionState: RTCPeerConnectionState,
@@ -362,6 +368,32 @@ describe('Peer — renegotiation (T4)', () => {
     expect(consoleErrorSpy).toHaveBeenCalled();
     consoleErrorSpy.mockRestore();
   });
+
+  it('a second negotiationneeded firing while an offer is already in flight does not start a second overlapping offer', async () => {
+    // T5 stabilization: live camera-smoke runs showed both sides enabling a camera at
+    // near-simultaneous startup, which can fire `negotiationneeded` again before this side's own
+    // in-flight offer has resolved. Reproduces that by leaving `createOfferImpl` pending and firing
+    // the event twice before letting it settle — the second firing must be dropped, not start a
+    // second concurrent `setLocalDescription()`/offer.
+    const pc = new FakePeerConnection();
+    const signalingPort = createFakeSignalingPort();
+    const peer = new Peer('peer-1', 'initiator', pc, signalingPort, createCallbacks());
+    await peer.createAndSendOffer(); // completes the initial handshake -> negotiated = true
+    expect(signalingPort.offers).toHaveLength(1);
+
+    const deferred = createDeferred<RTCSessionDescriptionInit>();
+    pc.createOfferImpl = () => deferred.promise;
+
+    peer.addTrack(fakeAudioTrack('camera-track'));
+    pc.onnegotiationneeded?.(new Event('negotiationneeded')); // starts the renegotiation offer, still pending
+    pc.onnegotiationneeded?.(new Event('negotiationneeded')); // must be dropped
+
+    deferred.resolve({ type: 'offer', sdp: 'renegotiation-offer-sdp' });
+    await flushMicrotasks();
+
+    expect(signalingPort.offers).toHaveLength(2); // one initial + exactly one renegotiation offer
+    expect(pc.setLocalDescriptionCalls).toHaveLength(2);
+  });
 });
 
 describe('Peer — glare (perfect negotiation)', () => {
@@ -413,6 +445,44 @@ describe('Peer — glare (perfect negotiation)', () => {
     await offering;
   });
 
+  it('T5 regression: the polite side handles a colliding remote offer while its own offer synthesis is still pending, without corruption once that pending offer resolves', async () => {
+    // Reproduces the exact race the T4 security review flagged and T5 required fixed before
+    // building further renegotiation on top of it: the *polite* side (the only side that does not
+    // ignore a colliding inbound offer) starts its own renegotiation offer, and — before that
+    // offer's `setLocalDescription()` call resolves — a colliding remote offer arrives and is
+    // fully processed (rollback + apply + answer). See `Peer.createAndSendOffer`'s doc comment for
+    // why routing through the atomic parameterless `setLocalDescription()` (rather than the old
+    // separately-awaited `createOffer()` then `setLocalDescription(offer)` two-step) closes this:
+    // there is no longer an application-observable gap for the collision to land in and no stale
+    // pre-computed SDP is ever forwarded — `createAndSendOffer` always reads back whatever the
+    // platform (`pc.localDescription`) reports as actually applied.
+    const pc = new FakePeerConnection();
+    const signalingPort = createFakeSignalingPort();
+    const peer = new Peer('peer-1', 'responder', pc, signalingPort, createCallbacks()); // polite
+    const deferred = createDeferred<RTCSessionDescriptionInit>();
+    pc.createOfferImpl = () => deferred.promise; // this side's own offer synthesis, left pending
+    pc.signalingState = 'have-local-offer'; // this side already has a local offer outstanding
+
+    const offering = peer.createAndSendOffer(); // makingOffer = true while this is in flight
+
+    // The collision must still be handled (polite side never ignores), even though this side's own
+    // offer synthesis has not resolved yet.
+    await peer.handleRemoteOffer('colliding-offer-sdp');
+
+    expect(pc.setLocalDescriptionCalls[0]).toEqual({ type: 'rollback' });
+    expect(pc.setRemoteDescriptionCalls).toEqual([{ type: 'offer', sdp: 'colliding-offer-sdp' }]);
+    expect(signalingPort.answers).toEqual([
+      { targetParticipantId: 'peer-1', sdp: 'fake-answer-sdp' },
+    ]);
+
+    // The pending offer synthesis (started before the collision) now finally resolves. This must
+    // not throw, and the answer already sent above must remain the pair's one settled outcome —
+    // resolving late must not retroactively corrupt or duplicate what was already negotiated.
+    deferred.resolve({ type: 'offer', sdp: 'late-offer-sdp' });
+    await expect(offering).resolves.toBeUndefined();
+    expect(signalingPort.answers).toHaveLength(1);
+  });
+
   it('no collision (stable signaling state) still answers normally regardless of politeness', async () => {
     const pc = new FakePeerConnection();
     const signalingPort = createFakeSignalingPort();
@@ -457,8 +527,14 @@ describe('Peer — races between negotiation and local teardown', () => {
     peer.close();
     deferred.resolve({ type: 'offer', sdp: 'too-late-offer-sdp' });
 
+    // Since the T5 negotiation-race fix, `setLocalDescription()` is a single atomic call from
+    // `Peer`'s point of view (see `Peer.createAndSendOffer`'s doc comment) — there is no longer an
+    // intermediate checkpoint between "offer computed" and "offer applied" for `Peer` to bail out
+    // of early, so the platform (here, the fake) does still end up with a local description
+    // applied. What actually matters — and what a real closed `RTCPeerConnection` guarantees too,
+    // since `Peer.close()` calls `this.pc.close()` synchronously before this resolves — is that the
+    // now-closed `Peer` never forwards that stale offer to the signaling channel.
     await expect(creating).resolves.toBeUndefined();
-    expect(pc.setLocalDescriptionCalls).toEqual([]);
     expect(signalingPort.offers).toEqual([]);
   });
 
@@ -501,7 +577,7 @@ describe('Peer — remote track and stats', () => {
 
     pc.ontrack?.({ track, streams: [stream] } as unknown as RTCTrackEvent);
 
-    expect(callbacks.remoteTracks).toEqual([{ track, stream }]);
+    expect(callbacks.remoteTracks).toEqual([{ track, stream, mid: null }]);
   });
 
   it('synthesizes a stream when ontrack provides an empty streams array', () => {

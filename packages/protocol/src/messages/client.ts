@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { messageIdSchema } from '../envelope.js';
+import { clientMediaTrackSourceMessageSchema } from './media.js';
 import {
   clientWebrtcAnswerMessageSchema,
   clientWebrtcIceCandidateMessageSchema,
@@ -50,6 +51,7 @@ export const clientMessageSchema = z.discriminatedUnion('type', [
   clientWebrtcOfferMessageSchema,
   clientWebrtcAnswerMessageSchema,
   clientWebrtcIceCandidateMessageSchema,
+  clientMediaTrackSourceMessageSchema,
 ]);
 
 export type ClientMessage = z.infer<typeof clientMessageSchema>;

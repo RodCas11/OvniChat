@@ -240,6 +240,45 @@ describe('RealtimeClient', () => {
     expect(candidates).toHaveLength(1);
   });
 
+  it('announces a track source by sending a targeted media:track-source (mid-scoped, not broadcast)', () => {
+    const client = connectAndHandshake();
+    client.announceTrackSource('participant-b', '1', 'screen-video');
+
+    const message = socket.lastSentMessage();
+    expect(message).toMatchObject({
+      type: 'media:track-source',
+      targetParticipantId: 'participant-b',
+      mid: '1',
+      source: 'screen-video',
+    });
+  });
+
+  it('dispatches an inbound media:track-source to its own listener', () => {
+    const client = connectAndHandshake();
+    const announcements: unknown[] = [];
+    client.on('mediaTrackSource', (m) => announcements.push(m));
+
+    socket.simulateMessage(
+      JSON.stringify({
+        type: 'media:track-source',
+        id: 'm1',
+        sourceParticipantId: 'participant-a',
+        mid: '1',
+        source: 'camera',
+      }),
+    );
+
+    expect(announcements).toEqual([
+      {
+        type: 'media:track-source',
+        id: 'm1',
+        sourceParticipantId: 'participant-a',
+        mid: '1',
+        source: 'camera',
+      },
+    ]);
+  });
+
   it('emits serverError for server:error without closing anything', () => {
     const client = connectAndHandshake();
     const errors: unknown[] = [];

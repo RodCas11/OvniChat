@@ -1,10 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 
 const exposed = new Map<string, unknown>();
-const invoke = vi.fn(async () => ({
-  appVersion: '0.0.0',
-  electronVersion: '43.4.0',
-}));
+const invoke = vi.fn(async (channel: string) => {
+  if (channel === 'app:list-screen-share-sources') return [];
+  if (channel === 'app:select-screen-share-source') return true;
+  return { appVersion: '0.0.0', electronVersion: '43.4.0' };
+});
 
 vi.mock('electron', () => ({
   contextBridge: {
@@ -30,6 +31,8 @@ describe('preload bridge', () => {
       'getE2EVoiceConfig',
       'getRealtimeConfig',
       'getVersionInfo',
+      'listScreenShareSources',
+      'selectScreenShareSource',
     ]);
     expect(api['ipcRenderer']).toBeUndefined();
     expect(api['invoke']).toBeUndefined();
@@ -59,5 +62,25 @@ describe('preload bridge', () => {
     await api.getE2EVoiceConfig();
 
     expect(invoke).toHaveBeenCalledWith(IPC_CHANNELS.getE2EVoiceConfig);
+  });
+
+  it('listScreenShareSources invokes the explicit versioned channel with no attacker-controlled arguments', async () => {
+    const api = exposed.get('desktopApp') as { listScreenShareSources: () => Promise<unknown> };
+
+    const result = await api.listScreenShareSources();
+
+    expect(invoke).toHaveBeenCalledWith(IPC_CHANNELS.listScreenShareSources);
+    expect(result).toEqual([]);
+  });
+
+  it('selectScreenShareSource forwards exactly the caller-supplied sourceId and nothing else', async () => {
+    const api = exposed.get('desktopApp') as {
+      selectScreenShareSource: (sourceId: string) => Promise<unknown>;
+    };
+
+    const result = await api.selectScreenShareSource('screen:0:0');
+
+    expect(invoke).toHaveBeenCalledWith(IPC_CHANNELS.selectScreenShareSource, 'screen:0:0');
+    expect(result).toBe(true);
   });
 });

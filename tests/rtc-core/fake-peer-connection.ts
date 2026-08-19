@@ -16,6 +16,8 @@ export class FakePeerConnection implements RtcPeerConnectionLike {
   iceConnectionState: RTCIceConnectionState = 'new';
   /** Settable by tests to simulate an outstanding local offer for collision scenarios. */
   signalingState: RTCSignalingState = 'stable';
+  /** Mirrors what a real `RTCPeerConnection.localDescription` would report after the calls below. */
+  localDescription: RTCSessionDescription | null = null;
 
   ontrack: ((event: RTCTrackEvent) => void) | null = null;
   onicecandidate: ((event: RTCPeerConnectionIceEvent) => void) | null = null;
@@ -31,7 +33,27 @@ export class FakePeerConnection implements RtcPeerConnectionLike {
   closeCallCount = 0;
 
   private readonly sendersByTrack = new Map<MediaStreamTrack, RTCRtpSender>();
+  /**
+   * Mirrors real negotiation closely enough for `Peer.reportLocalTrackMids` to be testable: each
+   * `addTrack` gets a transceiver with `mid: null`; a parameterless `setLocalDescription()` call
+   * (an offer — see that method below) assigns the next sequential mid ("0", "1", ...) to any
+   * transceiver that does not have one yet, in creation order. Real `mid` values are not
+   * necessarily small sequential integers, but *some* stable, unique string per transceiver is all
+   * `Peer`'s logic (or any test asserting on it) actually depends on.
+   */
+  private readonly transceivers: { sender: RTCRtpSender; mid: string | null }[] = [];
 
+  getTransceivers(): RTCRtpTransceiver[] {
+    return this.transceivers as unknown as RTCRtpTransceiver[];
+  }
+
+  /**
+   * Simulates what a real `RTCPeerConnection.setLocalDescription()` computes internally when
+   * called with no argument (creating an offer or answer as appropriate). Kept as a
+   * separately-controllable field — as it was pre-T5, when `Peer` called `createOffer()`
+   * directly — so existing timing/failure-injection tests keep working unchanged; see
+   * `setLocalDescription` below for how it is now invoked.
+   */
   createOfferImpl: () => Promise<RTCSessionDescriptionInit> = () =>
     Promise.resolve({ type: 'offer', sdp: 'fake-offer-sdp' });
   createAnswerImpl: () => Promise<RTCSessionDescriptionInit> = () =>
@@ -48,28 +70,68 @@ export class FakePeerConnection implements RtcPeerConnectionLike {
     this.addTrackCalls.push(track);
     const sender = { track } as unknown as RTCRtpSender;
     this.sendersByTrack.set(track, sender);
+    // Mirrors a real, live-verified `RTCPeerConnection.addTrack()` behavior (see `Peer`'s
+    // `wireRemoteVideoTrack` doc comment in `use-voice-channel.ts`, and
+    // `docs/architecture/WEBRTC_SCREEN_SHARE.md`'s "Media source identity" section): a transceiver
+    // whose sender's track was cleared by a prior `removeTrack()` gets *reused* by the next
+    // `addTrack()` call of a compatible kind — it keeps its already-negotiated `mid`, it does not
+    // get a fresh one — rather than always creating a brand-new transceiver/m-line. Modeling this
+    // (the previous version of this fake always pushed a new transceiver per `addTrack`, which
+    // could never represent this reuse case at all) lets tests exercise "a *different* local track
+    // ends up reported under an old, already-`mid`-known transceiver" — the exact precondition for
+    // T5's mid-reuse-after-source-change scenario.
+    const reusable = this.transceivers.find(
+      (t) => (t.sender as unknown as { track: MediaStreamTrack | null }).track === null,
+    );
+    if (reusable) {
+      reusable.sender = sender;
+    } else {
+      this.transceivers.push({ sender, mid: null });
+    }
     return sender;
   }
 
   removeTrack(sender: RTCRtpSender): void {
     this.removeTrackCalls.push(sender);
+    // Real `removeTrack()` clears the sender's track (direction moves toward recvonly/inactive) but
+    // leaves the transceiver itself — and its already-assigned `mid` — in place. See `addTrack`'s
+    // reuse logic above.
+    (sender as unknown as { track: MediaStreamTrack | null }).track = null;
   }
 
   senderFor(track: MediaStreamTrack): RTCRtpSender | undefined {
     return this.sendersByTrack.get(track);
   }
 
-  createOffer(): Promise<RTCSessionDescriptionInit> {
-    return this.createOfferImpl();
-  }
-
   createAnswer(): Promise<RTCSessionDescriptionInit> {
     return this.createAnswerImpl();
   }
 
-  setLocalDescription(description: RTCSessionDescriptionInit): Promise<void> {
-    this.setLocalDescriptionCalls.push(description);
-    return this.setLocalDescriptionImpl(description);
+  /**
+   * A parameterless call (the only form `Peer.createAndSendOffer` now uses — see that method's
+   * doc comment) synthesizes the description via `createOfferImpl` first, exactly like a real
+   * atomic `setLocalDescription()`; an explicit description (answer or rollback, from
+   * `Peer.handleRemoteOffer`) is applied as-is. Either way, `localDescription` is updated to
+   * reflect what actually ended up applied, and `setLocalDescriptionCalls` records the *effective*
+   * description — so tests asserting on that array observe the same values as before the T5 fix,
+   * regardless of which form triggered them.
+   */
+  async setLocalDescription(description?: RTCSessionDescriptionInit): Promise<void> {
+    const isOffer = description === undefined;
+    const effective = description ?? (await this.createOfferImpl());
+    this.setLocalDescriptionCalls.push(effective);
+    await this.setLocalDescriptionImpl(effective);
+    this.localDescription =
+      effective.type === 'rollback' ? null : (effective as RTCSessionDescription);
+    if (isOffer) {
+      let nextMid = this.transceivers.filter((t) => t.mid !== null).length;
+      for (const transceiver of this.transceivers) {
+        if (transceiver.mid === null) {
+          transceiver.mid = String(nextMid);
+          nextMid += 1;
+        }
+      }
+    }
   }
 
   setRemoteDescription(description: RTCSessionDescriptionInit): Promise<void> {

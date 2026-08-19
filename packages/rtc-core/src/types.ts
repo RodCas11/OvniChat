@@ -33,6 +33,18 @@ export interface RemoteTrackEvent {
   readonly participantId: ParticipantId;
   readonly track: MediaStreamTrack;
   readonly stream: MediaStream;
+  /**
+   * The SDP media identification (`a=mid:`) this track's transceiver negotiated, read from
+   * `RTCTrackEvent.transceiver.mid` at `ontrack` time. `null` only if the platform genuinely did
+   * not report one (should not happen once negotiation completes, per spec) — never a placeholder
+   * to guess with. See `LocalTrackMidEvent` for why T5 needs this: a locally-published track's own
+   * `MediaStreamTrack.id` was empirically found NOT to survive across the connection unchanged on
+   * at least some Electron/Chromium negotiation paths (confirmed via live two-instance testing, not
+   * assumed from the spec) — `mid` is the mechanism that does, so it is what T5's media-source-
+   * identity protocol (`media:track-source`) correlates on instead. See
+   * `docs/architecture/WEBRTC_SCREEN_SHARE.md`.
+   */
+  readonly mid: string | null;
 }
 
 export interface PeerConnectionStateEvent {
@@ -41,8 +53,23 @@ export interface PeerConnectionStateEvent {
   readonly iceConnectionState: RTCIceConnectionState;
 }
 
+/**
+ * Reports that one of *our own* locally-published tracks now has a known `mid` for a specific
+ * peer connection — mid is assigned per-connection during that connection's own negotiation, so
+ * the same local track can (and in practice sometimes does) end up with a different `mid` on
+ * different peer connections in a mesh; there is deliberately no single global "this track's mid"
+ * value. Fired once per successful `Peer.createAndSendOffer()` for every currently-attached local
+ * sender that has one — see `Peer`'s `reportLocalTrackMids` for exactly when/why.
+ */
+export interface LocalTrackMidEvent {
+  readonly participantId: ParticipantId;
+  readonly track: MediaStreamTrack;
+  readonly mid: string;
+}
+
 export interface MediaTransportEvents {
   remoteTrack: (event: RemoteTrackEvent) => void;
+  localTrackMid: (event: LocalTrackMidEvent) => void;
   peerStateChanged: (event: PeerConnectionStateEvent) => void;
   peerClosed: (participantId: ParticipantId) => void;
 }

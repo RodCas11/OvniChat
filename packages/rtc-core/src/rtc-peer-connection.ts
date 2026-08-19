@@ -19,6 +19,11 @@ export interface RtcPeerConnectionLike {
    * offer outstanding). A real `RTCPeerConnection` already exposes this read-only.
    */
   readonly signalingState: RTCSignalingState;
+  /**
+   * Needed so `Peer.createAndSendOffer` can read back what the platform actually applied after
+   * the atomic parameterless `setLocalDescription()` call (see that method for why).
+   */
+  readonly localDescription: RTCSessionDescription | null;
   ontrack: ((event: RTCTrackEvent) => void) | null;
   onicecandidate: ((event: RTCPeerConnectionIceEvent) => void) | null;
   onconnectionstatechange: ((event: Event) => void) | null;
@@ -31,9 +36,22 @@ export interface RtcPeerConnectionLike {
   onnegotiationneeded: ((event: Event) => void) | null;
   addTrack(track: MediaStreamTrack, ...streams: MediaStream[]): RTCRtpSender;
   removeTrack(sender: RTCRtpSender): void;
-  createOffer(): Promise<RTCSessionDescriptionInit>;
+  /**
+   * T5's media-source-identity mechanism (see `Peer.createAndSendOffer`'s "reportLocalTrackMids"
+   * step) needs each local sender's negotiated `mid` — `RTCRtpSender` itself has no back-reference
+   * to its transceiver (confirmed against the platform's own type definitions, not assumed), so
+   * this is how `Peer` finds it: `getTransceivers().find(t => t.sender === sender)`.
+   */
+  getTransceivers(): RTCRtpTransceiver[];
   createAnswer(): Promise<RTCSessionDescriptionInit>;
-  setLocalDescription(description: RTCSessionDescriptionInit): Promise<void>;
+  /**
+   * `Peer.createAndSendOffer` always calls this with no argument (see that method's doc comment
+   * for the T5 negotiation-race fix this enables). `handleRemoteOffer` still calls it with an
+   * explicit `{type:'answer',...}` or `{type:'rollback'}` description. A real `RTCPeerConnection`
+   * has always accepted an optional description here per the WebRTC specification; there was
+   * previously no caller in this package that needed the parameterless form.
+   */
+  setLocalDescription(description?: RTCSessionDescriptionInit): Promise<void>;
   setRemoteDescription(description: RTCSessionDescriptionInit): Promise<void>;
   addIceCandidate(candidate?: RTCIceCandidateInit | null): Promise<void>;
   getStats(): Promise<RTCStatsReport>;

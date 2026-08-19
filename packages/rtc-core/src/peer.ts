@@ -4,7 +4,9 @@ import type { RtcPeerConnectionLike } from './rtc-peer-connection.js';
 import type { ParticipantId, SignalingPort } from './types.js';
 
 export interface PeerCallbacks {
-  onRemoteTrack(track: MediaStreamTrack, stream: MediaStream): void;
+  onRemoteTrack(track: MediaStreamTrack, stream: MediaStream, mid: string | null): void;
+  /** See `LocalTrackMidEvent` (`types.ts`) for what this reports and why T5 needs it. */
+  onLocalTrackMid(track: MediaStreamTrack, mid: string): void;
   onStateChanged(
     connectionState: RTCPeerConnectionState,
     iceConnectionState: RTCIceConnectionState,
@@ -77,7 +79,7 @@ export class Peer {
     pc.ontrack = (event) => {
       if (this.closed) return;
       const stream = event.streams[0] ?? new MediaStream([event.track]);
-      this.callbacks.onRemoteTrack(event.track, stream);
+      this.callbacks.onRemoteTrack(event.track, stream, event.transceiver?.mid ?? null);
     };
     pc.onicecandidate = (event) => {
       if (this.closed) return;
@@ -93,7 +95,17 @@ export class Peer {
       this.callbacks.onStateChanged(pc.connectionState, pc.iceConnectionState);
     };
     pc.onnegotiationneeded = () => {
-      if (this.closed || !this.negotiated) return;
+      // Re-entrancy guard: if an offer created by this side is already in flight, a second
+      // `negotiationneeded` firing before it settles (e.g. two local track changes landing close
+      // together — observed live during T5 stabilization's camera-smoke runs, where both sides
+      // enable a camera at near-simultaneous startup) must not start a second concurrent
+      // `createAndSendOffer()`. That would call the atomic `setLocalDescription()` twice
+      // overlapping on one `RTCPeerConnection` and could send two offers for one negotiation
+      // cycle. Safe to simply drop the extra firing: per the WebRTC "update the negotiation-needed
+      // flag" algorithm, the flag stays set (and the event re-fires once signaling returns to
+      // `stable`) if changes made during the in-flight offer are not yet reflected in it — so
+      // nothing pending is lost, it is just picked up by this side's *next* offer.
+      if (this.closed || !this.negotiated || this.makingOffer) return;
       this.createAndSendOffer().catch((error: unknown) => {
         if (this.closed) return;
         console.error(`rtc-core: failed to create/send a renegotiation offer`, {
@@ -124,19 +136,55 @@ export class Peer {
   /**
    * Creates and sends an offer: the initiator's first offer for this pair, or (once `negotiated`)
    * any later renegotiation offer — both the initial and every later call reuse this same logic.
+   *
+   * ## T5 negotiation-race fix
+   *
+   * This used to call `createOffer()` and then `setLocalDescription(offer)` as two separate
+   * awaited steps, with a `this.closed` check in between but no protection against a *remote*
+   * state change landing in that same gap: if this side is polite and a colliding remote offer
+   * arrived and was fully applied (via `handleRemoteOffer`, which a polite peer does not ignore)
+   * while `setLocalDescription(offer)` was still pending, that call would apply a now-stale local
+   * offer on top of the just-negotiated state, corrupting `signalingState` for the pair.
+   *
+   * The fix calls the parameterless `setLocalDescription()` instead. Per the WebRTC specification,
+   * this is a single atomic operation that creates an offer (or answer, depending on
+   * `signalingState`) and applies it as one step — there is no application-observable gap between
+   * "offer computed" and "offer applied" for a collision to land in. The actually-applied SDP is
+   * then read back from `localDescription`. See `tests/rtc-core/peer.test.ts`'s
+   * "polite side mid-offer" regression test for the exact race this closes.
    */
   async createAndSendOffer(): Promise<void> {
     if (this.closed) return;
     this.makingOffer = true;
     try {
-      const offer = await this.pc.createOffer();
+      await this.pc.setLocalDescription();
       if (this.closed) return;
-      await this.pc.setLocalDescription(offer);
-      if (this.closed) return;
-      if (offer.sdp !== undefined) this.signalingPort.sendOffer(this.participantId, offer.sdp);
+      const sdp = this.pc.localDescription?.sdp;
+      if (sdp !== undefined) this.signalingPort.sendOffer(this.participantId, sdp);
       this.negotiated = true;
+      this.reportLocalTrackMids();
     } finally {
       this.makingOffer = false;
+    }
+  }
+
+  /**
+   * Reports each currently-attached local sender's negotiated `mid`, once this side's own offer
+   * (initial or a later renegotiation — every local track eventually gets its own m-line through
+   * *this* side's own offer, whichever role sends it; see `Peer`'s class-level doc comment) has
+   * been applied locally. A `mid` becomes authoritative for the offerer as soon as
+   * `setLocalDescription()` succeeds — no need to wait for the remote answer.
+   *
+   * `RTCRtpSender` has no back-reference to its transceiver (see `RtcPeerConnectionLike.
+   * getTransceivers`'s doc comment), so each sender's transceiver is found by identity via
+   * `getTransceivers()`. Harmless to call again on every later offer — an already-known `mid` is
+   * just re-reported; the caller (`P2PMeshTransport`) does not need this de-duplicated.
+   */
+  private reportLocalTrackMids(): void {
+    const transceivers = this.pc.getTransceivers();
+    for (const [track, sender] of this.senders) {
+      const mid = transceivers.find((t) => t.sender === sender)?.mid;
+      if (mid) this.callbacks.onLocalTrackMid(track, mid);
     }
   }
 
