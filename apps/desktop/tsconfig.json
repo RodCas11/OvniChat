@@ -9,6 +9,7 @@
   },
   "references": [
     { "path": "../../packages/config" },
+    { "path": "../../packages/identity" },
     { "path": "../../packages/media-core" },
     { "path": "../../packages/protocol" },
     { "path": "../../packages/rtc-core" }
