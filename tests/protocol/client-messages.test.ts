@@ -2,28 +2,31 @@ import { describe, expect, it } from 'vitest';
 
 import {
   clientHelloMessageSchema,
+  clientIdentityProofMessageSchema,
   clientMessageSchema,
   clientPingMessageSchema,
 } from '../../packages/protocol/src/messages/client.js';
 
+const validPublicKey = 'A'.repeat(43);
+const validSignature = 'A'.repeat(86);
+
 describe('clientHelloMessageSchema', () => {
+  const baseValid = {
+    type: 'client:hello' as const,
+    id: 'req-1',
+    protocolVersion: 1,
+    client: { name: 'desktop', version: '0.0.0' },
+    nickname: 'Alice',
+    publicKey: validPublicKey,
+  };
+
   it('accepts a valid client:hello', () => {
-    const result = clientHelloMessageSchema.safeParse({
-      type: 'client:hello',
-      id: 'req-1',
-      protocolVersion: 1,
-      client: { name: 'desktop', version: '0.0.0' },
-    });
+    const result = clientHelloMessageSchema.safeParse(baseValid);
     expect(result.success).toBe(true);
   });
 
   it('accepts any positive integer protocol version structurally (support is a separate check)', () => {
-    const result = clientHelloMessageSchema.safeParse({
-      type: 'client:hello',
-      id: 'req-1',
-      protocolVersion: 999,
-      client: { name: 'desktop', version: '0.0.0' },
-    });
+    const result = clientHelloMessageSchema.safeParse({ ...baseValid, protocolVersion: 999 });
     expect(result.success).toBe(true);
   });
 
@@ -32,70 +35,102 @@ describe('clientHelloMessageSchema', () => {
       type: 'client:hello',
       id: 'req-1',
       client: { name: 'desktop', version: '0.0.0' },
+      nickname: 'Alice',
+      publicKey: validPublicKey,
     });
     expect(result.success).toBe(false);
   });
 
+  it('rejects a missing nickname', () => {
+    const withoutNickname: Record<string, unknown> = { ...baseValid };
+    delete withoutNickname.nickname;
+    expect(clientHelloMessageSchema.safeParse(withoutNickname).success).toBe(false);
+  });
+
+  it('rejects a missing publicKey', () => {
+    const withoutPublicKey: Record<string, unknown> = { ...baseValid };
+    delete withoutPublicKey.publicKey;
+    expect(clientHelloMessageSchema.safeParse(withoutPublicKey).success).toBe(false);
+  });
+
+  it('rejects a publicKey of the wrong length', () => {
+    expect(
+      clientHelloMessageSchema.safeParse({ ...baseValid, publicKey: 'too-short' }).success,
+    ).toBe(false);
+  });
+
+  it('rejects a publicKey with non-base64url characters', () => {
+    expect(
+      clientHelloMessageSchema.safeParse({ ...baseValid, publicKey: '+'.repeat(43) }).success,
+    ).toBe(false);
+  });
+
+  it('rejects a blank nickname', () => {
+    expect(clientHelloMessageSchema.safeParse({ ...baseValid, nickname: '' }).success).toBe(false);
+  });
+
   it('rejects a wrong-typed field', () => {
-    const result = clientHelloMessageSchema.safeParse({
-      type: 'client:hello',
-      id: 'req-1',
-      protocolVersion: '1',
-      client: { name: 'desktop', version: '0.0.0' },
-    });
+    const result = clientHelloMessageSchema.safeParse({ ...baseValid, protocolVersion: '1' });
     expect(result.success).toBe(false);
   });
 
   it('rejects an unexpected extra top-level field', () => {
-    const result = clientHelloMessageSchema.safeParse({
-      type: 'client:hello',
-      id: 'req-1',
-      protocolVersion: 1,
-      client: { name: 'desktop', version: '0.0.0' },
-      unexpected: true,
-    });
+    const result = clientHelloMessageSchema.safeParse({ ...baseValid, unexpected: true });
     expect(result.success).toBe(false);
   });
 
   it('rejects an unexpected extra nested field', () => {
     const result = clientHelloMessageSchema.safeParse({
-      type: 'client:hello',
-      id: 'req-1',
-      protocolVersion: 1,
+      ...baseValid,
       client: { name: 'desktop', version: '0.0.0', platform: 'win32' },
     });
     expect(result.success).toBe(false);
   });
 
   it('rejects a zero/negative protocol version', () => {
-    expect(
-      clientHelloMessageSchema.safeParse({
-        type: 'client:hello',
-        id: 'req-1',
-        protocolVersion: 0,
-        client: { name: 'desktop', version: '0.0.0' },
-      }).success,
-    ).toBe(false);
+    expect(clientHelloMessageSchema.safeParse({ ...baseValid, protocolVersion: 0 }).success).toBe(
+      false,
+    );
   });
 
   it('rejects an empty id', () => {
+    expect(clientHelloMessageSchema.safeParse({ ...baseValid, id: '' }).success).toBe(false);
+  });
+
+  it('rejects an id past the maximum length', () => {
+    expect(clientHelloMessageSchema.safeParse({ ...baseValid, id: 'x'.repeat(65) }).success).toBe(
+      false,
+    );
+  });
+});
+
+describe('clientIdentityProofMessageSchema', () => {
+  it('accepts a valid client:identity-proof', () => {
+    const result = clientIdentityProofMessageSchema.safeParse({
+      type: 'client:identity-proof',
+      id: 'req-2',
+      signature: validSignature,
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects a signature of the wrong length', () => {
     expect(
-      clientHelloMessageSchema.safeParse({
-        type: 'client:hello',
-        id: '',
-        protocolVersion: 1,
-        client: { name: 'desktop', version: '0.0.0' },
+      clientIdentityProofMessageSchema.safeParse({
+        type: 'client:identity-proof',
+        id: 'req-2',
+        signature: 'too-short',
       }).success,
     ).toBe(false);
   });
 
-  it('rejects an id past the maximum length', () => {
+  it('rejects extra fields', () => {
     expect(
-      clientHelloMessageSchema.safeParse({
-        type: 'client:hello',
-        id: 'x'.repeat(65),
-        protocolVersion: 1,
-        client: { name: 'desktop', version: '0.0.0' },
+      clientIdentityProofMessageSchema.safeParse({
+        type: 'client:identity-proof',
+        id: 'req-2',
+        signature: validSignature,
+        extra: 1,
       }).success,
     ).toBe(false);
   });

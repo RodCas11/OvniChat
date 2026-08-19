@@ -1,10 +1,14 @@
-import { useEffect, useState, type ReactElement } from 'react';
+import { useEffect, useRef, useState, type ReactElement } from 'react';
 
 import type {
   DesktopE2EVoiceConfig,
   DesktopRealtimeConfig,
   DesktopVersionInfo,
 } from '../shared/ipc-contract.js';
+import { FirstRunPrompt } from './identity/FirstRunPrompt.js';
+import { IdentityErrorScreen } from './identity/IdentityErrorScreen.js';
+import { IdentityPanel } from './identity/IdentityPanel.js';
+import { useIdentity } from './identity/use-identity.js';
 import { VoiceChannelView } from './voice/VoiceChannelView.js';
 
 type BridgeState =
@@ -92,10 +96,70 @@ function useE2EVoiceConfig(): DesktopE2EVoiceConfig | undefined {
   return config;
 }
 
+/** Non-interactive stand-in for `FirstRunPrompt`, used only for the E2E smoke tests (see the
+ * `e2eVoiceConfig` branch above) — submits the configured display name as the nickname as soon as
+ * it mounts, with no human interaction. */
+function AutoFirstRun({
+  displayName,
+  setNickname,
+}: {
+  readonly displayName: string;
+  readonly setNickname: (nickname: string) => Promise<boolean>;
+}): ReactElement {
+  const attempted = useRef(false);
+
+  useEffect(() => {
+    if (attempted.current) return;
+    attempted.current = true;
+    setNickname(displayName).catch((error: unknown) => {
+      console.error('E2E auto first-run failed to set nickname', error);
+    });
+  }, [displayName, setNickname]);
+
+  return (
+    <main>
+      <h1>Projeto Disco Voador</h1>
+      <p>Setting up local identity for automated testing…</p>
+    </main>
+  );
+}
+
 export function App(): ReactElement {
   const bridge = useBridgeState();
   const realtimeConfig = useRealtimeConfig();
   const e2eVoiceConfig = useE2EVoiceConfig();
+  const identity = useIdentity();
+
+  if (identity.state.status === 'error') {
+    return (
+      <IdentityErrorScreen message={identity.state.message} onRegenerate={identity.regenerate} />
+    );
+  }
+
+  if (identity.state.status === 'loading') {
+    return (
+      <main>
+        <h1>Projeto Disco Voador</h1>
+        <p>Loading local identity…</p>
+      </main>
+    );
+  }
+
+  if (identity.state.nickname === '') {
+    if (e2eVoiceConfig) {
+      // The E2E voice/camera/screen-share smoke tests drive every other step of this app
+      // non-interactively; they need the same for the nickname first-run gate, or they would
+      // hang waiting for a human to type into `FirstRunPrompt`. Only reachable when
+      // `e2eVoiceConfig` is defined, which Main only ever supplies when `!app.isPackaged` (see
+      // `main/window.ts`) — a real, packaged build always sees the real, interactive prompt.
+      return (
+        <AutoFirstRun displayName={e2eVoiceConfig.displayName} setNickname={identity.setNickname} />
+      );
+    }
+    return <FirstRunPrompt onContinue={identity.setNickname} />;
+  }
+
+  const { nickname: currentNickname, identity: publicIdentity } = identity.state;
 
   return (
     <main>
@@ -113,7 +177,18 @@ export function App(): ReactElement {
         {bridge.status === 'error' && `Preload bridge error: ${bridge.message}`}
       </p>
 
-      <VoiceChannelView realtimeConfig={realtimeConfig} e2eAutoJoin={e2eVoiceConfig} />
+      <IdentityPanel
+        nickname={currentNickname}
+        identity={publicIdentity}
+        onNicknameChange={identity.setNickname}
+        onRegenerate={identity.regenerate}
+      />
+
+      <VoiceChannelView
+        realtimeConfig={realtimeConfig}
+        e2eAutoJoin={e2eVoiceConfig}
+        defaultDisplayName={currentNickname}
+      />
 
       <section>
         <h2>Not implemented yet</h2>

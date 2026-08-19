@@ -3,9 +3,13 @@ import { describe, expect, it } from 'vitest';
 import {
   serverErrorMessageSchema,
   serverHelloMessageSchema,
+  serverIdentityChallengeMessageSchema,
   serverMessageSchema,
   serverPongMessageSchema,
 } from '../../packages/protocol/src/messages/server.js';
+
+const validIdentityId = `dv1_${'A'.repeat(43)}`;
+const validNonce = 'A'.repeat(43);
 
 describe('serverHelloMessageSchema', () => {
   const valid = {
@@ -13,6 +17,7 @@ describe('serverHelloMessageSchema', () => {
     id: 'req-1',
     protocolVersion: 1,
     connectionId: 'conn-abc',
+    identityId: validIdentityId,
     serverTime: new Date().toISOString(),
     heartbeat: { intervalMs: 15000, timeoutMs: 10000 },
   };
@@ -34,8 +39,52 @@ describe('serverHelloMessageSchema', () => {
     expect(serverHelloMessageSchema.safeParse({ ...valid, connectionId: '' }).success).toBe(false);
   });
 
+  it('rejects a malformed identityId', () => {
+    expect(
+      serverHelloMessageSchema.safeParse({ ...valid, identityId: 'not-an-identity-id' }).success,
+    ).toBe(false);
+  });
+
+  it('rejects a missing identityId', () => {
+    const withoutIdentityId: Record<string, unknown> = { ...valid };
+    delete withoutIdentityId.identityId;
+    expect(serverHelloMessageSchema.safeParse(withoutIdentityId).success).toBe(false);
+  });
+
   it('rejects extra fields', () => {
     expect(serverHelloMessageSchema.safeParse({ ...valid, presence: 'online' }).success).toBe(
+      false,
+    );
+  });
+});
+
+describe('serverIdentityChallengeMessageSchema', () => {
+  const valid = {
+    type: 'server:identity-challenge',
+    id: 'req-1',
+    connectionId: 'conn-abc',
+    nonce: validNonce,
+    expiresAt: Date.now() + 30_000,
+  };
+
+  it('accepts a valid server:identity-challenge', () => {
+    expect(serverIdentityChallengeMessageSchema.safeParse(valid).success).toBe(true);
+  });
+
+  it('rejects a nonce of the wrong length', () => {
+    expect(
+      serverIdentityChallengeMessageSchema.safeParse({ ...valid, nonce: 'too-short' }).success,
+    ).toBe(false);
+  });
+
+  it('rejects a non-positive expiresAt', () => {
+    expect(serverIdentityChallengeMessageSchema.safeParse({ ...valid, expiresAt: 0 }).success).toBe(
+      false,
+    );
+  });
+
+  it('rejects extra fields', () => {
+    expect(serverIdentityChallengeMessageSchema.safeParse({ ...valid, extra: 1 }).success).toBe(
       false,
     );
   });

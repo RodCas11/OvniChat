@@ -1,20 +1,23 @@
-# Realtime protocol (T2)
+# Realtime protocol (T2, extended by T7)
 
 Canonical contracts live in code at [`packages/protocol/src/`](../../packages/protocol/src/); this
 document explains the design and is not itself authoritative — the schemas are. See
 [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md) for how `services/realtime` fits the wider system,
 [`docs/tasks/T2_REALTIME_PROTOCOL.md`](../tasks/T2_REALTIME_PROTOCOL.md) for the task that
-implemented the connection foundation this document covers, and
+implemented the connection foundation this document covers,
 [`WEBRTC_VOICE.md`](WEBRTC_VOICE.md) / [`docs/tasks/T3_VOICE_WEBRTC.md`](../tasks/T3_VOICE_WEBRTC.md)
-for the voice/WebRTC signaling this foundation now also carries.
+for the voice/WebRTC signaling this foundation now also carries, and
+[`CLIENT_IDENTITY.md`](CLIENT_IDENTITY.md) / [`docs/tasks/T7_LOCAL_IDENTITY.md`](../tasks/T7_LOCAL_IDENTITY.md)
+for the local-cryptographic-identity handshake this document now also covers.
 
 ## Scope
 
-This document covers the connection/handshake/liveness envelope T2 defined: `client:hello`,
-`client:ping`, `server:hello`, `server:pong`, `server:error`. Voice signaling (`voice:*`,
-`webrtc:*`) was added in T3 on top of this same envelope and versioning strategy without changing
-it — see [`WEBRTC_VOICE.md`](WEBRTC_VOICE.md) for that message surface's own design. Text chat
-remains a later task (T7, see [Future extension](#future-extension)).
+This document covers the connection/handshake/liveness envelope T2 defined (`client:hello`,
+`client:ping`, `server:hello`, `server:pong`, `server:error`) and T7's identity-proof step inserted
+into that same handshake (`server:identity-challenge`, `client:identity-proof`). Voice signaling
+(`voice:*`, `webrtc:*`) was added in T3 on top of this same envelope and versioning strategy without
+changing it — see [`WEBRTC_VOICE.md`](WEBRTC_VOICE.md) for that message surface's own design. Text
+chat remains a later task (T10, see [Future extension](#future-extension)).
 
 ## Transport
 
@@ -67,9 +70,16 @@ an optional `replyTo` when the offending message's `id` could be recovered.
 ## Versioning
 
 ```ts
-CURRENT_PROTOCOL_VERSION = 1;
-SUPPORTED_PROTOCOL_VERSIONS = [1];
+CURRENT_PROTOCOL_VERSION = 2;
+SUPPORTED_PROTOCOL_VERSIONS = [2];
 ```
+
+Bumped 1 → 2 for T7: `client:hello` gained required `nickname`/`publicKey` fields and the
+handshake gained a mandatory identity-challenge/proof step before `server:hello`. This is a
+breaking change (a v1 hello is no longer sufficient to reach `ready`), so v1 support was dropped
+rather than kept as a parallel unauthenticated codepath — maintaining it would have meant either
+bypassing identity verification for v1 clients or having v1 always fail, neither worth keeping as
+"support."
 
 A WebSocket connection's protocol version cannot change mid-connection, so it is negotiated exactly
 once during the handshake rather than repeated on every message. `client:hello.protocolVersion` is
@@ -94,10 +104,18 @@ sequenceDiagram
 
     C->>S: WebSocket upgrade
     Note over S: state = awaiting_hello<br/>handshake timer armed
-    C->>S: client:hello { protocolVersion, client }
+    C->>S: client:hello { protocolVersion, client, nickname, publicKey }
     alt supported version, first hello
-        S->>C: server:hello { connectionId, protocolVersion, heartbeat }
-        Note over S: state = ready<br/>heartbeat monitor started
+        S->>C: server:identity-challenge { connectionId, nonce, expiresAt }
+        Note over S: state = awaiting_identity_proof
+        C->>S: client:identity-proof { signature }
+        alt signature verifies, not expired
+            S->>C: server:hello { connectionId, identityId, protocolVersion, heartbeat }
+            Note over S: state = ready<br/>heartbeat monitor started
+        else invalid/expired/out-of-order proof
+            S->>C: server:error IDENTITY_INVALID_SIGNATURE / IDENTITY_CHALLENGE_EXPIRED / IDENTITY_PROTOCOL_ERROR
+            S--xC: close 4410-4413
+        end
     else unsupported version
         S->>C: server:error UNSUPPORTED_PROTOCOL
         S--xC: close 4401
@@ -106,29 +124,40 @@ sequenceDiagram
 
 A newly-opened socket is not an accepted application connection. It starts `awaiting_hello`; the
 **only** message it may send is `client:hello`. Anything else (including a valid `client:ping`)
-gets `HANDSHAKE_REQUIRED` and the socket is closed. A client that never sends `client:hello` within
+gets `HANDSHAKE_REQUIRED` and the socket is closed. A structurally valid, supported-version hello
+moves the connection to `awaiting_identity_proof` and issues a challenge — see
+[`CLIENT_IDENTITY.md`](CLIENT_IDENTITY.md) for the full T7 identity design (canonical signing
+payload, domain separation, replay/expiry handling). The connection is not `ready` — cannot join
+voice, signal, or do anything else — until a verified `client:identity-proof` arrives. A client
+that never completes _either_ step (hello, or the identity proof after it) within
 `REALTIME_HANDSHAKE_TIMEOUT_MS` (default `5000`) is closed with `HANDSHAKE_TIMEOUT` — idle
-unauthenticated sockets are never left open indefinitely.
+unauthenticated sockets are never left open indefinitely, regardless of which half of the
+now-two-step handshake they stalled in.
 
 `server:hello` carries only what proves negotiation succeeded and lets the client behave correctly:
-its own `connectionId`, the negotiated `protocolVersion`, `serverTime`, and the heartbeat cadence.
-No speculative product/presence state.
+its own `connectionId`, the server-verified `identityId`, the negotiated `protocolVersion`,
+`serverTime`, and the heartbeat cadence. No speculative product/presence state.
 
 ## Connection identity
 
 Each accepted connection gets a server-generated `connectionId` (`crypto.randomUUID()`):
 
 - unique for the process lifetime, not user-controlled, safe to log;
-- **not** an authentication or authorization signal — T2 has no account/session system. A future
-  task that adds identity will associate it _with_ a connection, not derive it _from_ one.
+- **not** an authentication or authorization signal by itself — it identifies a _connection_, not a
+  _client_. `identityId` (T7) is the authentication signal: server-derived from the client's
+  verified public key, stable across reconnects for the same local identity. The two remain
+  distinct concepts on the wire and are never merged — see
+  [`CLIENT_IDENTITY.md`](CLIENT_IDENTITY.md)'s "connectionId / identityId / participantId" section.
 
 ## Connection state machine
 
 ```mermaid
 stateDiagram-v2
     [*] --> awaiting_hello: socket opened
-    awaiting_hello --> ready: valid client:hello,\nsupported version
+    awaiting_hello --> awaiting_identity_proof: valid client:hello,\nsupported version
+    awaiting_identity_proof --> ready: verified client:identity-proof
     awaiting_hello --> closing: reject / timeout
+    awaiting_identity_proof --> closing: reject / expired / timeout
     ready --> closing: reject / heartbeat timeout /\nserver shutdown
     closing --> closed: socket close completes
     closed --> [*]
@@ -136,10 +165,13 @@ stateDiagram-v2
 
 `awaiting_hello` merges what could be split into "socket connected" and "awaiting hello" — the
 implementation only ever observes a connection once its WebSocket upgrade is already complete, so
-there is no independently-actionable state in between. There is deliberately no separate state per
-rejection reason (bad hello, unsupported version, rate limited, ...) — every rejection follows the
-same `awaiting_hello`/`ready` → `closing` → `closed` path, with the reason recorded once as data
-(an error code and a WebSocket close code), not as a proliferation of connection states.
+there is no independently-actionable state in between. `awaiting_identity_proof` (T7) is the one
+addition since T2: a connection that sent a structurally valid hello but has not yet proven
+possession of the private key matching its claimed public key. There is deliberately no separate
+state per rejection reason (bad hello, unsupported version, rate limited, invalid signature, ...) —
+every rejection follows the same `awaiting_hello`/`awaiting_identity_proof`/`ready` → `closing` →
+`closed` path, with the reason recorded once as data (an error code and a WebSocket close code),
+not as a proliferation of connection states.
 
 ## Heartbeat / liveness
 
@@ -159,17 +191,27 @@ Two independent mechanisms, used deliberately for different purposes:
 
 ## Errors
 
-| Code                   | Meaning                                                                        | Close code |
-| ---------------------- | ------------------------------------------------------------------------------ | ---------: |
-| `INVALID_MESSAGE`      | Malformed JSON, schema violation, unknown `type`, or a binary frame            |       4400 |
-| `UNSUPPORTED_PROTOCOL` | `client:hello.protocolVersion` not in `SUPPORTED_PROTOCOL_VERSIONS`            |       4401 |
-| `HANDSHAKE_REQUIRED`   | A non-hello message arrived before the handshake completed                     |       4402 |
-| `HANDSHAKE_TIMEOUT`    | The client never completed the handshake in time                               |       4403 |
-| `UNEXPECTED_MESSAGE`   | Structurally valid, but not allowed in the current state (duplicate hello)     |       4404 |
-| `RATE_LIMITED`         | Per-connection message rate limit exceeded                                     |       4429 |
-| `MESSAGE_TOO_LARGE`    | Documented for protocol completeness — see the note below                      |       1009 |
-| `INTERNAL_ERROR`       | Unexpected server-side failure handling an otherwise-valid message             |       4500 |
-| `SERVER_AT_CAPACITY`   | `REALTIME_MAX_CONNECTIONS` already reached; rejected before any handshake work |       4503 |
+| Code                          | Meaning                                                                                                                  | Close code |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------ | ---------: |
+| `INVALID_MESSAGE`             | Malformed JSON, schema violation, unknown `type`, or a binary frame                                                      |       4400 |
+| `UNSUPPORTED_PROTOCOL`        | `client:hello.protocolVersion` not in `SUPPORTED_PROTOCOL_VERSIONS`                                                      |       4401 |
+| `HANDSHAKE_REQUIRED`          | A non-hello message arrived before the handshake completed                                                               |       4402 |
+| `HANDSHAKE_TIMEOUT`           | The client never completed the handshake in time                                                                         |       4403 |
+| `UNEXPECTED_MESSAGE`          | Structurally valid, but not allowed in the current state (duplicate hello)                                               |       4404 |
+| `RATE_LIMITED`                | Per-connection message rate limit exceeded                                                                               |       4429 |
+| `MESSAGE_TOO_LARGE`           | Documented for protocol completeness — see the note below                                                                |       1009 |
+| `IDENTITY_INVALID_PUBLIC_KEY` | `client:hello.publicKey` could not be processed (defensive; schema validation already rejects malformed shapes)          |       4410 |
+| `IDENTITY_INVALID_SIGNATURE`  | `client:identity-proof.signature` does not verify — covers wrong-key, tampered-payload, and replayed/copied proofs alike |       4411 |
+| `IDENTITY_CHALLENGE_EXPIRED`  | The proof arrived after the challenge's `expiresAt`                                                                      |       4412 |
+| `IDENTITY_PROTOCOL_ERROR`     | An identity message arrived with no outstanding challenge for the connection                                             |       4413 |
+| `INTERNAL_ERROR`              | Unexpected server-side failure handling an otherwise-valid message                                                       |       4500 |
+| `SERVER_AT_CAPACITY`          | `REALTIME_MAX_CONNECTIONS` already reached; rejected before any handshake work                                           |       4503 |
+
+The four `IDENTITY_*` codes are deliberately coarse (see [`CLIENT_IDENTITY.md`](CLIENT_IDENTITY.md)
+for the reasoning): a replayed challenge and a signature from the wrong key both surface as
+`IDENTITY_INVALID_SIGNATURE` rather than distinct codes, since the state machine already makes
+same-connection replay structurally impossible and cross-connection replay fails verification
+anyway (the payload binds `connectionId`/`nonce`).
 
 **Policy: every rejection results in a `server:error` (when the socket can still be written to)
 followed immediately by connection close.** T2 has no "warn and continue" path — its protocol
@@ -198,15 +240,16 @@ that boundary, since Node's own guidance is that resuming after `uncaughtExcepti
 
 ## Size, rate, and connection limits
 
-| Setting                            | Default | Purpose                                                         |
-| ---------------------------------- | ------: | --------------------------------------------------------------- |
-| `REALTIME_MAX_CONNECTIONS`         |    1000 | Maximum concurrent connections; new ones are rejected past this |
-| `REALTIME_MAX_MESSAGE_BYTES`       |  16 KiB | Maximum inbound WebSocket frame size (`ws`'s `maxPayload`)      |
-| `REALTIME_HANDSHAKE_TIMEOUT_MS`    |    5000 | Time allowed to send `client:hello` after connecting            |
-| `REALTIME_HEARTBEAT_INTERVAL_MS`   |   15000 | Interval between server-initiated protocol-level pings          |
-| `REALTIME_HEARTBEAT_TIMEOUT_MS`    |   10000 | Grace period for a pong before a connection is declared dead    |
-| `REALTIME_RATE_LIMIT_MAX_MESSAGES` |      30 | Messages allowed per connection per rate-limit window           |
-| `REALTIME_RATE_LIMIT_WINDOW_MS`    |   10000 | Rate-limit window length                                        |
+| Setting                              | Default | Purpose                                                         |
+| ------------------------------------ | ------: | --------------------------------------------------------------- |
+| `REALTIME_MAX_CONNECTIONS`           |    1000 | Maximum concurrent connections; new ones are rejected past this |
+| `REALTIME_MAX_MESSAGE_BYTES`         |  16 KiB | Maximum inbound WebSocket frame size (`ws`'s `maxPayload`)      |
+| `REALTIME_HANDSHAKE_TIMEOUT_MS`      |    5000 | Total time allowed to complete hello _and_ the identity proof   |
+| `REALTIME_IDENTITY_CHALLENGE_TTL_MS` |   10000 | How long one issued identity challenge stays answerable         |
+| `REALTIME_HEARTBEAT_INTERVAL_MS`     |   15000 | Interval between server-initiated protocol-level pings          |
+| `REALTIME_HEARTBEAT_TIMEOUT_MS`      |   10000 | Grace period for a pong before a connection is declared dead    |
+| `REALTIME_RATE_LIMIT_MAX_MESSAGES`   |      30 | Messages allowed per connection per rate-limit window           |
+| `REALTIME_RATE_LIMIT_WINDOW_MS`      |   10000 | Rate-limit window length                                        |
 
 The rate limiter is a lightweight fixed-window counter **per connection**, not a distributed or
 cross-connection limiter — T2's threat model for it is one connected client flooding the Node event
@@ -225,9 +268,12 @@ connections up to the cap. A production deployment fronted by a reverse proxy (s
 
 - Every inbound message is runtime-validated (`packages/protocol`, via `zod`) before any domain
   code sees it — a compile-time TypeScript type alone is never trusted for network input.
-- `connectionId` is not an identity or authorization signal; T2 has no authentication.
+- `connectionId` is not an identity or authorization signal; `identityId` (T7) is, and is always
+  server-derived from a verified public key — never trusted as a client-supplied value.
+- No connection reaches `ready` — and therefore cannot join voice, signal, or send any
+  channel-scoped message — without a verified identity proof (T7).
 - Errors sent to clients never leak internals; logs may contain diagnostic detail but never raw
-  message payloads, secrets, or (in future tasks) credentials/SDP.
+  message payloads, secrets, private key material, or (in future tasks) credentials/SDP.
 - One connection cannot exhaust the process via message size or message rate — both are bounded
   and configurable, validated at startup (invalid configuration fails the process immediately with
   a clear error, per [`docs/CONFIGURATION.md`](../CONFIGURATION.md)).
@@ -240,10 +286,12 @@ The envelope and versioning strategy were designed so later tasks could add mess
 redesigning the foundation, and T3 is the first proof of that:
 
 ```text
-T3  voice:join, voice:leave, voice:joined, voice:left, voice:participant-joined,
-    voice:participant-left, voice:catalog, webrtc:offer, webrtc:answer,
-    webrtc:ice-candidate   — implemented, see architecture/WEBRTC_VOICE.md
-T7  text:join, text:message-send, text:message-created   — not yet implemented
+T3   voice:join, voice:leave, voice:joined, voice:left, voice:participant-joined,
+     voice:participant-left, voice:catalog, webrtc:offer, webrtc:answer,
+     webrtc:ice-candidate   — implemented, see architecture/WEBRTC_VOICE.md
+T7   server:identity-challenge, client:identity-proof; client:hello/server:hello extended
+     with nickname/publicKey/identityId   — implemented, see architecture/CLIENT_IDENTITY.md
+T10  text:join, text:message-send, text:message-created   — not yet implemented
 ```
 
 T3 needed no envelope or versioning change — every new message is its own schema added to the
@@ -261,6 +309,9 @@ race, not misbehavior) are expected to happen during ordinary use and must not t
 voice session.
 
 Presence beyond raw connection lifecycle ("a socket is connected" is not "a user is online" — voice
-channel membership is closer to presence than T2's `connectionId` ever was, but it is still not an
-authenticated identity) and authentication/session identity remain out of scope until a task
-introduces an account model.
+channel membership is closer to presence than T2's `connectionId` ever was) remains out of scope.
+Authentication now exists (T7's identity proof), but deliberately without an account model: no
+central user database, no password, no email — see [`CLIENT_IDENTITY.md`](CLIENT_IDENTITY.md) and
+[`adr/0011-local-cryptographic-identity-without-central-accounts.md`](../adr/0011-local-cryptographic-identity-without-central-accounts.md).
+Server-local authorization (permissions, groups, invite/privilege tokens, bans keyed by
+`identityId`) remains a later task (T9).

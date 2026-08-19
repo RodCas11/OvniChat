@@ -17,6 +17,7 @@
   ],
   "dependencies": {
     "@disco-voador/config": "workspace:*",
+    "@disco-voador/identity": "workspace:*",
     "@disco-voador/protocol": "workspace:*",
     "ws": "8.21.3"
   },

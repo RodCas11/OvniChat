@@ -2,11 +2,13 @@
 
 > This document describes the intended architecture. The Electron desktop shell (T1), the realtime
 > connection/protocol foundation (T2), voice channels/microphone/P2P WebRTC (T3), camera streaming
-> (T4), screen/window video sharing (T5), and screen/system audio (T6) are implemented and
-> live-verified — see [`tasks/T3_VOICE_WEBRTC.md`](tasks/T3_VOICE_WEBRTC.md),
+> (T4), screen/window video sharing (T5), screen/system audio (T6), and local cryptographic client
+> identity (T7) are implemented and live-verified — see
+> [`tasks/T3_VOICE_WEBRTC.md`](tasks/T3_VOICE_WEBRTC.md),
 > [`tasks/T4_CAMERA_STREAMING.md`](tasks/T4_CAMERA_STREAMING.md),
-> [`tasks/T5_SCREEN_SHARE.md`](tasks/T5_SCREEN_SHARE.md), and
-> [`tasks/T6_SCREEN_AUDIO.md`](tasks/T6_SCREEN_AUDIO.md). See
+> [`tasks/T5_SCREEN_SHARE.md`](tasks/T5_SCREEN_SHARE.md),
+> [`tasks/T6_SCREEN_AUDIO.md`](tasks/T6_SCREEN_AUDIO.md), and
+> [`tasks/T7_LOCAL_IDENTITY.md`](tasks/T7_LOCAL_IDENTITY.md). See
 > [`tasks/STATUS.md`](tasks/STATUS.md) for what remains a marker or is not yet started. Treat any
 > capability this document describes as unimplemented unless STATUS.md says otherwise.
 
@@ -89,7 +91,8 @@ service never becomes a media relay. WebRTC data channels are not the text-chat 
 | ------------------------ | ------------------------------------------------------------------------ | -------------------------------------------------------- |
 | `apps/desktop`           | Electron Main, Preload, Renderer, window lifecycle, desktop composition  | Generic RTC algorithms or Windows capture implementation |
 | `services/realtime`      | WebSocket connections, presence, voice signaling, text events            | Media payload relay or UI logic                          |
-| `packages/protocol`      | Canonical runtime schemas, derived types, message/version contracts      | Desktop/server implementations                           |
+| `packages/protocol`      | Canonical runtime schemas, derived types, message/version contracts      | Desktop/server implementations, crypto (`node:crypto`)   |
+| `packages/identity`      | Ed25519 keygen/sign/verify/identityId derivation (Node-only)             | Renderer/Preload, environment-neutral packages           |
 | `packages/rtc-core`      | Environment-neutral peer/session transport, tracks, ICE, stats, recovery | Electron, React, Windows APIs, `windows-media`           |
 | `packages/media-core`    | Semantic source ownership and generic media lifecycle                    | Electron/native Windows implementation                   |
 | `packages/windows-media` | System/process loopback and any native/helper adapters                   | Generic UI or signaling behavior                         |
@@ -104,7 +107,9 @@ flowchart LR
   Desktop --> RTC[packages/rtc-core]
   Desktop --> Media[packages/media-core]
   Desktop --> Win[packages/windows-media]
+  DesktopMain[apps/desktop Main only] --> Identity[packages/identity]
   Realtime[services/realtime] --> Protocol
+  Realtime --> Identity
   RTC --> Protocol
   Win --> Media
   All[consumers] --> Config[packages/config]
@@ -126,32 +131,41 @@ reaches domain logic unvalidated. The shared protocol package is canonical; clie
 hand-written copies are prohibited. Full protocol design:
 [`architecture/REALTIME_PROTOCOL.md`](architecture/REALTIME_PROTOCOL.md).
 
-Voice signaling was added in T3 alongside the connection module T2 built; presence beyond raw
-connection lifecycle and text-chat remain unimplemented internal modules for later tasks (T7):
+Voice signaling was added in T3 alongside the connection module T2 built; T7 added the identity-
+challenge step to the same connection module. Presence beyond raw connection lifecycle and
+text-chat remain unimplemented internal modules for a later task (T10):
 
 ```text
 services/realtime/src/
-  connection.ts, connection-state.ts   # T2 — implemented
-  protocol-handlers.ts, heartbeat.ts   # T2 — implemented
-  rate-limiter.ts, config.ts, logging.ts, server.ts, index.ts   # T2 — implemented
+  connection.ts, connection-state.ts   # T2, extended T7 — implemented
+  protocol-handlers.ts, heartbeat.ts   # T2, extended T7 — implemented
+  rate-limiter.ts, config.ts, logging.ts, server.ts, index.ts   # T2, extended T7 — implemented
   voice/catalog.ts, voice/registry.ts  # T3 — implemented
   presence/          # not yet implemented
   text-chat/          # not yet implemented
 ```
 
 Bounding message size/rate is implemented (`REALTIME_MAX_MESSAGE_BYTES`,
-`REALTIME_RATE_LIMIT_MAX_MESSAGES`/`_WINDOW_MS`); associating a message with an _authorized_
-session is not — T2 has no authentication/session model, only a non-authoritative
-`connectionId`. That association is deferred to whichever task introduces accounts/sessions.
+`REALTIME_RATE_LIMIT_MAX_MESSAGES`/`_WINDOW_MS`); associating a message with an _authenticated_
+identity is now implemented too (T7) — every connection must complete a signed challenge/response
+proving possession of its claimed Ed25519 keypair before it can do anything, and the server always
+derives `identityId` itself from the verified public key rather than trusting a client-supplied
+value. What remains deferred is _authorization_ (server-local permissions/groups/bans keyed by
+`identityId`) — that's T9, not T7.
 
 ## Persistence strategy
 
-SQLite is the initial target for text channels, messages, and basic server configuration when T7
-needs persistence. Domain services should depend on a narrow storage interface, with SQLite as one
-adapter. The interface should reflect required operations and transactions—not mirror SQLite or
-prematurely emulate PostgreSQL. A PostgreSQL adapter remains possible later.
+SQLite is the initial target for text channels, messages, and basic server configuration when a
+later task (T9 onward) needs persistence. Domain services should depend on a narrow storage
+interface, with SQLite as one adapter. The interface should reflect required operations and
+transactions—not mirror SQLite or prematurely emulate PostgreSQL. A PostgreSQL adapter remains
+possible later.
 
-No application schema or database code exists in T0.
+T7's client identity is deliberately **not** SQLite-backed: it is a single JSON file per profile
+(`%APPDATA%/DiscoVoador/identity/identity.json`, atomic writes, `safeStorage`-encrypted private
+key) owned entirely by the Electron Main process, with no server-side persistence at all — the
+realtime server holds identity state only for a connection's lifetime. No application schema or
+database code exists yet.
 
 ## RTC transport strategy
 

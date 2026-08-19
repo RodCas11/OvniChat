@@ -3,6 +3,7 @@ import {
   parseServerMessage,
   type ClientMessage,
   type ServerErrorMessage,
+  type ServerIdentityChallengeMessage,
   type ServerMediaTrackSourceMessage,
   type ServerMessage,
   type ServerVoiceCatalogMessage,
@@ -16,6 +17,8 @@ import {
   type TrackSource,
 } from '@disco-voador/protocol';
 import type { ParticipantId, SignalingPort } from '@disco-voador/rtc-core';
+
+import type { IdentitySigner } from './identity-signer.js';
 
 export type RealtimeConnectionState = 'connecting' | 'open' | 'closed';
 
@@ -38,10 +41,16 @@ function generateMessageId(): string {
 }
 
 /**
- * Renderer-side realtime WebSocket client. Owns the T2 handshake (`client:hello`/`server:hello`)
- * and the T3 voice/WebRTC signaling wire format, and implements rtc-core's `SignalingPort`
- * directly so a `P2PMeshTransport` can send signaling through it with no adapter layer. This class
- * only ever carries text/signaling — never a media payload, per `docs/SECURITY.md`.
+ * Renderer-side realtime WebSocket client. Owns the T2/T7 handshake (`client:hello` ->
+ * `server:identity-challenge` -> `client:identity-proof` -> `server:hello`) and the T3 voice/
+ * WebRTC signaling wire format, and implements rtc-core's `SignalingPort` directly so a
+ * `P2PMeshTransport` can send signaling through it with no adapter layer. This class only ever
+ * carries text/signaling — never a media payload, per `docs/SECURITY.md`.
+ *
+ * The private key itself never passes through this class or the Renderer at all — every identity
+ * operation goes through the injected {@link IdentitySigner}, which is IPC-shaped (see
+ * `identity-signer.ts`); this class only ever handles public data (`publicKey`, `identityId`,
+ * `nickname`) and opaque signature strings.
  *
  * Server-driven WebSocket protocol-level ping/pong (handled transparently by the platform's
  * `WebSocket` implementation) is enough to keep the connection alive; this client does not run its
@@ -49,6 +58,11 @@ function generateMessageId(): string {
  */
 export class RealtimeClient implements SignalingPort {
   private socket: WebSocket | undefined;
+  /** The nickname actually sent in the most recent `client:hello` — captured once at hello time
+   * so a nickname change while a challenge is outstanding can never desync the client's proof
+   * from what the server is verifying against (the server always uses the nickname it received
+   * at hello, never a later value). */
+  private currentNickname = '';
   private readonly listeners: { [K in keyof RealtimeClientEvents]: Set<RealtimeClientEvents[K]> } =
     {
       stateChange: new Set(),
@@ -64,7 +78,10 @@ export class RealtimeClient implements SignalingPort {
       serverError: new Set(),
     };
 
-  constructor(private readonly url: string) {}
+  constructor(
+    private readonly url: string,
+    private readonly signer: IdentitySigner,
+  ) {}
 
   on<K extends keyof RealtimeClientEvents>(event: K, listener: RealtimeClientEvents[K]): void {
     this.listeners[event].add(listener);
@@ -82,12 +99,7 @@ export class RealtimeClient implements SignalingPort {
     this.socket = socket;
 
     socket.addEventListener('open', () => {
-      this.send({
-        type: 'client:hello',
-        id: generateMessageId(),
-        protocolVersion: CURRENT_PROTOCOL_VERSION,
-        client: { name: 'disco-voador-desktop', version: '0.0.0' },
-      });
+      void this.sendHello(socket);
     });
 
     socket.addEventListener('message', (event: MessageEvent<unknown>) => {
@@ -98,6 +110,68 @@ export class RealtimeClient implements SignalingPort {
       this.socket = undefined;
       this.emit('stateChange', 'closed');
     });
+  }
+
+  /** Loads the local public identity and current nickname, then sends `client:hello`. Async
+   * because both come from Main over IPC — `socket` is the exact instance `connect()` just
+   * created, checked against `this.socket` after each await so a torn-down/replaced connection
+   * (unmount, reconnect) while this was in flight is a silent no-op rather than sending a hello on
+   * a dead or unrelated socket, mirroring the same staleness guard `use-voice-channel.ts` already
+   * uses for `getUserMedia`/`getDisplayMedia`. */
+  private async sendHello(socket: WebSocket): Promise<void> {
+    let publicKey: string;
+    let nickname: string;
+    try {
+      const [identity, currentNickname] = await Promise.all([
+        this.signer.getPublicIdentity(),
+        this.signer.getNickname(),
+      ]);
+      if (this.socket !== socket) return;
+      publicKey = identity.publicKey;
+      nickname = currentNickname;
+    } catch (error) {
+      console.error('realtime-client: failed to load the local identity', error);
+      socket.close(1011, 'identity unavailable');
+      return;
+    }
+
+    this.currentNickname = nickname;
+    this.send({
+      type: 'client:hello',
+      id: generateMessageId(),
+      protocolVersion: CURRENT_PROTOCOL_VERSION,
+      client: { name: 'disco-voador-desktop', version: '0.0.0' },
+      nickname,
+      publicKey,
+    });
+  }
+
+  /** Answers `server:identity-challenge` by asking the signer to sign it, then sends
+   * `client:identity-proof` — the only path that can make the connection `ready`
+   * (`server:hello`). Never reconstructs the canonical payload itself; that is the signer's (in
+   * practice, Main's) job specifically so the Renderer never needs — and never gets — the
+   * building blocks to sign anything else. */
+  private async handleIdentityChallenge(message: ServerIdentityChallengeMessage): Promise<void> {
+    const socket = this.socket;
+    if (!socket) return;
+
+    let signature: string;
+    try {
+      signature = await this.signer.signIdentityChallenge({
+        protocolVersion: CURRENT_PROTOCOL_VERSION,
+        connectionId: message.connectionId,
+        nonce: message.nonce,
+        expiresAt: message.expiresAt,
+        nickname: this.currentNickname,
+      });
+    } catch (error) {
+      console.error('realtime-client: failed to sign the identity challenge', error);
+      socket.close(1011, 'identity signing failed');
+      return;
+    }
+    if (this.socket !== socket) return;
+
+    this.send({ type: 'client:identity-proof', id: generateMessageId(), signature });
   }
 
   /**
@@ -201,7 +275,14 @@ export class RealtimeClient implements SignalingPort {
   private dispatch(message: ServerMessage): void {
     switch (message.type) {
       case 'server:hello':
+        // Public data only — used by the T7 identity-authentication E2E script to confirm this
+        // connection's server-verified identityId matches the local one logged by
+        // `use-identity.ts`. See `apps/desktop/scripts/e2e-identity-auth.mjs`.
+        console.info(`disco-voador:server-authenticated-identity:${message.identityId}`);
         this.emit('stateChange', 'open');
+        return;
+      case 'server:identity-challenge':
+        void this.handleIdentityChallenge(message);
         return;
       case 'server:pong':
         return;

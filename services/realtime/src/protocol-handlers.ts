@@ -1,9 +1,16 @@
 import { randomUUID } from 'node:crypto';
 
 import {
+  deriveIdentityId,
+  generateIdentityChallengeNonce,
+  verifyIdentitySignature,
+} from '@disco-voador/identity';
+import {
   CURRENT_PROTOCOL_VERSION,
+  buildIdentityAuthPayload,
   isSupportedProtocolVersion,
   type ClientHelloMessage,
+  type ClientIdentityProofMessage,
   type ClientMediaTrackSourceMessage,
   type ClientMessage,
   type ClientPingMessage,
@@ -17,11 +24,29 @@ import {
 import type { ConnectionState } from './connection-state.js';
 import type { VoiceRegistry } from './voice/registry.js';
 
+/**
+ * The identity claim and outstanding challenge for a connection currently in
+ * `awaiting_identity_proof`. `Connection` owns the actual storage (see `connection.ts`) — this
+ * type just describes its shape so `routeClientMessage` can stay pure: it receives the current
+ * value as `ctx.pendingChallenge` and returns the next value as `RouteResult.pendingChallenge`,
+ * rather than mutating anything itself.
+ */
+export interface PendingIdentityChallenge {
+  readonly protocolVersion: number;
+  readonly publicKey: string;
+  readonly nickname: string;
+  readonly nonce: string;
+  readonly expiresAt: number;
+}
+
 export interface HandlerContext {
   readonly connectionId: string;
   readonly now: () => Date;
   readonly heartbeat: { readonly intervalMs: number; readonly timeoutMs: number };
   readonly voiceRegistry: VoiceRegistry;
+  readonly identityChallengeTtlMs: number;
+  /** The connection's outstanding identity challenge, if it is currently `awaiting_identity_proof`. */
+  readonly pendingChallenge: PendingIdentityChallenge | undefined;
 }
 
 /**
@@ -40,6 +65,10 @@ export type RouteResult =
       readonly ok: true;
       readonly nextState: ConnectionState;
       readonly actions: readonly OutgoingAction[];
+      /** The connection's next `pendingChallenge` (see {@link HandlerContext}). `undefined` for
+       * every transition except into `awaiting_identity_proof`, which clears any prior value —
+       * a connection never carries a stale challenge into `ready` or back into `awaiting_hello`. */
+      readonly pendingChallenge?: PendingIdentityChallenge;
     }
   | { readonly ok: false; readonly code: ErrorCode; readonly message: string };
 
@@ -51,14 +80,117 @@ function deliver(connectionId: string, message: ServerMessage): OutgoingAction {
   return { kind: 'deliver', connectionId, message };
 }
 
-export function handleClientHello(message: ClientHelloMessage, ctx: HandlerContext): ServerMessage {
+/**
+ * Issues a fresh identity challenge in answer to a structurally valid `client:hello`. The
+ * connection does not become `ready` here — see `handleIdentityProof`, which is the only path
+ * that can produce `server:hello`.
+ */
+function buildIdentityChallenge(
+  message: ClientHelloMessage,
+  ctx: HandlerContext,
+): { readonly challenge: PendingIdentityChallenge; readonly serverMessage: ServerMessage } {
+  const challenge: PendingIdentityChallenge = {
+    protocolVersion: message.protocolVersion,
+    publicKey: message.publicKey,
+    nickname: message.nickname,
+    nonce: generateIdentityChallengeNonce(),
+    expiresAt: ctx.now().getTime() + ctx.identityChallengeTtlMs,
+  };
+
+  return {
+    challenge,
+    serverMessage: {
+      type: 'server:identity-challenge',
+      id: randomUUID(),
+      connectionId: ctx.connectionId,
+      nonce: challenge.nonce,
+      expiresAt: challenge.expiresAt,
+    },
+  };
+}
+
+function buildServerHello(
+  replyToId: string,
+  identityId: string,
+  ctx: HandlerContext,
+): ServerMessage {
   return {
     type: 'server:hello',
-    id: message.id,
+    id: replyToId,
     protocolVersion: CURRENT_PROTOCOL_VERSION,
     connectionId: ctx.connectionId,
+    identityId,
     serverTime: ctx.now().toISOString(),
     heartbeat: { intervalMs: ctx.heartbeat.intervalMs, timeoutMs: ctx.heartbeat.timeoutMs },
+  };
+}
+
+/**
+ * Verifies `client:identity-proof` against the connection's outstanding challenge. Only ever
+ * reachable from `awaiting_identity_proof` with a non-expired challenge still present — every
+ * other case (no challenge, expired, wrong signature) is a distinct rejection, never a silent
+ * fallback. On success, the server derives `identityId` itself from the verified public key
+ * (`deriveIdentityId`) — the client never supplies it, and there is nothing here to trust from
+ * the client beyond the public key it already committed to at `client:hello`.
+ */
+function handleIdentityProof(
+  message: ClientIdentityProofMessage,
+  ctx: HandlerContext,
+): RouteResult {
+  const challenge = ctx.pendingChallenge;
+  if (!challenge) {
+    return {
+      ok: false,
+      code: 'IDENTITY_PROTOCOL_ERROR',
+      message: 'No outstanding identity challenge',
+    };
+  }
+
+  if (ctx.now().getTime() > challenge.expiresAt) {
+    return { ok: false, code: 'IDENTITY_CHALLENGE_EXPIRED', message: 'Identity challenge expired' };
+  }
+
+  const payload = buildIdentityAuthPayload({
+    protocolVersion: challenge.protocolVersion,
+    connectionId: ctx.connectionId,
+    nonce: challenge.nonce,
+    expiresAt: challenge.expiresAt,
+    publicKey: challenge.publicKey,
+    nickname: challenge.nickname,
+  });
+
+  let verified: boolean;
+  try {
+    verified = verifyIdentitySignature(challenge.publicKey, payload, message.signature);
+  } catch {
+    // Defensive only: packages/protocol's schema already guarantees publicKey/signature are the
+    // right length and alphabet before this ever runs, so verifyIdentitySignature should never
+    // throw here in practice — but a public key it genuinely cannot process is a distinct,
+    // specifically-coded failure, not an INTERNAL_ERROR.
+    return {
+      ok: false,
+      code: 'IDENTITY_INVALID_PUBLIC_KEY',
+      message: 'Public key could not be processed',
+    };
+  }
+
+  if (!verified) {
+    return {
+      ok: false,
+      code: 'IDENTITY_INVALID_SIGNATURE',
+      message: 'Signature verification failed',
+    };
+  }
+
+  const identityId = deriveIdentityId(challenge.publicKey);
+
+  return {
+    ok: true,
+    nextState: 'ready',
+    actions: [
+      reply(buildServerHello(message.id, identityId, ctx)),
+      reply(buildVoiceCatalogMessage(ctx)),
+    ],
   };
 }
 
@@ -244,11 +376,24 @@ export function routeClientMessage(
         message: `Unsupported protocol version ${String(message.protocolVersion)}`,
       };
     }
+    const { challenge, serverMessage } = buildIdentityChallenge(message, ctx);
     return {
       ok: true,
-      nextState: 'ready',
-      actions: [reply(handleClientHello(message, ctx)), reply(buildVoiceCatalogMessage(ctx))],
+      nextState: 'awaiting_identity_proof',
+      actions: [reply(serverMessage)],
+      pendingChallenge: challenge,
     };
+  }
+
+  if (message.type === 'client:identity-proof') {
+    if (state !== 'awaiting_identity_proof') {
+      return {
+        ok: false,
+        code: 'IDENTITY_PROTOCOL_ERROR',
+        message: 'No outstanding identity challenge',
+      };
+    }
+    return handleIdentityProof(message, ctx);
   }
 
   if (state !== 'ready') {

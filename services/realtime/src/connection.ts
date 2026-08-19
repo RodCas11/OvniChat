@@ -12,7 +12,7 @@ import type { RealtimeConfig } from './config.js';
 import type { ConnectionState } from './connection-state.js';
 import type { Logger } from './logging.js';
 import { HeartbeatMonitor } from './heartbeat.js';
-import { routeClientMessage } from './protocol-handlers.js';
+import { routeClientMessage, type PendingIdentityChallenge } from './protocol-handlers.js';
 import { RateLimiter } from './rate-limiter.js';
 import type { VoiceRegistry } from './voice/registry.js';
 
@@ -31,6 +31,10 @@ const CLOSE_CODE_BY_ERROR: Partial<Record<ErrorCode, number>> = {
   UNEXPECTED_MESSAGE: CLOSE_CODES.UNEXPECTED_MESSAGE,
   RATE_LIMITED: CLOSE_CODES.RATE_LIMITED,
   MESSAGE_TOO_LARGE: CLOSE_CODES.MESSAGE_TOO_LARGE,
+  IDENTITY_INVALID_PUBLIC_KEY: CLOSE_CODES.IDENTITY_INVALID_PUBLIC_KEY,
+  IDENTITY_INVALID_SIGNATURE: CLOSE_CODES.IDENTITY_INVALID_SIGNATURE,
+  IDENTITY_CHALLENGE_EXPIRED: CLOSE_CODES.IDENTITY_CHALLENGE_EXPIRED,
+  IDENTITY_PROTOCOL_ERROR: CLOSE_CODES.IDENTITY_PROTOCOL_ERROR,
   INTERNAL_ERROR: CLOSE_CODES.INTERNAL_ERROR,
   SERVER_AT_CAPACITY: CLOSE_CODES.SERVER_AT_CAPACITY,
   // CHANNEL_NOT_FOUND, NOT_IN_VOICE_CHANNEL, SIGNALING_TARGET_INVALID, CHANNEL_FULL are
@@ -53,6 +57,7 @@ export class Connection {
   readonly id: string = randomUUID();
   readonly connectedAt: number;
   private _state: ConnectionState = 'awaiting_hello';
+  private pendingChallenge: PendingIdentityChallenge | undefined;
   private readonly rateLimiter: RateLimiter;
   private readonly heartbeat: HeartbeatMonitor;
   private handshakeTimer: NodeJS.Timeout | undefined;
@@ -117,13 +122,19 @@ export class Connection {
   }
 
   private handleHandshakeTimeout(): void {
-    if (this._state !== 'awaiting_hello') return;
+    if (this._state !== 'awaiting_hello' && this._state !== 'awaiting_identity_proof') return;
     this.logger.warn('handshake_timeout', { connectionId: this.id });
     this.rejectAndClose('HANDSHAKE_TIMEOUT', 'Handshake was not completed in time');
   }
 
   private handleRawMessage(data: RawData, isBinary: boolean): void {
-    if (this._state !== 'awaiting_hello' && this._state !== 'ready') return;
+    if (
+      this._state !== 'awaiting_hello' &&
+      this._state !== 'awaiting_identity_proof' &&
+      this._state !== 'ready'
+    ) {
+      return;
+    }
 
     if (isBinary) {
       this.rejectAndClose('INVALID_MESSAGE', 'Binary frames are not supported');
@@ -166,6 +177,8 @@ export class Connection {
           timeoutMs: this.config.heartbeatTimeoutMs,
         },
         voiceRegistry: this.voiceRegistry,
+        identityChallengeTtlMs: this.config.identityChallengeTtlMs,
+        pendingChallenge: this.pendingChallenge,
       });
 
       if (!result.ok) {
@@ -175,6 +188,7 @@ export class Connection {
 
       const enteringReady = this._state !== 'ready' && result.nextState === 'ready';
       this._state = result.nextState;
+      this.pendingChallenge = result.pendingChallenge;
 
       if (enteringReady) {
         this.clearHandshakeTimer();

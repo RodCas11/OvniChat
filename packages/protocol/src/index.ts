@@ -10,20 +10,40 @@ export {
   participantIdSchema,
 } from './identifiers.js';
 export {
+  IDENTITY_AUTH_DOMAIN,
+  IDENTITY_CONNECTION_ID_MAX_LENGTH,
+  IDENTITY_ID_PATTERN,
+  IDENTITY_NONCE_BASE64URL_LENGTH,
+  IDENTITY_PUBLIC_KEY_BASE64URL_LENGTH,
+  IDENTITY_SIGNATURE_BASE64URL_LENGTH,
+  buildIdentityAuthPayload,
+  identityConnectionIdSchema,
+  identityExpiresAtSchema,
+  identityIdSchema,
+  identityNonceSchema,
+  identityPublicKeySchema,
+  identitySignatureSchema,
+  type IdentityAuthPayloadFields,
+} from './identity.js';
+export {
   clientHelloMessageSchema,
+  clientIdentityProofMessageSchema,
   clientMessageSchema,
   clientPingMessageSchema,
   type ClientHelloMessage,
+  type ClientIdentityProofMessage,
   type ClientMessage,
   type ClientPingMessage,
 } from './messages/client.js';
 export {
   serverErrorMessageSchema,
   serverHelloMessageSchema,
+  serverIdentityChallengeMessageSchema,
   serverMessageSchema,
   serverPongMessageSchema,
   type ServerErrorMessage,
   type ServerHelloMessage,
+  type ServerIdentityChallengeMessage,
   type ServerMessage,
   type ServerPongMessage,
 } from './messages/server.js';

@@ -77,6 +77,15 @@ function isWindowsMedia(specifier) {
   );
 }
 
+function isIdentity(specifier) {
+  // Unlike isWindowsMedia's broader path-segment match, this checks only the workspace package
+  // specifier: renderer/preload code legitimately has local files/folders named "identity" (e.g.
+  // identity settings UI), and a generic path-segment regex would false-positive on those relative
+  // imports. The @disco-voador/identity package has no subpath exports, so an exact-package check
+  // is sufficient to catch every real import of it.
+  return specifier === '@disco-voador/identity';
+}
+
 export function architectureViolationsForSource(relativePath, source) {
   const violations = [];
 
@@ -94,11 +103,24 @@ export function architectureViolationsForSource(relativePath, source) {
       );
     }
 
+    if (/apps\/desktop\/src\/(?:preload|renderer)\//u.test(relativePath) && isIdentity(specifier)) {
+      violations.push(
+        `${relativePath}: desktop bridge imports identity private-key implementation "${specifier}"`,
+      );
+    }
+
     if (
       relativePath.startsWith('packages/rtc-core/') &&
       (specifier === 'electron' || specifier === 'react' || isWindowsMedia(specifier))
     ) {
       violations.push(`${relativePath}: rtc-core imports forbidden module "${specifier}"`);
+    }
+
+    if (
+      /packages\/(media-core|protocol|rtc-core|shared)\//u.test(relativePath) &&
+      isIdentity(specifier)
+    ) {
+      violations.push(`${relativePath}: generic package imports platform module "${specifier}"`);
     }
 
     if (

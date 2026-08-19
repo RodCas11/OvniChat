@@ -27,6 +27,11 @@ const realtimeConfigSchema = z.object({
   // limit.
   REALTIME_MAX_MESSAGE_BYTES: envPositiveInt().default(80 * 1024),
   REALTIME_HANDSHAKE_TIMEOUT_MS: envPositiveInt().default(5_000),
+  // Independent of REALTIME_HANDSHAKE_TIMEOUT_MS: this bounds how long one issued
+  // server:identity-challenge stays answerable, giving a specific IDENTITY_CHALLENGE_EXPIRED
+  // failure. The handshake timeout remains the hard backstop that closes an idle/unresponsive
+  // connection regardless of whether a challenge is outstanding (see connection.ts).
+  REALTIME_IDENTITY_CHALLENGE_TTL_MS: envPositiveInt().default(10_000),
   REALTIME_HEARTBEAT_INTERVAL_MS: envPositiveInt().default(15_000),
   REALTIME_HEARTBEAT_TIMEOUT_MS: envPositiveInt().default(10_000),
   REALTIME_RATE_LIMIT_MAX_MESSAGES: envPositiveInt().default(30),
@@ -40,6 +45,7 @@ export interface RealtimeConfig {
   readonly maxConnections: number;
   readonly maxMessageBytes: number;
   readonly handshakeTimeoutMs: number;
+  readonly identityChallengeTtlMs: number;
   readonly heartbeatIntervalMs: number;
   readonly heartbeatTimeoutMs: number;
   readonly rateLimit: {
@@ -60,6 +66,7 @@ export function loadRealtimeConfig(
     maxConnections: parsed.REALTIME_MAX_CONNECTIONS,
     maxMessageBytes: parsed.REALTIME_MAX_MESSAGE_BYTES,
     handshakeTimeoutMs: parsed.REALTIME_HANDSHAKE_TIMEOUT_MS,
+    identityChallengeTtlMs: parsed.REALTIME_IDENTITY_CHALLENGE_TTL_MS,
     heartbeatIntervalMs: parsed.REALTIME_HEARTBEAT_INTERVAL_MS,
     heartbeatTimeoutMs: parsed.REALTIME_HEARTBEAT_TIMEOUT_MS,
     rateLimit: {

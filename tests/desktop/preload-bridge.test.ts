@@ -29,10 +29,15 @@ describe('preload bridge', () => {
 
     expect(Object.keys(api).sort()).toEqual([
       'getE2EVoiceConfig',
+      'getIdentity',
+      'getNickname',
       'getRealtimeConfig',
       'getVersionInfo',
       'listScreenShareSources',
+      'regenerateIdentity',
       'selectScreenShareSource',
+      'setNickname',
+      'signIdentityChallenge',
     ]);
     expect(api['ipcRenderer']).toBeUndefined();
     expect(api['invoke']).toBeUndefined();

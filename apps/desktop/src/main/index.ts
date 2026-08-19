@@ -41,6 +41,8 @@ const isE2ECameraSmoke = process.env['DISCO_VOADOR_E2E_CAMERA_SMOKE'] === '1' &&
 const isE2EScreenSmoke = process.env['DISCO_VOADOR_E2E_SCREEN_SMOKE'] === '1' && !app.isPackaged;
 const isE2EScreenAudioSmoke =
   process.env['DISCO_VOADOR_E2E_SCREEN_AUDIO_SMOKE'] === '1' && !app.isPackaged;
+const isE2EIdentityPersistence =
+  process.env['DISCO_VOADOR_E2E_IDENTITY_PERSISTENCE'] === '1' && !app.isPackaged;
 
 function rendererDirectory(): string {
   return path.join(__dirname, '../renderer', MAIN_WINDOW_VITE_NAME);
@@ -64,6 +66,34 @@ function armSmokeTestExit(window: BrowserWindow): void {
     clearTimeout(timeout);
     console.error('SMOKE_LOAD_FAILED');
     app.exit(1);
+  });
+}
+
+/**
+ * Drives `apps/desktop/scripts/e2e-identity-persistence.mjs`: a single Electron instance, launched
+ * against a caller-chosen `--user-data-dir`, whose sole job is to load (creating on first run) and
+ * report its local identityId, then exit — no realtime service, no voice channel, no media
+ * involved. Needs only the unconditional `disco-voador:local-identity-ready` console line
+ * `use-identity.ts` already logs; relaying it lets the orchestrating script compare the identityId
+ * across repeated launches against the same/different `--user-data-dir` to prove persistence.
+ */
+function armE2EIdentityPersistenceExit(window: BrowserWindow): void {
+  if (!isE2EIdentityPersistence) return;
+
+  const marker = 'disco-voador:local-identity-ready:';
+
+  const timeout = setTimeout(() => {
+    console.error('E2E_IDENTITY_PERSISTENCE_TIMEOUT: identity never became ready');
+    app.exit(1);
+  }, 30_000);
+
+  window.webContents.on('console-message', (_event, _level, message) => {
+    console.info(`[renderer] ${message}`);
+    if (!message.startsWith(marker)) return;
+    clearTimeout(timeout);
+    const identityId = message.slice(marker.length);
+    console.info(`E2E_IDENTITY_PERSISTENCE_OK:${identityId}`);
+    setTimeout(() => app.exit(0), 250);
   });
 }
 
@@ -471,6 +501,7 @@ async function bootstrap(): Promise<void> {
   armE2ECameraSmokeExit(window);
   armE2EScreenSmokeExit(window);
   armE2EScreenAudioSmokeExit(window);
+  armE2EIdentityPersistenceExit(window);
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

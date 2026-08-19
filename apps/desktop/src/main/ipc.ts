@@ -1,15 +1,43 @@
+import {
+  displayNameSchema,
+  identityConnectionIdSchema,
+  identityExpiresAtSchema,
+  identityNonceSchema,
+} from '@disco-voador/protocol';
 import { app, ipcMain } from 'electron';
 import type { IpcMainInvokeEvent, WebContents } from 'electron';
+import { z } from 'zod';
 
 import {
   IPC_CHANNELS,
   type DesktopE2EVoiceConfig,
+  type DesktopIdentity,
+  type DesktopIdentityChallenge,
   type DesktopRealtimeConfig,
   type DesktopScreenSource,
   type DesktopVersionInfo,
 } from '../shared/ipc-contract.js';
+import {
+  getPublicIdentity,
+  regenerateIdentity,
+  signIdentityChallenge,
+} from './identity/identity-service.js';
+import { getNickname, setNickname } from './identity/nickname-store.js';
 import { isAllowedOrigin } from './origins.js';
 import { listScreenShareSources, selectScreenShareSource } from './screen-share.js';
+
+/** Mirrors the wire protocol's own bounds for each field exactly (see `@disco-voador/protocol`'s
+ * `identity.ts`), so a challenge Main is willing to sign is always one the realtime server would
+ * also accept a proof for — never looser. */
+const identityChallengeSchema = z
+  .object({
+    protocolVersion: z.number().int().positive(),
+    connectionId: identityConnectionIdSchema,
+    nonce: identityNonceSchema,
+    expiresAt: identityExpiresAtSchema,
+    nickname: displayNameSchema,
+  })
+  .strict();
 
 /** Bounds the IPC argument before it ever reaches `selectScreenShareSource` — real
  * `DesktopCapturerSource` ids are short (`window:1234:0`/`screen:0:0`-shaped); this is generous
@@ -116,6 +144,48 @@ export function registerIpcHandlers(
         return false;
       }
       return selectScreenShareSource(sourceId, shareAudio);
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.getIdentity,
+    async (event: IpcMainInvokeEvent): Promise<DesktopIdentity> => {
+      assertTrustedSender(event, IPC_CHANNELS.getIdentity);
+      return getPublicIdentity();
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.signIdentityChallenge,
+    async (event: IpcMainInvokeEvent, challenge: unknown): Promise<string> => {
+      assertTrustedSender(event, IPC_CHANNELS.signIdentityChallenge);
+      const parsed = identityChallengeSchema.safeParse(challenge);
+      if (!parsed.success) {
+        throw new Error('Invalid identity challenge parameters');
+      }
+      return signIdentityChallenge(parsed.data satisfies DesktopIdentityChallenge);
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.regenerateIdentity,
+    async (event: IpcMainInvokeEvent): Promise<DesktopIdentity> => {
+      assertTrustedSender(event, IPC_CHANNELS.regenerateIdentity);
+      return regenerateIdentity();
+    },
+  );
+
+  ipcMain.handle(IPC_CHANNELS.getNickname, async (event: IpcMainInvokeEvent): Promise<string> => {
+    assertTrustedSender(event, IPC_CHANNELS.getNickname);
+    return getNickname();
+  });
+
+  ipcMain.handle(
+    IPC_CHANNELS.setNickname,
+    async (event: IpcMainInvokeEvent, nickname: unknown): Promise<boolean> => {
+      assertTrustedSender(event, IPC_CHANNELS.setNickname);
+      if (typeof nickname !== 'string') return false;
+      return setNickname(nickname);
     },
   );
 }

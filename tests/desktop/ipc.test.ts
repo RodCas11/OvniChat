@@ -20,6 +20,18 @@ const listScreenShareSourcesMock = vi.fn(async () => [
 ]);
 const selectScreenShareSourceMock = vi.fn((sourceId: string) => sourceId === 'screen:0:0');
 
+const getPublicIdentityMock = vi.fn(async () => ({
+  identityId: `dv1_${'A'.repeat(43)}`,
+  publicKey: 'B'.repeat(43),
+}));
+const signIdentityChallengeMock = vi.fn(async () => 'C'.repeat(86));
+const regenerateIdentityMock = vi.fn(async () => ({
+  identityId: `dv1_${'D'.repeat(43)}`,
+  publicKey: 'E'.repeat(43),
+}));
+const getNicknameMock = vi.fn(async () => 'Ana');
+const setNicknameMock = vi.fn((nickname: string) => nickname.length > 0 && nickname.length <= 32);
+
 vi.mock('electron', () => ({
   app: { getVersion: () => '0.0.0' },
   ipcMain: { handle: ipcHandleSpy },
@@ -28,6 +40,17 @@ vi.mock('electron', () => ({
 vi.mock('../../apps/desktop/src/main/screen-share.js', () => ({
   listScreenShareSources: listScreenShareSourcesMock,
   selectScreenShareSource: selectScreenShareSourceMock,
+}));
+
+vi.mock('../../apps/desktop/src/main/identity/identity-service.js', () => ({
+  getPublicIdentity: getPublicIdentityMock,
+  signIdentityChallenge: signIdentityChallengeMock,
+  regenerateIdentity: regenerateIdentityMock,
+}));
+
+vi.mock('../../apps/desktop/src/main/identity/nickname-store.js', () => ({
+  getNickname: getNicknameMock,
+  setNickname: setNicknameMock,
 }));
 
 const { IPC_CHANNELS } = await import('../../apps/desktop/src/shared/ipc-contract.js');
@@ -108,10 +131,11 @@ describe('registerIpcHandlers', () => {
     expect(() =>
       registerIpcHandlers(fakeMainWebContents(2), allowedOrigins, realtimeConfig),
     ).not.toThrow();
-    // Five channels (getVersionInfo, getRealtimeConfig, getE2EVoiceConfig,
-    // listScreenShareSources, selectScreenShareSource) are each registered exactly once, ever —
-    // not once per `registerIpcHandlers` call.
-    expect(ipcHandleSpy).toHaveBeenCalledTimes(5);
+    // Ten channels (getVersionInfo, getRealtimeConfig, getE2EVoiceConfig,
+    // listScreenShareSources, selectScreenShareSource, getIdentity, signIdentityChallenge,
+    // regenerateIdentity, getNickname, setNickname) are each registered exactly once, ever — not
+    // once per `registerIpcHandlers` call.
+    expect(ipcHandleSpy).toHaveBeenCalledTimes(10);
 
     const handler = handlers.get(IPC_CHANNELS.getVersionInfo);
     expect(() => handler?.(fakeEvent(1, 'app://renderer/index.html'))).toThrow(/untrusted sender/);
@@ -249,5 +273,127 @@ describe('registerIpcHandlers', () => {
     const result = await handler?.(fakeEvent(1, 'app://renderer/index.html'), 'screen:0:0', 'yes');
     expect(result).toBe(false);
     expect(selectScreenShareSourceMock).not.toHaveBeenCalled();
+  });
+
+  it('returns the public identity for a trusted sender', async () => {
+    registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig);
+
+    const handler = handlers.get(IPC_CHANNELS.getIdentity);
+    const result = await handler?.(fakeEvent(1, 'app://renderer/index.html'));
+    expect(result).toEqual({ identityId: `dv1_${'A'.repeat(43)}`, publicKey: 'B'.repeat(43) });
+  });
+
+  it('rejects getIdentity from an untrusted sender without calling into identity-service.ts', async () => {
+    registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig);
+    getPublicIdentityMock.mockClear();
+
+    const handler = handlers.get(IPC_CHANNELS.getIdentity);
+    await expect(handler?.(fakeEvent(99, 'https://evil.example/'))).rejects.toThrow(
+      /untrusted sender/,
+    );
+    expect(getPublicIdentityMock).not.toHaveBeenCalled();
+  });
+
+  it('signs a well-formed identity challenge for a trusted sender', async () => {
+    registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig);
+    signIdentityChallengeMock.mockClear();
+
+    const challenge = {
+      protocolVersion: 2,
+      connectionId: 'conn-1',
+      nonce: 'A'.repeat(43),
+      expiresAt: Date.now() + 30_000,
+      nickname: 'Ana',
+    };
+    const handler = handlers.get(IPC_CHANNELS.signIdentityChallenge);
+    const result = await handler?.(fakeEvent(1, 'app://renderer/index.html'), challenge);
+    expect(result).toBe('C'.repeat(86));
+    expect(signIdentityChallengeMock).toHaveBeenCalledWith(challenge);
+  });
+
+  it('rejects a malformed identity challenge without calling into identity-service.ts', async () => {
+    registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig);
+    signIdentityChallengeMock.mockClear();
+
+    const handler = handlers.get(IPC_CHANNELS.signIdentityChallenge);
+    await expect(
+      handler?.(fakeEvent(1, 'app://renderer/index.html'), { protocolVersion: 2 }),
+    ).rejects.toThrow(/Invalid identity challenge/);
+    expect(signIdentityChallengeMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects signIdentityChallenge from an untrusted sender without calling into identity-service.ts', async () => {
+    registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig);
+    signIdentityChallengeMock.mockClear();
+
+    const handler = handlers.get(IPC_CHANNELS.signIdentityChallenge);
+    await expect(
+      handler?.(fakeEvent(99, 'https://evil.example/'), {
+        protocolVersion: 2,
+        connectionId: 'conn-1',
+        nonce: 'A'.repeat(43),
+        expiresAt: Date.now() + 30_000,
+        nickname: 'Ana',
+      }),
+    ).rejects.toThrow(/untrusted sender/);
+    expect(signIdentityChallengeMock).not.toHaveBeenCalled();
+  });
+
+  it('regenerates the identity for a trusted sender', async () => {
+    registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig);
+
+    const handler = handlers.get(IPC_CHANNELS.regenerateIdentity);
+    const result = await handler?.(fakeEvent(1, 'app://renderer/index.html'));
+    expect(result).toEqual({ identityId: `dv1_${'D'.repeat(43)}`, publicKey: 'E'.repeat(43) });
+  });
+
+  it('rejects regenerateIdentity from an untrusted sender without calling into identity-service.ts', async () => {
+    registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig);
+    regenerateIdentityMock.mockClear();
+
+    const handler = handlers.get(IPC_CHANNELS.regenerateIdentity);
+    await expect(handler?.(fakeEvent(99, 'https://evil.example/'))).rejects.toThrow(
+      /untrusted sender/,
+    );
+    expect(regenerateIdentityMock).not.toHaveBeenCalled();
+  });
+
+  it('returns the current nickname for a trusted sender', async () => {
+    registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig);
+
+    const handler = handlers.get(IPC_CHANNELS.getNickname);
+    const result = await handler?.(fakeEvent(1, 'app://renderer/index.html'));
+    expect(result).toBe('Ana');
+  });
+
+  it('sets a valid nickname for a trusted sender', async () => {
+    registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig);
+    setNicknameMock.mockClear();
+
+    const handler = handlers.get(IPC_CHANNELS.setNickname);
+    const result = await handler?.(fakeEvent(1, 'app://renderer/index.html'), 'Bob');
+    expect(result).toBe(true);
+    expect(setNicknameMock).toHaveBeenCalledWith('Bob');
+  });
+
+  it('rejects a non-string setNickname argument without calling into nickname-store.ts', async () => {
+    registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig);
+    setNicknameMock.mockClear();
+
+    const handler = handlers.get(IPC_CHANNELS.setNickname);
+    const result = await handler?.(fakeEvent(1, 'app://renderer/index.html'), { evil: true });
+    expect(result).toBe(false);
+    expect(setNicknameMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects setNickname from an untrusted sender without calling into nickname-store.ts', async () => {
+    registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig);
+    setNicknameMock.mockClear();
+
+    const handler = handlers.get(IPC_CHANNELS.setNickname);
+    await expect(handler?.(fakeEvent(99, 'https://evil.example/'), 'Bob')).rejects.toThrow(
+      /untrusted sender/,
+    );
+    expect(setNicknameMock).not.toHaveBeenCalled();
   });
 });

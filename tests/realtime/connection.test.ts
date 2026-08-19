@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 
+import { CURRENT_PROTOCOL_VERSION } from '@disco-voador/protocol';
 import { describe, expect, it } from 'vitest';
 import type { WebSocket } from 'ws';
 
@@ -46,6 +47,7 @@ const TEST_CONFIG: RealtimeConfig = {
   maxConnections: 100,
   maxMessageBytes: 16 * 1024,
   handshakeTimeoutMs: 60_000,
+  identityChallengeTtlMs: 60_000,
   heartbeatIntervalMs: 60_000,
   heartbeatTimeoutMs: 60_000,
   rateLimit: { maxMessages: 100, windowMs: 10_000 },
@@ -78,8 +80,10 @@ describe('Connection — unexpected handler failure containment', () => {
     const hello = JSON.stringify({
       type: 'client:hello',
       id: 'hello-1',
-      protocolVersion: 1,
+      protocolVersion: CURRENT_PROTOCOL_VERSION,
       client: { name: 'test', version: '0.0.0' },
+      nickname: 'Alice',
+      publicKey: 'A'.repeat(43),
     });
 
     expect(() => {

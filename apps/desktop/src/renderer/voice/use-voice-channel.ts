@@ -35,6 +35,7 @@ import {
 } from '@disco-voador/rtc-core';
 
 import type { DesktopRealtimeConfig } from '../../shared/ipc-contract.js';
+import { IpcIdentitySigner } from '../realtime/identity-signer.js';
 import { RealtimeClient, type RealtimeConnectionState } from '../realtime/realtime-client.js';
 import {
   createEmptyRemoteMediaStreamsState,
@@ -196,7 +197,7 @@ export function useVoiceChannel(
   useEffect(() => {
     if (!realtimeConfig) return undefined;
 
-    const client = new RealtimeClient(realtimeConfig.url);
+    const client = new RealtimeClient(realtimeConfig.url, new IpcIdentitySigner());
     const transport = new P2PMeshTransport({ iceServers: realtimeConfig.iceServers }, client);
     clientRef.current = client;
     transportRef.current = transport;

@@ -5,6 +5,7 @@
     { "path": "apps/desktop" },
     { "path": "services/realtime" },
     { "path": "packages/protocol" },
+    { "path": "packages/identity" },
     { "path": "packages/rtc-core" },
     { "path": "packages/media-core" },
     { "path": "packages/windows-media" },

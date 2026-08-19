@@ -24,6 +24,11 @@ import { useVoiceChannel } from './use-voice-channel.js';
 interface VoiceChannelViewProps {
   readonly realtimeConfig: DesktopRealtimeConfig | undefined;
   readonly e2eAutoJoin?: DesktopE2EVoiceConfig | undefined;
+  /** Pre-fills the join-flow's `displayName` field with the persisted identity nickname (T7,
+   * Section 41) — a UX convenience only, never a protocol merge: `displayName` (per-channel-join,
+   * validated by `clientVoiceJoinMessageSchema`) and `nickname` (identity-level, sent once at
+   * `client:hello`) stay two independent concepts, the user can still edit this field freely. */
+  readonly defaultDisplayName?: string | undefined;
 }
 
 /** Finds the first enumerated *screen* (never a window) source — used only by the E2E
@@ -39,9 +44,10 @@ function firstScreenSourceId(
 export function VoiceChannelView({
   realtimeConfig,
   e2eAutoJoin,
+  defaultDisplayName,
 }: VoiceChannelViewProps): ReactElement {
   const [state, actions] = useVoiceChannel(realtimeConfig);
-  const [displayName, setDisplayName] = useState('');
+  const [displayName, setDisplayName] = useState(defaultDisplayName ?? '');
   const [showScreenPicker, setShowScreenPicker] = useState(false);
 
   const canJoin =

@@ -40,6 +40,26 @@ import { z } from 'zod';
  *   membership so a channel can never grow past what `voice:joined`'s own `participants` snapshot
  *   is allowed to carry (same limit, one source of truth — see `messages/voice.ts`); also bounds
  *   the `O(members)` fan-out cost of every subsequent join/leave in that channel.
+ *
+ * The four T7 codes below cover the local-identity handshake (`client:hello` ->
+ * `server:identity-challenge` -> `client:identity-proof` -> `server:hello`, see
+ * `docs/architecture/CLIENT_IDENTITY.md`). All four are fatal — an unauthenticated connection can
+ * never be allowed to linger in a retry loop — and deliberately coarse: T7's own guidance is not
+ * to create "useful oracle behavior via overly granular failure distinctions without a product
+ * reason," so e.g. a replayed challenge and a signature from the wrong key both surface as
+ * `IDENTITY_INVALID_SIGNATURE` rather than as separate codes (the state machine already makes
+ * same-connection replay impossible, and cross-connection replay fails signature verification
+ * anyway, since the payload binds `connectionId`/`nonce`).
+ *
+ * - `IDENTITY_INVALID_PUBLIC_KEY` — `client:hello.publicKey` does not decode to a usable Ed25519
+ *   public key (schema-valid base64url shape, but the key material itself is unusable).
+ * - `IDENTITY_INVALID_SIGNATURE` — `client:identity-proof.signature` does not verify against the
+ *   connection's outstanding challenge and the public key it presented at `client:hello`. Covers
+ *   a wrong-key signature, a tampered payload, and a replayed/copied proof alike.
+ * - `IDENTITY_CHALLENGE_EXPIRED` — the proof arrived after the challenge's `expiresAt`.
+ * - `IDENTITY_PROTOCOL_ERROR` — an identity message arrived out of order for the connection's
+ *   current state (e.g. `client:identity-proof` with no outstanding challenge, or a second
+ *   `client:hello` after one was already accepted).
  */
 export const errorCodeSchema = z.enum([
   'INVALID_MESSAGE',
@@ -55,6 +75,10 @@ export const errorCodeSchema = z.enum([
   'NOT_IN_VOICE_CHANNEL',
   'SIGNALING_TARGET_INVALID',
   'CHANNEL_FULL',
+  'IDENTITY_INVALID_PUBLIC_KEY',
+  'IDENTITY_INVALID_SIGNATURE',
+  'IDENTITY_CHALLENGE_EXPIRED',
+  'IDENTITY_PROTOCOL_ERROR',
 ]);
 
 export type ErrorCode = z.infer<typeof errorCodeSchema>;

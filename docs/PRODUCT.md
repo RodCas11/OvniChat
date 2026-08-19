@@ -9,11 +9,14 @@ debug.
 The primary experience is:
 
 ```text
-open app -> select server -> click channel -> communicate
+open app -> choose a nickname (first run only) -> select server -> click channel -> communicate
 ```
 
-Configuration belongs primarily to the server operator. A normal participant should not need to
-understand WebRTC, signaling, TURN, or audio-routing details.
+There is no account creation step — the client generates a local cryptographic identity on first
+run (T7) and proves it to whichever server it connects to; a nickname is a freely editable local
+preference, not a credential. Configuration belongs primarily to the server operator. A normal
+participant should not need to understand WebRTC, signaling, TURN, audio-routing, or cryptographic
+identity details.
 
 ## Primary capabilities
 
@@ -66,3 +69,6 @@ transport-neutral enough to introduce an SFU later.
 5. Optional media failure should degrade explicitly rather than silently ending unrelated media.
 6. Capture requires clear user intent and a visible way to stop it.
 7. External SaaS may be optional, but cannot be mandatory for core communication.
+8. Identity is local and cryptographic, never a central account — no email, password, phone number,
+   or global user database (T7; see `docs/adr/0010-no-mandatory-central-control-plane.md` and
+   `docs/adr/0011-local-cryptographic-identity-without-central-accounts.md`).

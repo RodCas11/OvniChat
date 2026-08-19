@@ -1,4 +1,9 @@
-import { CURRENT_PROTOCOL_VERSION } from '@disco-voador/protocol';
+import {
+  generateIdentityKeyPair,
+  signWithIdentityKey,
+  type IdentityKeyPair,
+} from '@disco-voador/identity';
+import { buildIdentityAuthPayload, CURRENT_PROTOCOL_VERSION } from '@disco-voador/protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WebSocket } from 'ws';
 
@@ -21,6 +26,7 @@ const DEFAULT_TEST_CONFIG: RealtimeConfig = {
   maxConnections: 100,
   maxMessageBytes: 16 * 1024,
   handshakeTimeoutMs: 300,
+  identityChallengeTtlMs: 300,
   heartbeatIntervalMs: 60_000,
   heartbeatTimeoutMs: 60_000,
   rateLimit: { maxMessages: 100, windowMs: 10_000 },
@@ -96,14 +102,68 @@ function nextMessages(
 }
 
 let helloCounter = 0;
-function helloMessage(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+function helloMessage(
+  overrides: Record<string, unknown> = {},
+  keyPair: IdentityKeyPair = generateIdentityKeyPair(),
+): Record<string, unknown> {
   helloCounter += 1;
   return {
     type: 'client:hello',
     id: `hello-${String(helloCounter)}`,
     protocolVersion: CURRENT_PROTOCOL_VERSION,
     client: { name: 'integration-test', version: '0.0.0' },
+    nickname: 'Tester',
+    publicKey: keyPair.publicKey,
     ...overrides,
+  };
+}
+
+/** Signs and sends a `client:identity-proof` answering the just-received `server:identity-challenge`. */
+function sendIdentityProof(
+  ws: WebSocket,
+  challenge: Record<string, unknown>,
+  keyPair: IdentityKeyPair,
+  fields: { protocolVersion: number; nickname: string },
+): void {
+  const payload = buildIdentityAuthPayload({
+    protocolVersion: fields.protocolVersion,
+    connectionId: challenge['connectionId'] as string,
+    nonce: challenge['nonce'] as string,
+    expiresAt: challenge['expiresAt'] as number,
+    publicKey: keyPair.publicKey,
+    nickname: fields.nickname,
+  });
+  const signature = signWithIdentityKey(keyPair.privateKey, keyPair.publicKey, payload);
+  ws.send(JSON.stringify({ type: 'client:identity-proof', id: 'identity-proof-1', signature }));
+}
+
+/**
+ * Drives the full T7 handshake — `client:hello` -> `server:identity-challenge` ->
+ * `client:identity-proof` -> `server:hello` + `voice:catalog` — against an already-open socket,
+ * using a freshly generated local identity unless one is supplied. Returns what a real client
+ * would learn from it: its own `connectionId` and the server-derived `identityId`.
+ */
+async function handshake(
+  ws: WebSocket,
+  overrides: Record<string, unknown> = {},
+  keyPair: IdentityKeyPair = generateIdentityKeyPair(),
+): Promise<{ connectionId: string; identityId: string }> {
+  const hello = helloMessage(overrides, keyPair);
+
+  const challengeReceived = nextMessage(ws);
+  ws.send(JSON.stringify(hello));
+  const challenge = await challengeReceived;
+
+  const readyReplies = nextMessages(ws, 2); // server:hello, then voice:catalog
+  sendIdentityProof(ws, challenge, keyPair, {
+    protocolVersion: hello['protocolVersion'] as number,
+    nickname: hello['nickname'] as string,
+  });
+  const [serverHello] = await readyReplies;
+
+  return {
+    connectionId: serverHello?.['connectionId'] as string,
+    identityId: serverHello?.['identityId'] as string,
   };
 }
 
@@ -124,10 +184,8 @@ async function connectAndHandshake(url: string): Promise<ConnectedClient> {
     ws.once('open', () => resolve());
     ws.once('error', reject);
   });
-  const afterHello = nextMessages(ws, 2); // server:hello, then voice:catalog
-  ws.send(JSON.stringify(helloMessage()));
-  const [hello] = await afterHello;
-  return { ws, connectionId: hello?.['connectionId'] as string };
+  const { connectionId } = await handshake(ws);
+  return { ws, connectionId };
 }
 
 async function joinChannel(
@@ -172,38 +230,73 @@ describe('realtime server integration (real sockets)', () => {
     expect(url.endsWith(':0')).toBe(false);
   });
 
-  it('completes a handshake: hello -> server:hello with a connection id and matching protocol version', async () => {
+  it('completes a handshake: hello -> identity-challenge -> identity-proof -> server:hello with a connection id, identityId, and matching protocol version', async () => {
     const ws = track(await connect(url));
-    const helloResponse = nextMessage(ws);
-    ws.send(JSON.stringify(helloMessage()));
+    const keyPair = generateIdentityKeyPair();
+    const hello = helloMessage({}, keyPair);
 
-    const response = await helloResponse;
+    const challengeReceived = nextMessage(ws);
+    ws.send(JSON.stringify(hello));
+    const challenge = await challengeReceived;
+    expect(challenge).toMatchObject({ type: 'server:identity-challenge' });
+
+    const helloReplies = nextMessages(ws, 2);
+    sendIdentityProof(ws, challenge, keyPair, {
+      protocolVersion: hello['protocolVersion'] as number,
+      nickname: hello['nickname'] as string,
+    });
+    const [response] = await helloReplies;
+
     expect(response).toMatchObject({
       type: 'server:hello',
       protocolVersion: CURRENT_PROTOCOL_VERSION,
     });
-    expect(typeof response['connectionId']).toBe('string');
-    expect((response['connectionId'] as string).length).toBeGreaterThan(0);
+    expect(typeof response?.['connectionId']).toBe('string');
+    expect((response?.['connectionId'] as string).length).toBeGreaterThan(0);
+    expect(response?.['identityId']).toMatch(/^dv1_[A-Za-z0-9_-]{43}$/u);
   });
 
-  it('gives two independently-connected clients distinct connection ids', async () => {
+  it('gives two independently-connected clients distinct connection ids and identity ids', async () => {
     const wsA = track(await connect(url));
     const wsB = track(await connect(url));
 
-    const helloA = nextMessage(wsA);
-    const helloB = nextMessage(wsB);
-    wsA.send(JSON.stringify(helloMessage()));
-    wsB.send(JSON.stringify(helloMessage()));
+    const [resultA, resultB] = await Promise.all([handshake(wsA), handshake(wsB)]);
 
-    const [responseA, responseB] = await Promise.all([helloA, helloB]);
-    expect(responseA['connectionId']).not.toBe(responseB['connectionId']);
+    expect(resultA.connectionId).not.toBe(resultB.connectionId);
+    expect(resultA.identityId).not.toBe(resultB.identityId);
+  });
+
+  it('gives the same local identity the same identityId across two separate connections', async () => {
+    const keyPair = generateIdentityKeyPair();
+    const wsA = track(await connect(url));
+    const wsB = track(await connect(url));
+
+    const resultA = await handshake(wsA, {}, keyPair);
+    const resultB = await handshake(wsB, {}, keyPair);
+
+    expect(resultA.connectionId).not.toBe(resultB.connectionId);
+    expect(resultA.identityId).toBe(resultB.identityId);
+  });
+
+  it('keeps the same identityId across a nickname change and reconnect (nickname is not identity)', async () => {
+    const keyPair = generateIdentityKeyPair();
+
+    const wsBeforeRename = track(await connect(url));
+    const before = await handshake(wsBeforeRename, { nickname: 'Alice' }, keyPair);
+    wsBeforeRename.close(1000, 'switching nickname');
+
+    const wsAfterRename = track(await connect(url));
+    const after = await handshake(wsAfterRename, { nickname: 'Bob' }, keyPair);
+
+    // A new connection naturally gets a new connectionId — only identityId is expected to stay
+    // fixed; no new keypair was ever generated for the nickname change.
+    expect(before.connectionId).not.toBe(after.connectionId);
+    expect(after.identityId).toBe(before.identityId);
   });
 
   it('answers client:ping with server:pong echoing the same id', async () => {
     const ws = track(await connect(url));
-    const helloResponse = nextMessage(ws);
-    ws.send(JSON.stringify(helloMessage()));
-    await helloResponse;
+    await handshake(ws);
 
     const pongResponse = nextMessage(ws);
     ws.send(JSON.stringify({ type: 'client:ping', id: 'ping-xyz' }));
@@ -212,9 +305,7 @@ describe('realtime server integration (real sockets)', () => {
 
   it('removes the connection once the client disconnects', async () => {
     const ws = track(await connect(url));
-    const helloResponse = nextMessage(ws);
-    ws.send(JSON.stringify(helloMessage()));
-    await helloResponse;
+    await handshake(ws);
     expect(server.connectionCount).toBe(1);
 
     const closed = nextClose(ws);
@@ -230,9 +321,7 @@ describe('realtime server integration (real sockets)', () => {
 
   it('stops cleanly: tracked connections are closed with a defined code', async () => {
     const ws = track(await connect(url));
-    const helloResponse = nextMessage(ws);
-    ws.send(JSON.stringify(helloMessage()));
-    await helloResponse;
+    await handshake(ws);
 
     const closed = nextClose(ws);
     await server.stop();
@@ -252,9 +341,7 @@ describe('realtime server integration (real sockets)', () => {
       );
       const address = await beating.start();
       const ws = track(await connect(`ws://${address.host}:${String(address.port)}`));
-      const helloResponse = nextMessage(ws);
-      ws.send(JSON.stringify(helloMessage()));
-      await helloResponse;
+      await handshake(ws);
 
       // `ws` auto-responds to protocol-level pings by default (no application code involved);
       // wait through several heartbeat cycles and confirm the server never declared it dead.
@@ -280,9 +367,7 @@ describe('realtime server integration (real sockets)', () => {
           client.once('error', reject);
         }),
       );
-      const helloResponse = nextMessage(ws);
-      ws.send(JSON.stringify(helloMessage()));
-      await helloResponse;
+      await handshake(ws);
 
       const closed = nextClose(ws, 2000);
       await closed;
@@ -303,9 +388,8 @@ describe('realtime server integration (real sockets)', () => {
       expect((await closed).code).toBe(4400);
 
       const good = track(await connect(url));
-      const helloResponse = nextMessage(good);
-      good.send(JSON.stringify(helloMessage()));
-      expect((await helloResponse)['type']).toBe('server:hello');
+      const { connectionId } = await handshake(good);
+      expect(connectionId.length).toBeGreaterThan(0);
     });
 
     it('rejects an unknown message type with INVALID_MESSAGE and closes 4400', async () => {
@@ -349,21 +433,56 @@ describe('realtime server integration (real sockets)', () => {
       expect((await closed).code).toBe(4402);
     });
 
+    it('rejects an identity-proof with no outstanding challenge with IDENTITY_PROTOCOL_ERROR and closes 4413', async () => {
+      const ws = track(await connect(url));
+      const closed = nextClose(ws);
+      ws.send(
+        JSON.stringify({ type: 'client:identity-proof', id: 'p1', signature: 'A'.repeat(86) }),
+      );
+      expect((await closed).code).toBe(4413);
+    });
+
     it('closes a connection that never sends hello with HANDSHAKE_TIMEOUT (4403)', async () => {
       const ws = track(await connect(url));
       const closed = nextClose(ws, 2000);
       expect((await closed).code).toBe(4403);
     });
 
+    it('closes a connection that sends hello but never answers the identity challenge with HANDSHAKE_TIMEOUT (4403)', async () => {
+      const ws = track(await connect(url));
+      const challengeReceived = nextMessage(ws);
+      ws.send(JSON.stringify(helloMessage()));
+      await challengeReceived;
+
+      const closed = nextClose(ws, 2000);
+      expect((await closed).code).toBe(4403);
+    });
+
     it('rejects a duplicate hello after ready with UNEXPECTED_MESSAGE and closes 4404', async () => {
       const ws = track(await connect(url));
-      const helloResponse = nextMessage(ws);
-      ws.send(JSON.stringify(helloMessage()));
-      await helloResponse;
+      await handshake(ws);
 
       const closed = nextClose(ws);
       ws.send(JSON.stringify(helloMessage()));
       expect((await closed).code).toBe(4404);
+    });
+
+    it('rejects a signature from the wrong private key with IDENTITY_INVALID_SIGNATURE and closes 4411', async () => {
+      const ws = track(await connect(url));
+      const claimedKeyPair = generateIdentityKeyPair();
+      const attackerKeyPair = generateIdentityKeyPair();
+      const hello = helloMessage({}, claimedKeyPair);
+
+      const challengeReceived = nextMessage(ws);
+      ws.send(JSON.stringify(hello));
+      const challenge = await challengeReceived;
+
+      const closed = nextClose(ws);
+      sendIdentityProof(ws, challenge, attackerKeyPair, {
+        protocolVersion: hello['protocolVersion'] as number,
+        nickname: hello['nickname'] as string,
+      });
+      expect((await closed).code).toBe(4411);
     });
 
     it('closes an oversized frame with the standard 1009 code', async () => {
@@ -384,23 +503,24 @@ describe('realtime server integration (real sockets)', () => {
     });
 
     it('rejects a client that floods past the per-connection rate limit', async () => {
-      const ws = track(await connect(url));
-      // Use a dedicated server with a tiny limit so this test does not depend on the shared
-      // default rate limit budget used by the handshake itself.
+      // The limit must be large enough to complete a real handshake (hello + identity-proof, 2
+      // incoming messages) before the flood begins, or the connection would be closed for an
+      // unrelated reason (HANDSHAKE_REQUIRED) before the flood ever has a chance to trip the
+      // rate limiter.
       const limited = createRealtimeServer(
-        testConfig({ rateLimit: { maxMessages: 2, windowMs: 10_000 } }),
+        testConfig({ rateLimit: { maxMessages: 4, windowMs: 10_000 } }),
       );
       const address = await limited.start();
       const limitedWs = track(await connect(`ws://${address.host}:${String(address.port)}`));
-      const closed = nextClose(limitedWs);
+      await handshake(limitedWs); // consumes 2 of the 4 allowed messages
 
-      limitedWs.send(JSON.stringify(helloMessage()));
-      limitedWs.send(JSON.stringify({ type: 'client:ping', id: 'p1' }));
-      limitedWs.send(JSON.stringify({ type: 'client:ping', id: 'p2' }));
+      const closed = nextClose(limitedWs);
+      limitedWs.send(JSON.stringify({ type: 'client:ping', id: 'p1' })); // 3/4
+      limitedWs.send(JSON.stringify({ type: 'client:ping', id: 'p2' })); // 4/4
+      limitedWs.send(JSON.stringify({ type: 'client:ping', id: 'p3' })); // 5th exceeds the limit
 
       expect((await closed).code).toBe(4429);
       await limited.stop();
-      ws.close();
     });
 
     it('rejects a new connection once REALTIME_MAX_CONNECTIONS is reached, without disturbing existing connections', async () => {
@@ -409,9 +529,7 @@ describe('realtime server integration (real sockets)', () => {
       const cappedUrl = `ws://${address.host}:${String(address.port)}`;
 
       const first = track(await connect(cappedUrl));
-      const firstHello = nextMessage(first);
-      first.send(JSON.stringify(helloMessage()));
-      await firstHello;
+      await handshake(first);
       expect(capped.connectionCount).toBe(1);
 
       // Unlike every other hostile-client case in this file, the server reacts as soon as the
@@ -456,9 +574,8 @@ describe('realtime server integration (real sockets)', () => {
       await tooEarlyClosed;
 
       const good = track(await connect(url));
-      const helloResponse = nextMessage(good);
-      good.send(JSON.stringify(helloMessage()));
-      expect((await helloResponse)['type']).toBe('server:hello');
+      const { connectionId } = await handshake(good);
+      expect(connectionId.length).toBeGreaterThan(0);
       expect(server.connectionCount).toBe(1);
     });
   });

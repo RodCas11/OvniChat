@@ -64,6 +64,21 @@ vi.stubGlobal('WebSocket', FakeWebSocket);
 
 const { RealtimeClient } =
   await import('../../apps/desktop/src/renderer/realtime/realtime-client.js');
+type IdentitySigner =
+  import('../../apps/desktop/src/renderer/realtime/identity-signer.js').IdentitySigner;
+
+/** A minimal, deterministic stand-in for the IPC-backed `IdentitySigner` — no Electron/IPC
+ * involved, so `RealtimeClient`'s own hello/challenge/proof orchestration can be tested in
+ * isolation from Main's real crypto (which `packages/identity`'s own tests already cover). */
+function fakeSigner(overrides: Partial<IdentitySigner> = {}): IdentitySigner {
+  return {
+    getPublicIdentity: () =>
+      Promise.resolve({ identityId: `dv1_${'A'.repeat(43)}`, publicKey: 'fake-public-key' }),
+    getNickname: () => Promise.resolve('Ana'),
+    signIdentityChallenge: () => Promise.resolve('fake-signature'),
+    ...overrides,
+  };
+}
 
 function helloMessage(id: string): Record<string, unknown> {
   return {
@@ -71,8 +86,19 @@ function helloMessage(id: string): Record<string, unknown> {
     id,
     protocolVersion: 1,
     connectionId: 'conn-1',
+    identityId: `dv1_${'A'.repeat(43)}`,
     serverTime: new Date().toISOString(),
     heartbeat: { intervalMs: 15_000, timeoutMs: 10_000 },
+  };
+}
+
+function identityChallengeMessage(id: string): Record<string, unknown> {
+  return {
+    type: 'server:identity-challenge',
+    id,
+    connectionId: 'conn-1',
+    nonce: 'A'.repeat(43),
+    expiresAt: Date.now() + 30_000,
   };
 }
 
@@ -87,36 +113,107 @@ describe('RealtimeClient', () => {
     vi.restoreAllMocks();
   });
 
-  function connectAndHandshake(): InstanceType<typeof RealtimeClient> {
-    const client = new RealtimeClient('ws://127.0.0.1:8090');
+  /** Opens the socket and waits for the async `sendHello()` (identity lookup over the fake
+   * signer) to actually run — `client:hello` is not sent synchronously anymore (T7). */
+  async function connectAndOpen(
+    signer: IdentitySigner = fakeSigner(),
+  ): Promise<InstanceType<typeof RealtimeClient>> {
+    const client = new RealtimeClient('ws://127.0.0.1:8090', signer);
     client.connect();
     const created = FakeWebSocket.lastInstance;
     if (!created) throw new Error('RealtimeClient did not construct a WebSocket');
     socket = created;
     socket.simulateOpen();
+    await vi.waitFor(() => {
+      if (socket.sent.length === 0) throw new Error('client:hello not sent yet');
+    });
     return client;
   }
 
-  it('sends client:hello immediately once the socket opens', () => {
-    connectAndHandshake();
+  /** Drives the full hello -> challenge -> proof flow using the fake signer, ending with a real
+   * `server:hello` received (so the client is `ready`, matching what most other tests need). */
+  async function connectAndHandshake(
+    signer: IdentitySigner = fakeSigner(),
+  ): Promise<InstanceType<typeof RealtimeClient>> {
+    const client = await connectAndOpen(signer);
+    socket.simulateMessage(JSON.stringify(identityChallengeMessage('c1')));
+    await vi.waitFor(() => {
+      if (socket.sent.length < 2) throw new Error('client:identity-proof not sent yet');
+    });
+    socket.simulateMessage(JSON.stringify(helloMessage('h1')));
+    return client;
+  }
+
+  it('sends client:hello (with nickname/publicKey from the signer) once the socket opens', async () => {
+    await connectAndOpen();
     const hello = socket.lastSentMessage();
-    expect(hello['type']).toBe('client:hello');
-    expect(hello['protocolVersion']).toBe(1);
+    expect(hello).toMatchObject({
+      type: 'client:hello',
+      protocolVersion: 2,
+      nickname: 'Ana',
+      publicKey: 'fake-public-key',
+    });
   });
 
-  it('transitions to "open" only after server:hello, not merely after the socket opens', () => {
-    const client = connectAndHandshake();
+  it('answers a server:identity-challenge with a signed client:identity-proof', async () => {
+    const signChallenge = vi.fn(() => Promise.resolve('the-signature'));
+    await connectAndOpen(fakeSigner({ signIdentityChallenge: signChallenge }));
+
+    socket.simulateMessage(JSON.stringify(identityChallengeMessage('c1')));
+    await vi.waitFor(() => {
+      if (socket.sent.length < 2) throw new Error('client:identity-proof not sent yet');
+    });
+
+    expect(signChallenge).toHaveBeenCalledWith({
+      protocolVersion: 2,
+      connectionId: 'conn-1',
+      nonce: 'A'.repeat(43),
+      expiresAt: expect.any(Number) as unknown as number,
+      nickname: 'Ana',
+    });
+    expect(socket.lastSentMessage()).toMatchObject({
+      type: 'client:identity-proof',
+      signature: 'the-signature',
+    });
+  });
+
+  it('transitions to "open" only after server:hello, not merely after the socket opens or the challenge', async () => {
+    const client = await connectAndOpen();
     const states: string[] = [];
     client.on('stateChange', (state) => states.push(state));
 
     expect(states).toEqual([]);
-    socket.simulateMessage(JSON.stringify(helloMessage('h1')));
+    socket.simulateMessage(JSON.stringify(identityChallengeMessage('c1')));
+    await vi.waitFor(() => {
+      if (socket.sent.length < 2) throw new Error('client:identity-proof not sent yet');
+    });
+    expect(states).toEqual([]);
 
+    socket.simulateMessage(JSON.stringify(helloMessage('h1')));
     expect(states).toEqual(['open']);
   });
 
-  it('emits the voice catalog when it arrives', () => {
-    const client = connectAndHandshake();
+  it('closes the socket instead of throwing when the signer fails to load an identity', async () => {
+    const client = new RealtimeClient(
+      'ws://127.0.0.1:8090',
+      fakeSigner({ getPublicIdentity: () => Promise.reject(new Error('locked out')) }),
+    );
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    client.connect();
+    const created = FakeWebSocket.lastInstance;
+    if (!created) throw new Error('RealtimeClient did not construct a WebSocket');
+    socket = created;
+    socket.simulateOpen();
+
+    await vi.waitFor(() => {
+      if (!socket.closedWith) throw new Error('not closed yet');
+    });
+    expect(socket.sent).toEqual([]);
+    consoleError.mockRestore();
+  });
+
+  it('emits the voice catalog when it arrives', async () => {
+    const client = await connectAndHandshake();
     const catalogs: unknown[] = [];
     client.on('catalog', (message) => catalogs.push(message));
 
@@ -133,8 +230,8 @@ describe('RealtimeClient', () => {
     ]);
   });
 
-  it('sends a well-formed voice:join message', () => {
-    const client = connectAndHandshake();
+  it('sends a well-formed voice:join message', async () => {
+    const client = await connectAndHandshake();
     client.joinVoiceChannel('general', 'Ana');
 
     const message = socket.lastSentMessage();
@@ -142,15 +239,15 @@ describe('RealtimeClient', () => {
     expect(typeof message['id']).toBe('string');
   });
 
-  it('sends a well-formed voice:leave message', () => {
-    const client = connectAndHandshake();
+  it('sends a well-formed voice:leave message', async () => {
+    const client = await connectAndHandshake();
     client.leaveVoiceChannel();
 
     expect(socket.lastSentMessage()).toMatchObject({ type: 'voice:leave' });
   });
 
-  it('implements SignalingPort.sendOffer by sending webrtc:offer with the target participant', () => {
-    const client = connectAndHandshake();
+  it('implements SignalingPort.sendOffer by sending webrtc:offer with the target participant', async () => {
+    const client = await connectAndHandshake();
     client.sendOffer('participant-b', 'v=0\r\n...offer-sdp');
 
     expect(socket.lastSentMessage()).toMatchObject({
@@ -160,8 +257,8 @@ describe('RealtimeClient', () => {
     });
   });
 
-  it('implements SignalingPort.sendAnswer by sending webrtc:answer with the target participant', () => {
-    const client = connectAndHandshake();
+  it('implements SignalingPort.sendAnswer by sending webrtc:answer with the target participant', async () => {
+    const client = await connectAndHandshake();
     client.sendAnswer('participant-a', 'v=0\r\n...answer-sdp');
 
     expect(socket.lastSentMessage()).toMatchObject({
@@ -171,8 +268,8 @@ describe('RealtimeClient', () => {
     });
   });
 
-  it('implements SignalingPort.sendIceCandidate, passing a real candidate through', () => {
-    const client = connectAndHandshake();
+  it('implements SignalingPort.sendIceCandidate, passing a real candidate through', async () => {
+    const client = await connectAndHandshake();
     client.sendIceCandidate('participant-b', {
       candidate: 'candidate:1 1 UDP 1 127.0.0.1 5000 typ host',
       sdpMid: '0',
@@ -190,8 +287,8 @@ describe('RealtimeClient', () => {
     });
   });
 
-  it('implements SignalingPort.sendIceCandidate, passing null through as the end-of-candidates signal', () => {
-    const client = connectAndHandshake();
+  it('implements SignalingPort.sendIceCandidate, passing null through as the end-of-candidates signal', async () => {
+    const client = await connectAndHandshake();
     client.sendIceCandidate('participant-b', null);
 
     expect(socket.lastSentMessage()).toMatchObject({
@@ -201,8 +298,8 @@ describe('RealtimeClient', () => {
     });
   });
 
-  it('dispatches inbound webrtc:offer/answer/ice-candidate to their own listeners', () => {
-    const client = connectAndHandshake();
+  it('dispatches inbound webrtc:offer/answer/ice-candidate to their own listeners', async () => {
+    const client = await connectAndHandshake();
     const offers: unknown[] = [];
     const answers: unknown[] = [];
     const candidates: unknown[] = [];
@@ -240,8 +337,8 @@ describe('RealtimeClient', () => {
     expect(candidates).toHaveLength(1);
   });
 
-  it('announces a track source by sending a targeted media:track-source (mid-scoped, not broadcast)', () => {
-    const client = connectAndHandshake();
+  it('announces a track source by sending a targeted media:track-source (mid-scoped, not broadcast)', async () => {
+    const client = await connectAndHandshake();
     client.announceTrackSource('participant-b', '1', 'screen-video');
 
     const message = socket.lastSentMessage();
@@ -253,8 +350,8 @@ describe('RealtimeClient', () => {
     });
   });
 
-  it('dispatches an inbound media:track-source to its own listener', () => {
-    const client = connectAndHandshake();
+  it('dispatches an inbound media:track-source to its own listener', async () => {
+    const client = await connectAndHandshake();
     const announcements: unknown[] = [];
     client.on('mediaTrackSource', (m) => announcements.push(m));
 
@@ -279,8 +376,8 @@ describe('RealtimeClient', () => {
     ]);
   });
 
-  it('emits serverError for server:error without closing anything', () => {
-    const client = connectAndHandshake();
+  it('emits serverError for server:error without closing anything', async () => {
+    const client = await connectAndHandshake();
     const errors: unknown[] = [];
     client.on('serverError', (m) => errors.push(m));
 
@@ -296,8 +393,8 @@ describe('RealtimeClient', () => {
     expect(errors).toHaveLength(1);
   });
 
-  it('ignores malformed JSON instead of throwing', () => {
-    connectAndHandshake();
+  it('ignores malformed JSON instead of throwing', async () => {
+    await connectAndHandshake();
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     expect(() => socket.simulateMessage('not valid json{{{')).not.toThrow();
@@ -306,8 +403,8 @@ describe('RealtimeClient', () => {
     consoleError.mockRestore();
   });
 
-  it('ignores a message that fails protocol validation instead of throwing', () => {
-    connectAndHandshake();
+  it('ignores a message that fails protocol validation instead of throwing', async () => {
+    await connectAndHandshake();
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     expect(() => socket.simulateMessage(JSON.stringify({ type: 'not:a-real-type' }))).not.toThrow();
@@ -317,7 +414,7 @@ describe('RealtimeClient', () => {
   });
 
   it('drops outbound messages instead of throwing when the socket is not open', () => {
-    const client = new RealtimeClient('ws://127.0.0.1:8090');
+    const client = new RealtimeClient('ws://127.0.0.1:8090', fakeSigner());
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     expect(() => client.joinVoiceChannel('general', 'Ana')).not.toThrow();
@@ -326,8 +423,8 @@ describe('RealtimeClient', () => {
     consoleError.mockRestore();
   });
 
-  it('closes the socket normally on disconnect and reports state as closed', () => {
-    const client = connectAndHandshake();
+  it('closes the socket normally on disconnect and reports state as closed', async () => {
+    const client = await connectAndHandshake();
     const states: string[] = [];
     client.on('stateChange', (state) => states.push(state));
 
@@ -337,8 +434,8 @@ describe('RealtimeClient', () => {
     expect(states).toEqual(['closed']);
   });
 
-  it('reports state as closed when the server closes the connection', () => {
-    const client = connectAndHandshake();
+  it('reports state as closed when the server closes the connection', async () => {
+    const client = await connectAndHandshake();
     const states: string[] = [];
     client.on('stateChange', (state) => states.push(state));
 
@@ -348,8 +445,8 @@ describe('RealtimeClient', () => {
     expect(states).toEqual(['closed']);
   });
 
-  it('stops emitting to a listener after off() removes it', () => {
-    const client = connectAndHandshake();
+  it('stops emitting to a listener after off() removes it', async () => {
+    const client = await connectAndHandshake();
     const catalogs: unknown[] = [];
     const listener = (message: unknown): void => {
       catalogs.push(message);

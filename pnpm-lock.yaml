@@ -48,6 +48,9 @@ importers:
       '@disco-voador/config':
         specifier: workspace:*
         version: link:../../packages/config
+      '@disco-voador/identity':
+        specifier: workspace:*
+        version: link:../../packages/identity
       '@disco-voador/media-core':
         specifier: workspace:*
         version: link:../../packages/media-core
@@ -101,6 +104,8 @@ importers:
         specifier: 4.4.3
         version: 4.4.3
 
+  packages/identity: {}
+
   packages/media-core: {}
 
   packages/protocol:
@@ -120,6 +125,9 @@ importers:
       '@disco-voador/config':
         specifier: workspace:*
         version: link:../../packages/config
+      '@disco-voador/identity':
+        specifier: workspace:*
+        version: link:../../packages/identity
       '@disco-voador/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol

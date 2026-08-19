@@ -19,6 +19,10 @@ export default defineConfig({
         replacement: path.resolve(__dirname, 'packages/protocol/src/index.ts'),
       },
       {
+        find: '@disco-voador/identity',
+        replacement: path.resolve(__dirname, 'packages/identity/src/index.ts'),
+      },
+      {
         find: '@disco-voador/rtc-core',
         replacement: path.resolve(__dirname, 'packages/rtc-core/src/index.ts'),
       },

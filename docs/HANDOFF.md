@@ -229,11 +229,82 @@ channel leave stopped screen-audio without removing it from the transport's publ
 All screen-release paths now share a tested `releasePublishedScreen()` operation that unpublishes
 video and optional audio before stopping capture.
 
-Also recorded this session: [`adr/0010-no-mandatory-central-control-plane.md`](adr/0010-no-mandatory-central-control-plane.md),
-an architectural guardrail (not an implementation) establishing that Disco Voador's product
-direction does not require central accounts, a mandatory cloud control plane, or centralized user
-data — see [`tasks/STATUS.md`](tasks/STATUS.md) for the resulting T7+ roadmap toward a
-TeamSpeak-style local-identity/dedicated-server model.
+T7 added local cryptographic client identity — the first piece of the actual TeamSpeak-style
+product architecture ADR 0010 anticipated, replacing T2's unauthenticated `connectionId` with a
+real, client-owned, server-verified identity while introducing **no** central account system:
+
+- **Ed25519 keypair, generated and used only in the Electron Main process.** New Node-only
+  `packages/identity` package (keygen/sign/verify/`identityId` derivation via `node:crypto`, no
+  third-party crypto dependency), importable only by Main and `services/realtime` — never Renderer/
+  Preload or the environment-neutral packages, enforced by a new `isIdentity()` check in
+  `scripts/verify-architecture.mjs`. `packages/protocol` gained the wire schemas and a pure,
+  crypto-free canonical-payload builder (`buildIdentityAuthPayload`) so it stays safe for the
+  sandboxed Renderer to import directly.
+- **A challenge/response handshake inserted into T2's existing connection handshake**:
+  `client:hello` gained required `nickname`/`publicKey`; a new `awaiting_identity_proof` connection
+  state and `server:identity-challenge`/`client:identity-proof` exchange must succeed before
+  `server:hello` (now carrying a server-derived `identityId`) is ever sent. Protocol version bumped
+  1 → 2 (breaking — v1 support dropped rather than kept as a parallel unauthenticated path). The
+  challenge nonce uses real cryptographic randomness, is single-use, connection-bound, and expires;
+  the existing handshake timeout now covers both handshake steps, not just the first.
+- **Private key encrypted at rest via Electron's `safeStorage`** (Windows DPAPI-backed) at
+  `%APPDATA%/DiscoVoador/identity/identity.json`, atomic write (temp file + `rename`), versioned/
+  schema-validated on read. Fails closed (throws an actionable error) rather than falling back to
+  plaintext if `safeStorage.isEncryptionAvailable()` is `false`. Corrupted identity (bad JSON,
+  schema-invalid, unsupported version, or a public/private key mismatch caught by a sign-then-
+  verify self-check) is never silently regenerated — it surfaces as an actionable error; the only
+  way forward is the same explicit, confirmation-gated "Regenerate Identity" a user would use
+  voluntarily. Two concurrent first-ever callers to the identity loader share one in-flight promise
+  so only one identity ever becomes canonical (identity-creation race protection).
+- **An anti-oracle IPC surface**: `signIdentityChallenge` accepts only structured, individually-
+  bounded parameters (mirroring the wire protocol's own schemas exactly) — Main reconstructs the
+  canonical payload itself from its own stored public key, never a value the Renderer supplies, so
+  a compromised Renderer can never turn this into a generic "sign anything" oracle. All five new IPC
+  channels (`getIdentity`, `signIdentityChallenge`, `regenerateIdentity`, `getNickname`,
+  `setNickname`) go through the same `assertTrustedSender` check every other channel in this app
+  uses.
+- **Nickname is explicitly not identity**: a separate client-local preferences file, editable
+  without ever touching the cryptographic identity — proven by a dedicated realtime integration test
+  (same identity, two different nicknames across a reconnect, same `identityId` both times).
+- **Renderer**: a narrow, IPC-shaped `IdentitySigner` dependency (unit-testable with a fake signer,
+  no Electron involved) drives a fully reworked `RealtimeClient` (async hello → challenge → proof →
+  ready); a minimal first-run nickname prompt and a settings Identity panel (nickname edit, Identity
+  ID + Copy, confirmation-gated Regenerate) — no account/login/password language anywhere, matching
+  the TeamSpeak-style UX goal.
+- **Server**: `services/realtime` holds identity state only for a connection's lifetime — no
+  users/accounts/profile database was introduced. The server always derives `identityId` itself from
+  the verified public key, never trusting a client-supplied value.
+
+**T7 is complete.** All four pre-existing media E2Es (`e2e:voice-smoke`, `e2e:camera-smoke`,
+`e2e:screen-smoke`, `e2e:screen-audio-smoke`) were re-run against the final code and pass cleanly
+under the now-mandatory identity gate — no regression. Two new dedicated E2E scripts each passed 3
+consecutive clean runs with real evidence (not simulated): `e2e:identity-persistence` (a real
+Electron instance launched twice against the same `--user-data-dir` reports the identical
+`identityId` both times; a different `--user-data-dir` always reports a different one) and
+`e2e:identity-auth` (two distinct local profiles' real, DPAPI-backed identities each match the
+server-authenticated `identityId` they receive back, the two are always distinct, and real WebRTC
+voice with genuinely non-silent decoded audio still works throughout). `security-reviewer` found no
+release-blocking issues — the anti-oracle `signIdentityChallenge` design, fail-closed `safeStorage`
+handling, canonical-payload domain separation/delimiter-injection safety, and single-use/expiring/
+connection-bound challenge design were each independently confirmed correct by reading the actual
+verification logic, not just its doc comments; one low-severity note (`regenerateIdentity` has no
+_additional_ Main-side confirmation beyond the Renderer's UI gate — accepted, since a Renderer
+compromise capable of triggering it unprompted already has equivalent access via
+`signIdentityChallenge`) and one informational note (this document and `CLIENT_IDENTITY.md` were
+still in progress at review time — both are now complete) were recorded, neither blocking. 612
+total Vitest tests; full `corepack pnpm check` green (the same one pre-existing, already-accepted
+high-severity dependency advisory; no new advisories). See
+[`tasks/T7_LOCAL_IDENTITY.md`](tasks/T7_LOCAL_IDENTITY.md)'s handoff notes and
+[`architecture/CLIENT_IDENTITY.md`](architecture/CLIENT_IDENTITY.md) for the full record, including
+the canonical signing-payload design, the `packages/identity` boundary decision, and the
+concurrency/race analysis.
+
+Also recorded: [`adr/0010-no-mandatory-central-control-plane.md`](adr/0010-no-mandatory-central-control-plane.md),
+the architectural guardrail T7 implements the first piece of, and
+[`adr/0011-local-cryptographic-identity-without-central-accounts.md`](adr/0011-local-cryptographic-identity-without-central-accounts.md),
+recording T7's own identity-design decision (Ed25519, challenge/response, no account, no hardware-
+derived identity) — see [`tasks/STATUS.md`](tasks/STATUS.md) for the resulting T8+ roadmap toward a
+Dedicated Server product boundary and server-local permissions.
 
 Read [`tasks/STATUS.md`](tasks/STATUS.md) for the authoritative status,
 [`tasks/T1_ELECTRON_SHELL.md`](tasks/T1_ELECTRON_SHELL.md) /
@@ -241,39 +312,44 @@ Read [`tasks/STATUS.md`](tasks/STATUS.md) for the authoritative status,
 [`tasks/T3_VOICE_WEBRTC.md`](tasks/T3_VOICE_WEBRTC.md) /
 [`tasks/T4_CAMERA_STREAMING.md`](tasks/T4_CAMERA_STREAMING.md) /
 [`tasks/T5_SCREEN_SHARE.md`](tasks/T5_SCREEN_SHARE.md) /
-[`tasks/T6_SCREEN_AUDIO.md`](tasks/T6_SCREEN_AUDIO.md) for their full verification records,
+[`tasks/T6_SCREEN_AUDIO.md`](tasks/T6_SCREEN_AUDIO.md) /
+[`tasks/T7_LOCAL_IDENTITY.md`](tasks/T7_LOCAL_IDENTITY.md) for their full verification records,
 and [`references/VERSION_DECISIONS.md`](references/VERSION_DECISIONS.md) before changing the
 toolchain — it records a real Forge/`@electron/packager` incompatibility T1 found and worked around.
 [`architecture/REALTIME_PROTOCOL.md`](architecture/REALTIME_PROTOCOL.md) documents the full T2
-protocol design; [`architecture/WEBRTC_VOICE.md`](architecture/WEBRTC_VOICE.md) documents T3's voice/
-WebRTC design; [`architecture/WEBRTC_CAMERA.md`](architecture/WEBRTC_CAMERA.md) documents T4's camera
-design; [`architecture/WEBRTC_SCREEN_SHARE.md`](architecture/WEBRTC_SCREEN_SHARE.md) documents T5's
-screen-share design including the `mid`-based identity redesign and SDP-bound findings;
-[`architecture/WEBRTC_SCREEN_AUDIO.md`](architecture/WEBRTC_SCREEN_AUDIO.md) documents T6's
+protocol design (now extended by T7's identity-proof step); [`architecture/WEBRTC_VOICE.md`](architecture/WEBRTC_VOICE.md)
+documents T3's voice/WebRTC design; [`architecture/WEBRTC_CAMERA.md`](architecture/WEBRTC_CAMERA.md)
+documents T4's camera design; [`architecture/WEBRTC_SCREEN_SHARE.md`](architecture/WEBRTC_SCREEN_SHARE.md)
+documents T5's screen-share design including the `mid`-based identity redesign and SDP-bound
+findings; [`architecture/WEBRTC_SCREEN_AUDIO.md`](architecture/WEBRTC_SCREEN_AUDIO.md) documents T6's
 system-audio design including the Electron loopback platform finding and the `Peer.handleRemoteOffer`
-fix.
+fix; [`architecture/CLIENT_IDENTITY.md`](architecture/CLIENT_IDENTITY.md) documents T7's local
+identity design including the canonical signing payload, private-key storage, and the
+Renderer/Main trust boundary.
 
 ## What does not exist?
 
 There is no text chat, database schema, running Coturn stack (templates exist but no TURN credential
-minting), installer/maker artifact, authentication/session model, central client identity, dedicated-
-server product boundary, or SFU. Production configuration/TLS termination for the realtime service is
-also not yet implemented. Voice, camera, screen-video, and screen-audio sharing, in T3–T6's P2P-mesh,
-small-room, self-hosted scope, are all implemented, mechanism-verified, and live-verified end to end
-— the core media-engineering vertical is complete.
+minting), installer/maker artifact, dedicated-server product boundary, server-local permissions/
+groups/bans, or SFU. Production configuration/TLS termination for the realtime service is also not
+yet implemented. Voice, camera, screen-video, and screen-audio sharing (T3–T6, P2P-mesh, small-room,
+self-hosted scope) and local cryptographic client identity (T7) are all implemented,
+mechanism-verified, and live-verified end to end — the core media-engineering vertical plus the
+first piece of the real product's identity model are both complete.
 
 ## What should happen next?
 
-**T7 — local cryptographic client identity** (TeamSpeak-style: client-side identity, no central
-account, no email, no username/password database), per
+**T8 — Dedicated Server product boundary**: a client connects to an independently-hosted,
+self-operated Disco Voador server — no mandatory Disco Voador cloud/control plane — per
 [`adr/0010-no-mandatory-central-control-plane.md`](adr/0010-no-mandatory-central-control-plane.md)'s
-recorded direction. Before starting, consider closing two recorded follow-ups from T6's own review,
-neither blocking but both cheap relative to the risk they guard against: (1) a frequency-domain
-(e.g. dominant-frequency-near-440Hz) check for `e2e:screen-audio-smoke`'s `E2E_SCREEN_AUDIO_OK`
-proof, strengthening it beyond the current RMS-only non-silence check; (2) if `e2e:camera-smoke`
-flakiness recurs, a targeted failing-vs-passing stdout trace comparison (not attempted this session
-given time budget) to either root-cause it the way T5 stabilization's own flakiness was, or confirm
-it really is environmental and stop treating each occurrence as a fresh investigation.
+recorded direction. T7's `identityId` is the identity primitive T8/T9 build on top of; do not
+implement T9 (server-local permissions/groups/tokens/bans) as part of T8. Before starting, two
+non-blocking follow-ups remain recorded from T6's own review, cheap relative to the risk they guard
+against: (1) a frequency-domain (e.g. dominant-frequency-near-440Hz) check for
+`e2e:screen-audio-smoke`'s `E2E_SCREEN_AUDIO_OK` proof, strengthening it beyond the current
+RMS-only non-silence check; (2) if `e2e:camera-smoke` flakiness recurs, a targeted failing-vs-
+passing stdout trace comparison to either root-cause it the way T5 stabilization's own flakiness
+was, or confirm it really is environmental.
 
 ## Fixed foundation decisions
 
@@ -294,7 +370,8 @@ See accepted ADRs in [`adr/`](adr/); supersede them explicitly if evidence chang
 ## Decisions still open
 
 - Concrete application state, routing, and UI component choices.
-- Auth/session model (T2's `connectionId` is explicitly not an identity signal).
+- Server-local authorization model (T9): permissions, groups, invite/privilege tokens, bans, all
+  keyed by T7's `identityId` — client identity itself (T7) is now implemented and is not open.
 - Exact RTC transport API, negotiation topology, diagnostics model, and room limits.
 - Storage interface and SQLite driver/schema/migration tooling.
 - Native addon versus isolated helper for advanced Windows audio.
@@ -400,6 +477,24 @@ system-audio-loopback path, with all Definition of Done items satisfied. See
 the Electron loopback platform finding, the media-identity extension to audio, the
 `RemoteMediaReconciler` extraction, the `Peer.handleRemoteOffer` fix, the SDP-size measurement, the
 review findings, and the final lifecycle-audit fixes.
+
+T7's clean-state evidence, 2026-08-19, is the same gate with 612 Vitest tests (the same one
+pre-existing, already-allowlisted high-severity dependency advisory; no new advisories) —
+formatting, lint, whole-repo typecheck, `vitest run`, composite build, `verify-repository.mjs`, and
+the dependency audit all pass — plus its own required real-runtime evidence: 3 consecutive
+`e2e:identity-persistence` runs and 3 consecutive `e2e:identity-auth` runs, both against real
+Electron processes with real `safeStorage`/DPAPI-backed identities and (for the auth E2E) a real
+realtime service and real WebRTC voice; `e2e:voice-smoke`, `e2e:camera-smoke`, `e2e:screen-smoke`,
+and `e2e:screen-audio-smoke` were each re-run once against the final code and confirmed green under
+the now-mandatory identity handshake. **T7 is marked COMPLETE in
+[`tasks/STATUS.md`](tasks/STATUS.md)** — its mechanism is implemented, reviewed (`security-reviewer`
+found no release-blocking issues; `qa-engineer` review recorded in
+[`tasks/T7_LOCAL_IDENTITY.md`](tasks/T7_LOCAL_IDENTITY.md)), and unit/integration/live-verified
+through real DPAPI-backed key storage and a real two-instance authenticated voice session, with all
+Definition of Done items satisfied. See [`tasks/T7_LOCAL_IDENTITY.md`](tasks/T7_LOCAL_IDENTITY.md)'s
+handoff notes for the full record, including the canonical signing-payload design, the
+`packages/identity` package-boundary decision, the anti-oracle IPC design, and the corruption/race
+handling.
 
 Then perform the task’s required manual/platform checks. Apply
 [`DEFINITION_OF_DONE.md`](DEFINITION_OF_DONE.md) and update status only when every applicable item

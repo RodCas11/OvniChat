@@ -141,8 +141,49 @@ membership, never read from the client's message body, and delivery is targeted 
 same `resolveSignalingTarget`, same same-channel-only authorization) rather than a channel-wide
 broadcast.
 
-Authentication and authorization details remain open for T2/T7 and require an explicit threat
-review before public exposure.
+**Implemented (T7 — client identity and authentication):** every connection must complete a
+challenge/response proof of private-key possession before it reaches `ready` — see
+`docs/architecture/CLIENT_IDENTITY.md` for the full design. Key points relevant to this document:
+
+- The private key is generated and used exclusively in the Electron Main process; it never crosses
+  the Preload/Renderer boundary in any form, is never logged, and is never included in an error
+  message or IPC response. `apps/desktop/src/main/identity/identity-service.ts` is the only place a
+  decrypted private key ever exists in memory.
+- At rest, the private key is encrypted via Electron's `safeStorage` (Windows DPAPI-backed) before
+  ever touching disk (`%APPDATA%/DiscoVoador/identity/identity.json`, atomic write). If
+  `safeStorage.isEncryptionAvailable()` is `false`, identity creation/load fails closed — throws an
+  actionable error — rather than falling back to a plaintext file.
+- The Renderer's IPC surface for identity (`getIdentity`, `signIdentityChallenge`,
+  `regenerateIdentity`, `getNickname`, `setNickname`) goes through the same `assertTrustedSender`
+  origin/sender check every other IPC channel in this app uses. `signIdentityChallenge` is
+  deliberately not a generic signing oracle: it accepts only structured, individually-bounded
+  parameters (mirroring the wire protocol's own schemas exactly), and Main reconstructs the
+  canonical payload itself from its own stored public key — a compromised Renderer can only ever
+  obtain a signature over this one specific domain-separated identity-auth message shape.
+  `regenerateIdentity` is confirmation-gated in the Renderer UI, but that gate is a UX safeguard for
+  the legitimate user, not an independent security boundary — a Renderer compromise capable of
+  calling it unprompted already has equivalent access via `signIdentityChallenge` (full
+  impersonation of the current identity), so this does not materially widen what such a compromise
+  could already do.
+- The server (`services/realtime`) never trusts a client-supplied `identityId` — it always derives
+  one itself (`SHA-256` of the verified public key) after signature verification succeeds. The
+  identity-challenge nonce uses `node:crypto`'s `randomBytes`, is single-use, connection-bound
+  (embedded in the signed payload alongside `connectionId`), and expires
+  (`REALTIME_IDENTITY_CHALLENGE_TTL_MS`, default 10s). The existing per-connection handshake timeout
+  (`REALTIME_HANDSHAKE_TIMEOUT_MS`) now also covers the new `awaiting_identity_proof` state, so an
+  idle unauthenticated connection can never be left open indefinitely regardless of which half of
+  the two-step handshake it stalls in.
+- `packages/identity` (the Node-only Ed25519 implementation) is architecturally forbidden from ever
+  being imported by Renderer/Preload code or by the environment-neutral packages (`protocol`,
+  `rtc-core`, `media-core`, `shared`) — enforced by `scripts/verify-architecture.mjs`'s `isIdentity()`
+  check, the same pattern already used for `packages/windows-media`.
+- T7 introduces no central account database, no email/password/phone collection, and no
+  cross-server identity-correlation service — the realtime server holds identity state only for a
+  connection's lifetime.
+
+Authorization (server-local permissions, groups, invite/privilege tokens, bans keyed by
+`identityId`) remains open for T9 and requires its own explicit threat review before public
+exposure — T7 only establishes _who_ a connection is, never _what it's allowed to do_.
 
 ## Secrets and configuration
 

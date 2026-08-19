@@ -4,6 +4,8 @@ import {
   IPC_CHANNELS,
   type DesktopApi,
   type DesktopE2EVoiceConfig,
+  type DesktopIdentity,
+  type DesktopIdentityChallenge,
   type DesktopRealtimeConfig,
   type DesktopScreenSource,
   type DesktopVersionInfo,
@@ -28,6 +30,14 @@ const desktopApi: DesktopApi = {
       sourceId,
       shareAudio,
     ) as Promise<boolean>,
+  getIdentity: () => ipcRenderer.invoke(IPC_CHANNELS.getIdentity) as Promise<DesktopIdentity>,
+  signIdentityChallenge: (challenge: DesktopIdentityChallenge) =>
+    ipcRenderer.invoke(IPC_CHANNELS.signIdentityChallenge, challenge) as Promise<string>,
+  regenerateIdentity: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.regenerateIdentity) as Promise<DesktopIdentity>,
+  getNickname: () => ipcRenderer.invoke(IPC_CHANNELS.getNickname) as Promise<string>,
+  setNickname: (nickname: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.setNickname, nickname) as Promise<boolean>,
 };
 
 contextBridge.exposeInMainWorld('desktopApp', desktopApi);

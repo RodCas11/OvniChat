@@ -11,10 +11,17 @@
  * may support more than one version at once during a migration window; a client that requests a
  * version outside `SUPPORTED_PROTOCOL_VERSIONS` receives `UNSUPPORTED_PROTOCOL` and the connection
  * is closed — this is a defined failure, not undefined behavior.
+ *
+ * Bumped to 2 for T7: `client:hello` gained required `nickname`/`publicKey` fields and the
+ * handshake gained a mandatory identity-challenge/proof step before `server:hello`. This is a
+ * breaking change (an old client's hello is no longer sufficient to reach `ready`), so v1 support
+ * was dropped rather than kept as a parallel unauthenticated codepath — maintaining it would have
+ * meant either bypassing identity verification for v1 clients (unacceptable) or having v1 always
+ * fail (pointless to keep as "support").
  */
-export const CURRENT_PROTOCOL_VERSION = 1;
+export const CURRENT_PROTOCOL_VERSION = 2;
 
-export const SUPPORTED_PROTOCOL_VERSIONS: readonly number[] = [1];
+export const SUPPORTED_PROTOCOL_VERSIONS: readonly number[] = [2];
 
 export function isSupportedProtocolVersion(version: number): boolean {
   return SUPPORTED_PROTOCOL_VERSIONS.includes(version);

@@ -1,8 +1,18 @@
-import { CURRENT_PROTOCOL_VERSION, type ServerMessage } from '@disco-voador/protocol';
+import {
+  generateIdentityKeyPair,
+  signWithIdentityKey,
+  type IdentityKeyPair,
+} from '@disco-voador/identity';
+import {
+  buildIdentityAuthPayload,
+  CURRENT_PROTOCOL_VERSION,
+  type ClientIdentityProofMessage,
+  type ServerIdentityChallengeMessage,
+  type ServerMessage,
+} from '@disco-voador/protocol';
 import { describe, expect, it } from 'vitest';
 
 import {
-  handleClientHello,
   handleClientPing,
   routeClientMessage,
   type HandlerContext,
@@ -12,6 +22,7 @@ import { DEFAULT_VOICE_CHANNELS } from '../../services/realtime/src/voice/catalo
 import { VoiceRegistry } from '../../services/realtime/src/voice/registry.js';
 
 const FIXED_TIME = new Date('2026-08-18T00:00:00.000Z');
+const CHALLENGE_TTL_MS = 10_000;
 
 function makeContext(overrides: Partial<HandlerContext> = {}): HandlerContext {
   return {
@@ -19,6 +30,8 @@ function makeContext(overrides: Partial<HandlerContext> = {}): HandlerContext {
     now: () => FIXED_TIME,
     heartbeat: { intervalMs: 15000, timeoutMs: 10000 },
     voiceRegistry: new VoiceRegistry(DEFAULT_VOICE_CHANNELS),
+    identityChallengeTtlMs: CHALLENGE_TTL_MS,
+    pendingChallenge: undefined,
     ...overrides,
   };
 }
@@ -35,28 +48,42 @@ function deliveries(
     .map((a) => ({ connectionId: a.connectionId, message: a.message }));
 }
 
-describe('handleClientHello', () => {
-  it('builds a server:hello echoing the request id and carrying connection/heartbeat info', () => {
-    const response = handleClientHello(
-      {
-        type: 'client:hello',
-        id: 'req-1',
-        protocolVersion: 1,
-        client: { name: 'test', version: '0.0.0' },
-      },
-      makeContext(),
-    );
+function makeHello(overrides: {
+  publicKey: string;
+  id?: string;
+  protocolVersion?: number;
+  nickname?: string;
+}) {
+  return {
+    type: 'client:hello' as const,
+    id: overrides.id ?? 'req-1',
+    protocolVersion: overrides.protocolVersion ?? CURRENT_PROTOCOL_VERSION,
+    client: { name: 'test', version: '0.0.0' },
+    nickname: overrides.nickname ?? 'Alice',
+    publicKey: overrides.publicKey,
+  };
+}
 
-    expect(response).toEqual({
-      type: 'server:hello',
-      id: 'req-1',
-      protocolVersion: CURRENT_PROTOCOL_VERSION,
-      connectionId: 'conn-1',
-      serverTime: FIXED_TIME.toISOString(),
-      heartbeat: { intervalMs: 15000, timeoutMs: 10000 },
-    });
+/** Signs a valid identity-proof for `challenge`, as issued to `connectionId`, using `keyPair` and
+ * the exact hello fields the challenge was bound to. */
+function signProof(
+  challenge: ServerIdentityChallengeMessage,
+  connectionId: string,
+  keyPair: IdentityKeyPair,
+  fields: { protocolVersion: number; nickname: string; publicKey?: string },
+  proofId = 'proof-1',
+): ClientIdentityProofMessage {
+  const payload = buildIdentityAuthPayload({
+    protocolVersion: fields.protocolVersion,
+    connectionId,
+    nonce: challenge.nonce,
+    expiresAt: challenge.expiresAt,
+    publicKey: fields.publicKey ?? keyPair.publicKey,
+    nickname: fields.nickname,
   });
-});
+  const signature = signWithIdentityKey(keyPair.privateKey, keyPair.publicKey, payload);
+  return { type: 'client:identity-proof', id: proofId, signature };
+}
 
 describe('handleClientPing', () => {
   it('builds a server:pong echoing the ping id', () => {
@@ -68,32 +95,63 @@ describe('handleClientPing', () => {
 });
 
 describe('routeClientMessage — handshake', () => {
-  const ctx = makeContext();
-  const validHello = {
-    type: 'client:hello' as const,
-    id: 'req-1',
-    protocolVersion: 1,
-    client: { name: 'test', version: '0.0.0' },
-  };
+  const keyPair = generateIdentityKeyPair();
+  const validHello = makeHello({ publicKey: keyPair.publicKey });
   const ping = { type: 'client:ping' as const, id: 'ping-1' };
 
-  it('accepts a hello while awaiting_hello, transitions to ready, and also sends the voice catalog', () => {
+  it('accepts a hello while awaiting_hello and issues an identity challenge (does not go ready yet)', () => {
+    const ctx = makeContext();
     const result = routeClientMessage(validHello, 'awaiting_hello', ctx);
     expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.nextState).toBe('ready');
-      const messages = replies(result.actions);
-      expect(messages[0]?.type).toBe('server:hello');
-      expect(messages[1]).toMatchObject({
-        type: 'voice:catalog',
-        channels: [...DEFAULT_VOICE_CHANNELS],
-      });
-    }
+    if (!result.ok) return;
+    expect(result.nextState).toBe('awaiting_identity_proof');
+    const messages = replies(result.actions);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      type: 'server:identity-challenge',
+      connectionId: 'conn-1',
+    });
+    expect(result.pendingChallenge).toMatchObject({
+      publicKey: keyPair.publicKey,
+      nickname: 'Alice',
+      protocolVersion: CURRENT_PROTOCOL_VERSION,
+    });
+  });
+
+  it('completes the full hello -> challenge -> proof -> ready flow with a matching identityId', () => {
+    const ctx = makeContext();
+    const helloResult = routeClientMessage(validHello, 'awaiting_hello', ctx);
+    expect(helloResult.ok).toBe(true);
+    if (!helloResult.ok) return;
+    const challenge = replies(helloResult.actions)[0] as ServerIdentityChallengeMessage;
+
+    const proofCtx = makeContext({ pendingChallenge: helloResult.pendingChallenge });
+    const proof = signProof(challenge, 'conn-1', keyPair, {
+      protocolVersion: CURRENT_PROTOCOL_VERSION,
+      nickname: 'Alice',
+    });
+    const proofResult = routeClientMessage(proof, 'awaiting_identity_proof', proofCtx);
+
+    expect(proofResult.ok).toBe(true);
+    if (!proofResult.ok) return;
+    expect(proofResult.nextState).toBe('ready');
+    const messages = replies(proofResult.actions);
+    expect(messages[0]).toMatchObject({
+      type: 'server:hello',
+      id: 'proof-1',
+      connectionId: 'conn-1',
+    });
+    expect((messages[0] as { identityId: string }).identityId).toMatch(/^dv1_[A-Za-z0-9_-]{43}$/u);
+    expect(messages[1]).toMatchObject({
+      type: 'voice:catalog',
+      channels: [...DEFAULT_VOICE_CHANNELS],
+    });
   });
 
   it('rejects a hello with an unsupported protocol version (fatal)', () => {
+    const ctx = makeContext();
     const result = routeClientMessage(
-      { ...validHello, protocolVersion: 999 },
+      makeHello({ publicKey: keyPair.publicKey, protocolVersion: 999 }),
       'awaiting_hello',
       ctx,
     );
@@ -102,26 +160,32 @@ describe('routeClientMessage — handshake', () => {
   });
 
   it('rejects a duplicate hello once already ready (fatal)', () => {
-    const result = routeClientMessage(validHello, 'ready', ctx);
+    const result = routeClientMessage(validHello, 'ready', makeContext());
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.code).toBe('UNEXPECTED_MESSAGE');
   });
 
   it('rejects a hello sent while closing/closed', () => {
     for (const state of ['closing', 'closed'] as const) {
-      const result = routeClientMessage(validHello, state, ctx);
+      const result = routeClientMessage(validHello, state, makeContext());
       expect(result.ok).toBe(false);
     }
   });
 
   it('rejects a ping sent before the handshake completes (fatal)', () => {
-    const result = routeClientMessage(ping, 'awaiting_hello', ctx);
+    const result = routeClientMessage(ping, 'awaiting_hello', makeContext());
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe('HANDSHAKE_REQUIRED');
+  });
+
+  it('rejects a ping sent while awaiting the identity proof (fatal)', () => {
+    const result = routeClientMessage(ping, 'awaiting_identity_proof', makeContext());
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.code).toBe('HANDSHAKE_REQUIRED');
   });
 
   it('accepts a ping once ready and keeps the state unchanged', () => {
-    const result = routeClientMessage(ping, 'ready', ctx);
+    const result = routeClientMessage(ping, 'ready', makeContext());
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.nextState).toBe('ready');
@@ -130,9 +194,211 @@ describe('routeClientMessage — handshake', () => {
   });
 
   it('rejects a ping sent while closing (fatal)', () => {
-    const result = routeClientMessage(ping, 'closing', ctx);
+    const result = routeClientMessage(ping, 'closing', makeContext());
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.code).toBe('HANDSHAKE_REQUIRED');
+  });
+});
+
+describe('routeClientMessage — identity proof and replay resistance', () => {
+  function issueChallenge(
+    connectionId: string,
+    keyPair: IdentityKeyPair,
+    nickname = 'Alice',
+  ): {
+    challenge: ServerIdentityChallengeMessage;
+    pendingChallenge: HandlerContext['pendingChallenge'];
+  } {
+    const ctx = makeContext({ connectionId });
+    const result = routeClientMessage(
+      makeHello({ publicKey: keyPair.publicKey, nickname }),
+      'awaiting_hello',
+      ctx,
+    );
+    if (!result.ok) throw new Error('setup failed');
+    return {
+      challenge: replies(result.actions)[0] as ServerIdentityChallengeMessage,
+      pendingChallenge: result.pendingChallenge,
+    };
+  }
+
+  it('a valid proof on connection A succeeds', () => {
+    const keyPair = generateIdentityKeyPair();
+    const { challenge, pendingChallenge } = issueChallenge('conn-a', keyPair);
+    const proof = signProof(challenge, 'conn-a', keyPair, {
+      protocolVersion: CURRENT_PROTOCOL_VERSION,
+      nickname: 'Alice',
+    });
+
+    const result = routeClientMessage(
+      proof,
+      'awaiting_identity_proof',
+      makeContext({ connectionId: 'conn-a', pendingChallenge }),
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.nextState).toBe('ready');
+  });
+
+  it('the same proof replayed again on connection A (already ready) is rejected', () => {
+    const keyPair = generateIdentityKeyPair();
+    const { challenge, pendingChallenge } = issueChallenge('conn-a', keyPair);
+    const proof = signProof(challenge, 'conn-a', keyPair, {
+      protocolVersion: CURRENT_PROTOCOL_VERSION,
+      nickname: 'Alice',
+    });
+    const first = routeClientMessage(
+      proof,
+      'awaiting_identity_proof',
+      makeContext({ connectionId: 'conn-a', pendingChallenge }),
+    );
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+
+    // The connection is now 'ready' with no pending challenge — exactly what Connection would
+    // carry forward (see connection.ts's `this.pendingChallenge = result.pendingChallenge`).
+    const replay = routeClientMessage(
+      proof,
+      'ready',
+      makeContext({ connectionId: 'conn-a', pendingChallenge: first.pendingChallenge }),
+    );
+    expect(replay.ok).toBe(false);
+    if (!replay.ok) expect(replay.code).toBe('IDENTITY_PROTOCOL_ERROR');
+  });
+
+  it('a proof copied to a different connection B is rejected (signature is connection-bound)', () => {
+    const keyPair = generateIdentityKeyPair();
+    const { challenge, pendingChallenge: pendingA } = issueChallenge('conn-a', keyPair);
+    const proof = signProof(challenge, 'conn-a', keyPair, {
+      protocolVersion: CURRENT_PROTOCOL_VERSION,
+      nickname: 'Alice',
+    });
+
+    // Connection B independently received its own challenge (different nonce/expiresAt), but an
+    // attacker forwards A's proof to B anyway.
+    const { pendingChallenge: pendingB } = issueChallenge('conn-b', keyPair);
+
+    const result = routeClientMessage(
+      proof,
+      'awaiting_identity_proof',
+      makeContext({ connectionId: 'conn-b', pendingChallenge: pendingB ?? pendingA }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe('IDENTITY_INVALID_SIGNATURE');
+  });
+
+  it('an expired challenge is rejected', () => {
+    const keyPair = generateIdentityKeyPair();
+    const { challenge, pendingChallenge } = issueChallenge('conn-a', keyPair);
+    const proof = signProof(challenge, 'conn-a', keyPair, {
+      protocolVersion: CURRENT_PROTOCOL_VERSION,
+      nickname: 'Alice',
+    });
+
+    const afterExpiry = () => new Date(challenge.expiresAt + 1);
+    const result = routeClientMessage(
+      proof,
+      'awaiting_identity_proof',
+      makeContext({ connectionId: 'conn-a', pendingChallenge, now: afterExpiry }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe('IDENTITY_CHALLENGE_EXPIRED');
+  });
+
+  it('a signature computed over a different nickname than hello claimed is rejected', () => {
+    const keyPair = generateIdentityKeyPair();
+    const { challenge, pendingChallenge } = issueChallenge('conn-a', keyPair, 'Alice');
+    // Signs for "Bob" even though the hello (and thus the server's remembered challenge) claimed
+    // "Alice" — the server always rebuilds the payload from ITS OWN remembered nickname, so this
+    // mismatches and fails verification.
+    const proof = signProof(challenge, 'conn-a', keyPair, {
+      protocolVersion: CURRENT_PROTOCOL_VERSION,
+      nickname: 'Bob',
+    });
+
+    const result = routeClientMessage(
+      proof,
+      'awaiting_identity_proof',
+      makeContext({ connectionId: 'conn-a', pendingChallenge }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe('IDENTITY_INVALID_SIGNATURE');
+  });
+
+  it('a signature from a different private key than the claimed public key is rejected', () => {
+    const claimedKeyPair = generateIdentityKeyPair();
+    const attackerKeyPair = generateIdentityKeyPair();
+    const { challenge, pendingChallenge } = issueChallenge('conn-a', claimedKeyPair);
+
+    const proof = signProof(challenge, 'conn-a', attackerKeyPair, {
+      protocolVersion: CURRENT_PROTOCOL_VERSION,
+      nickname: 'Alice',
+      publicKey: claimedKeyPair.publicKey,
+    });
+
+    const result = routeClientMessage(
+      proof,
+      'awaiting_identity_proof',
+      makeContext({ connectionId: 'conn-a', pendingChallenge }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe('IDENTITY_INVALID_SIGNATURE');
+  });
+
+  it('a schema-shaped but degenerate (all-zero) public key is handled safely, never throws', () => {
+    const zeroPublicKey = Buffer.alloc(32, 0).toString('base64url');
+    const ctx = makeContext();
+    const helloResult = routeClientMessage(
+      makeHello({ publicKey: zeroPublicKey }),
+      'awaiting_hello',
+      ctx,
+    );
+    expect(helloResult.ok).toBe(true);
+    if (!helloResult.ok) return;
+    const challenge = replies(helloResult.actions)[0] as ServerIdentityChallengeMessage;
+
+    const someKeyPair = generateIdentityKeyPair();
+    const proof = signProof(challenge, 'conn-1', someKeyPair, {
+      protocolVersion: CURRENT_PROTOCOL_VERSION,
+      nickname: 'Alice',
+      publicKey: zeroPublicKey,
+    });
+
+    expect(() =>
+      routeClientMessage(
+        proof,
+        'awaiting_identity_proof',
+        makeContext({ pendingChallenge: helloResult.pendingChallenge }),
+      ),
+    ).not.toThrow();
+
+    const result = routeClientMessage(
+      proof,
+      'awaiting_identity_proof',
+      makeContext({ pendingChallenge: helloResult.pendingChallenge }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe('IDENTITY_INVALID_SIGNATURE');
+  });
+
+  it('a proof arriving with no outstanding challenge is rejected', () => {
+    const result = routeClientMessage(
+      { type: 'client:identity-proof', id: 'p1', signature: 'A'.repeat(86) },
+      'awaiting_identity_proof',
+      makeContext({ pendingChallenge: undefined }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe('IDENTITY_PROTOCOL_ERROR');
+  });
+
+  it('a proof arriving while still awaiting_hello (no challenge issued yet) is rejected', () => {
+    const result = routeClientMessage(
+      { type: 'client:identity-proof', id: 'p1', signature: 'A'.repeat(86) },
+      'awaiting_hello',
+      makeContext(),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe('IDENTITY_PROTOCOL_ERROR');
   });
 });
 

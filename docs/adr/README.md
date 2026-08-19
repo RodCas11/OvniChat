@@ -29,3 +29,4 @@ hypothesis. An accepted target decision may precede implementation; say so expli
 8. VDO.Ninja controlled-reference policy
 9. SQLite first behind a storage boundary
 10. No mandatory central user control plane
+11. Local cryptographic identity without central accounts

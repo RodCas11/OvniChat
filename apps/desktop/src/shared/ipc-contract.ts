@@ -11,6 +11,11 @@ export const IPC_CHANNELS = {
   getE2EVoiceConfig: 'app:get-e2e-voice-config',
   listScreenShareSources: 'app:list-screen-share-sources',
   selectScreenShareSource: 'app:select-screen-share-source',
+  getIdentity: 'app:get-identity',
+  signIdentityChallenge: 'app:sign-identity-challenge',
+  regenerateIdentity: 'app:regenerate-identity',
+  getNickname: 'app:get-nickname',
+  setNickname: 'app:set-nickname',
 } as const;
 
 export interface DesktopVersionInfo {
@@ -95,6 +100,32 @@ export interface DesktopScreenSource {
   readonly displayId: string | undefined;
 }
 
+/**
+ * The connection's local cryptographic identity, as the Renderer is allowed to know it — a public
+ * key and its server-derived id, never the private key (see `main/identity/identity-service.ts`
+ * and `docs/architecture/CLIENT_IDENTITY.md`). `identityId` is computed the same way the realtime
+ * server independently re-derives it from the public key it verifies (`dv1_<...>`), so a client
+ * can display/compare it with confidence it matches what a server will report back.
+ */
+export interface DesktopIdentity {
+  readonly identityId: string;
+  readonly publicKey: string;
+}
+
+/**
+ * Structured, bounded parameters for one identity-challenge signature — never raw bytes to sign.
+ * Main reconstructs the exact canonical payload itself from these fields plus its own stored
+ * public key (see `buildIdentityAuthPayload` in `@disco-voador/protocol`), so this call can never
+ * be used as a generic "sign anything" oracle even by a fully compromised Renderer.
+ */
+export interface DesktopIdentityChallenge {
+  readonly protocolVersion: number;
+  readonly connectionId: string;
+  readonly nonce: string;
+  readonly expiresAt: number;
+  readonly nickname: string;
+}
+
 export interface DesktopApi {
   getVersionInfo: () => Promise<DesktopVersionInfo>;
   getRealtimeConfig: () => Promise<DesktopRealtimeConfig>;
@@ -122,4 +153,24 @@ export interface DesktopApi {
    * `docs/architecture/WEBRTC_SCREEN_AUDIO.md`).
    */
   selectScreenShareSource: (sourceId: string, shareAudio: boolean) => Promise<boolean>;
+  /**
+   * Loads (creating on first run) and returns the public half of this profile's local
+   * cryptographic identity. Rejects with an actionable error message if the identity cannot be
+   * loaded (e.g. OS secure storage unavailable, or the identity file is corrupted) — never falls
+   * back to a plaintext or throwaway identity.
+   */
+  getIdentity: () => Promise<DesktopIdentity>;
+  /** Signs one identity-challenge on the current local identity's behalf; see
+   * {@link DesktopIdentityChallenge}. */
+  signIdentityChallenge: (challenge: DesktopIdentityChallenge) => Promise<string>;
+  /**
+   * Destructive: mints and persists a brand-new local identity, replacing the current one for all
+   * *future* connections. Never call this without explicit, confirmation-gated user intent — the
+   * Renderer's settings UI is the only caller.
+   */
+  regenerateIdentity: () => Promise<DesktopIdentity>;
+  /** Empty string means no nickname has been chosen yet (first run). */
+  getNickname: () => Promise<string>;
+  /** Returns `false` (never throws) for an invalid nickname. */
+  setNickname: (nickname: string) => Promise<boolean>;
 }
