@@ -1,7 +1,9 @@
+import type { IpcRendererEvent } from 'electron';
 import { contextBridge, ipcRenderer } from 'electron';
 
 import {
   IPC_CHANNELS,
+  PROCESS_AUDIO_PORT_WINDOW_MESSAGE_TYPE,
   type DesktopApi,
   type DesktopBookmarkInput,
   type DesktopClientSettings,
@@ -10,11 +12,36 @@ import {
   type DesktopE2EVoiceConfig,
   type DesktopIdentity,
   type DesktopIdentityChallenge,
+  type DesktopProcessAudioCandidatesResult,
+  type DesktopProcessAudioCapabilityResult,
+  type DesktopProcessAudioEndedInfo,
+  type DesktopProcessAudioStartResult,
   type DesktopRealtimeConfig,
   type DesktopScreenSource,
   type DesktopServerBookmark,
   type DesktopVersionInfo,
 } from '../shared/ipc-contract.js';
+
+/**
+ * T12 — relays a `MessagePort` transferred from Main (via `webContents.postMessage`, arriving here
+ * as `event.ports[0]`) into the Renderer's main world via the standard DOM `window.postMessage`
+ * transfer mechanism — the officially documented Electron pattern for handing a real `MessagePort`
+ * across the contextIsolation boundary (`contextBridge.exposeInMainWorld` itself cannot clone a
+ * `MessagePort`, unlike the plain JSON-shaped/function values every other bridged call here uses).
+ * Registered exactly once, for exactly this one fixed channel — never a generic `ipcRenderer.on`
+ * passthrough the Renderer could use to listen on an arbitrary channel of its own choosing.
+ */
+ipcRenderer.on(IPC_CHANNELS.processAudioPort, (event: IpcRendererEvent, data: unknown) => {
+  const port = event.ports[0];
+  if (!port) return;
+  const sessionId =
+    data &&
+    typeof data === 'object' &&
+    typeof (data as { sessionId?: unknown }).sessionId === 'number'
+      ? (data as { sessionId: number }).sessionId
+      : undefined;
+  window.postMessage({ channel: PROCESS_AUDIO_PORT_WINDOW_MESSAGE_TYPE, sessionId }, '*', [port]);
+});
 
 const desktopApi: DesktopApi = {
   getVersionInfo: () =>
@@ -39,6 +66,42 @@ const desktopApi: DesktopApi = {
       sourceId,
       shareAudio,
     ) as Promise<boolean>,
+  getProcessAudioCapability: () =>
+    ipcRenderer.invoke(
+      IPC_CHANNELS.getProcessAudioCapability,
+    ) as Promise<DesktopProcessAudioCapabilityResult>,
+  listProcessAudioCandidates: () =>
+    ipcRenderer.invoke(
+      IPC_CHANNELS.listProcessAudioCandidates,
+    ) as Promise<DesktopProcessAudioCandidatesResult>,
+  cancelProcessAudioEnumeration: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.cancelProcessAudioEnumeration) as Promise<void>,
+  startProcessAudioCapture: (pid: number) =>
+    ipcRenderer.invoke(
+      IPC_CHANNELS.startProcessAudioCapture,
+      pid,
+    ) as Promise<DesktopProcessAudioStartResult>,
+  stopProcessAudioCapture: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.stopProcessAudioCapture) as Promise<void>,
+  onProcessAudioEnded: (listener: (info: DesktopProcessAudioEndedInfo) => void) => {
+    const wrapped = (_event: IpcRendererEvent, info: unknown): void => {
+      // Defensive runtime shape-check even though Main is the trusted sender — mirrors this bridge's
+      // own "never assume the other side's payload shape" discipline used nowhere else yet only
+      // because every other push-style API in this file is new to T12.
+      if (
+        info &&
+        typeof info === 'object' &&
+        typeof (info as { sessionId?: unknown }).sessionId === 'number' &&
+        typeof (info as { reason?: unknown }).reason === 'string'
+      ) {
+        listener(info as DesktopProcessAudioEndedInfo);
+      }
+    };
+    ipcRenderer.on(IPC_CHANNELS.processAudioEnded, wrapped);
+    return () => {
+      ipcRenderer.removeListener(IPC_CHANNELS.processAudioEnded, wrapped);
+    };
+  },
   getIdentity: () => ipcRenderer.invoke(IPC_CHANNELS.getIdentity) as Promise<DesktopIdentity>,
   signIdentityChallenge: (challenge: DesktopIdentityChallenge) =>
     ipcRenderer.invoke(IPC_CHANNELS.signIdentityChallenge, challenge) as Promise<string>,

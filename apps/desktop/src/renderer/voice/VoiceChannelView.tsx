@@ -20,7 +20,7 @@ import { LocalScreenPreview } from './LocalScreenPreview.js';
 import { RemoteAudio } from './RemoteAudio.js';
 import { RemoteCamera } from './RemoteCamera.js';
 import { RemoteScreen } from './RemoteScreen.js';
-import { ScreenSourcePicker } from './ScreenSourcePicker.js';
+import { ScreenSourcePicker, type ScreenShareAudioMode } from './ScreenSourcePicker.js';
 import { SettingsPanel } from './SettingsPanel.js';
 import { useVoiceChannel, type VoiceChannelConnectionConfig } from './use-voice-channel.js';
 
@@ -93,9 +93,12 @@ export function VoiceChannelView({
     setDisplayName(event.target.value);
   }
 
-  function handleScreenShareSelected(quality: ScreenQualityPreset, shareAudio: boolean): void {
+  function handleScreenShareSelected(
+    quality: ScreenQualityPreset,
+    audioMode: ScreenShareAudioMode,
+  ): void {
     setShowScreenPicker(false);
-    actions.enableScreenShare(quality, shareAudio);
+    actions.enableScreenShare(quality, audioMode);
   }
 
   // Automated two-Electron-instance voice smoke test only (see
@@ -207,8 +210,10 @@ export function VoiceChannelView({
         // 'standard' (720p30), not the default 'high' (1080p30): a lighter quality preset leaves
         // more headroom on the publishing instance, which is still doing real screen (and,
         // optionally, system-audio loopback) capture even in T5 stabilization's
-        // one-publisher/one-viewer topology.
-        actions.enableScreenShare('standard', shareAudio);
+        // one-publisher/one-viewer topology. E2E scenarios only ever exercise system audio (T6) or
+        // no audio — T12's 'process' mode is exercised only through the real UI picker for now (see
+        // `docs/tasks/T12_WINDOWS_PROCESS_AUDIO.md`'s "not yet built" list).
+        actions.enableScreenShare('standard', shareAudio ? { type: 'system' } : { type: 'none' });
       } catch (error) {
         console.error('E2E screen-share auto-select failed', error);
       }

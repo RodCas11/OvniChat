@@ -5,6 +5,17 @@ import type { RtcIceServerConfig } from '@disco-voador/rtc-core';
  * `DesktopApi` shape through the Preload bridge, never a channel name or `ipcRenderer`.
  */
 
+/**
+ * T12 — the `window.postMessage` type discriminator `preload/index.ts` uses to relay a transferred
+ * process-audio `MessagePort` from the isolated preload world into the Renderer's main world (the
+ * officially documented Electron pattern for handing a real `MessagePort` across the contextIsolation
+ * boundary — `contextBridge` itself cannot clone a `MessagePort`, but the standard DOM
+ * `window.postMessage([port])` transfer mechanism can). Namespaced distinctly from any IPC channel
+ * name since this travels over the main-world `window` message bus, not `ipcRenderer` — see
+ * `apps/desktop/src/renderer/media/process-audio-bridge.ts`.
+ */
+export const PROCESS_AUDIO_PORT_WINDOW_MESSAGE_TYPE = 'ovnichat:process-audio-port';
+
 export const IPC_CHANNELS = {
   getVersionInfo: 'app:get-version-info',
   getRealtimeConfig: 'app:get-realtime-config',
@@ -12,6 +23,20 @@ export const IPC_CHANNELS = {
   getE2ESettingsPersistenceConfig: 'app:get-e2e-settings-persistence-config',
   listScreenShareSources: 'app:list-screen-share-sources',
   selectScreenShareSource: 'app:select-screen-share-source',
+  // T12 — Windows per-process/game audio capture. See `main/process-audio.ts`.
+  getProcessAudioCapability: 'app:get-process-audio-capability',
+  listProcessAudioCandidates: 'app:list-process-audio-candidates',
+  cancelProcessAudioEnumeration: 'app:cancel-process-audio-enumeration',
+  startProcessAudioCapture: 'app:start-process-audio-capture',
+  stopProcessAudioCapture: 'app:stop-process-audio-capture',
+  /** Main -> Renderer only, via `WebContents.postMessage`/`ipcRenderer.on` (a `MessagePortMain`
+   * transfer, never a request/response `invoke`) — see `main/process-audio.ts` and
+   * `preload/index.ts`'s dedicated relay listener for this exact channel. */
+  processAudioPort: 'app:process-audio-port',
+  /** Main -> Renderer only, via `webContents.send`/`ipcRenderer.on` — a push notification (never
+   * Renderer-invoked) that a process-audio session ended on its own (target process exited, the
+   * native helper crashed, or a capture error) — see `DesktopProcessAudioEndedInfo`. */
+  processAudioEnded: 'app:process-audio-ended',
   getIdentity: 'app:get-identity',
   signIdentityChallenge: 'app:sign-identity-challenge',
   regenerateIdentity: 'app:regenerate-identity',
@@ -148,6 +173,69 @@ export interface DesktopScreenSource {
 }
 
 /**
+ * T12 — the result of `Main`'s pure, non-native, no-helper-spawn feature test
+ * (`@disco-voador/windows-media`'s `detectProcessAudioCapability()`) for whether Windows
+ * per-process/game audio capture is even possible on this machine. Cheap and side-effect-free —
+ * `ScreenSourcePicker` calls this to decide whether to show/enable the "Application audio" choice
+ * at all, without spawning the native helper the way `listProcessAudioCandidates` does.
+ */
+export type DesktopProcessAudioCapabilityResult =
+  | { readonly supported: true }
+  | { readonly supported: false; readonly reason: 'not-windows' | 'build-too-old' };
+
+/**
+ * T12 — one audio-capable running process, as `main/process-audio.ts` re-exposes it from
+ * `@disco-voador/windows-media`'s `ProcessCandidate` — already sanitized/bounded upstream by the
+ * native helper (see that package's `protocol.ts`), nothing further stripped here. `pid` is only
+ * ever accepted by `startProcessAudioCapture` when it was returned by the *most recent*
+ * `listProcessAudioCandidates()` call from this same trusted window — mirrors
+ * `DesktopScreenSource.id`'s own validate-against-last-enumeration contract exactly.
+ */
+export interface DesktopProcessAudioCandidate {
+  readonly pid: number;
+  /** Executable basename only (e.g. `"Game.exe"`), never a full path. */
+  readonly exeName: string;
+  /** A friendly window/session title where the platform provides one; empty string if unavailable. */
+  readonly displayTitle: string;
+}
+
+/**
+ * `supported: false` here means the same thing `DesktopProcessAudioCapabilityResult` does — surfaced
+ * again on this call specifically because a picker may call `listProcessAudioCandidates` without
+ * having first checked capability separately; `candidates` is always `[]` in that case, never a
+ * partial/best-effort list (T12's "no silent broadening" rule applies to enumeration honesty too:
+ * an unsupported system reports honestly empty, never fabricated).
+ */
+export type DesktopProcessAudioCandidatesResult =
+  | { readonly supported: true; readonly candidates: readonly DesktopProcessAudioCandidate[] }
+  | { readonly supported: false; readonly reason: 'not-windows' | 'build-too-old' };
+
+/**
+ * `accepted: false` covers every reason a capture could not be armed (capability unsupported, `pid`
+ * not present in the last enumerated set, a capture already in progress, or the enumeration
+ * supervisor this `pid` came from is no longer alive) — deliberately undifferentiated, mirroring
+ * `selectScreenShareSource`'s own "never leak which specific reason" discipline. `sessionId` is an
+ * opaque, monotonically-increasing Main-process-local session identifier (never meaningful outside
+ * this process) — used only so a later `DesktopProcessAudioEndedInfo` push can be matched back to
+ * *this* specific session, never a stale/superseded one.
+ */
+export type DesktopProcessAudioStartResult =
+  { readonly accepted: true; readonly sessionId: number } | { readonly accepted: false };
+
+/**
+ * Pushed by Main (never invoked/requested by the Renderer) exactly when a process-audio session ends
+ * on its own — the captured process exited (`target-ended`), the native helper reported a capture
+ * error (`error`), or the helper process itself exited unexpectedly (`helper-exit`). Never sent for a
+ * caller-initiated `stopProcessAudioCapture()` — the Renderer already knows about that one, since it
+ * asked for it. The Renderer must compare `sessionId` against whichever session it currently
+ * considers live before acting on this — see `use-voice-channel.ts`.
+ */
+export interface DesktopProcessAudioEndedInfo {
+  readonly sessionId: number;
+  readonly reason: 'target-ended' | 'error' | 'helper-exit';
+}
+
+/**
  * The connection's local cryptographic identity, as the Renderer is allowed to know it — a public
  * key and its server-derived id, never the private key (see `main/identity/identity-service.ts`
  * and `docs/architecture/CLIENT_IDENTITY.md`). `identityId` is computed the same way the realtime
@@ -271,6 +359,39 @@ export interface DesktopApi {
    * `docs/architecture/WEBRTC_SCREEN_AUDIO.md`).
    */
   selectScreenShareSource: (sourceId: string, shareAudio: boolean) => Promise<boolean>;
+  /** T12 — cheap, side-effect-free (never spawns the native helper) feature test for whether
+   * Windows per-process/game audio capture is even possible on this machine. */
+  getProcessAudioCapability: () => Promise<DesktopProcessAudioCapabilityResult>;
+  /**
+   * T12 — enumerates current audio-capable processes as sanitized plain data, lazily starting (or
+   * reusing an already-running) native helper for enumeration. Calling this again replaces the set
+   * of `pid`s `startProcessAudioCapture` will accept, mirroring `listScreenShareSources`.
+   */
+  listProcessAudioCandidates: () => Promise<DesktopProcessAudioCandidatesResult>;
+  /**
+   * T12 — tears down an enumeration-only helper (one not yet converted into an active capture) if
+   * one is currently running. A no-op if no such helper exists, and never affects an active capture
+   * — call when a picker UI is dismissed without starting a share, so a helper process spawned only
+   * to populate a dropdown does not linger for the rest of the app's lifetime.
+   */
+  cancelProcessAudioEnumeration: () => Promise<void>;
+  /**
+   * T12 — validates `pid` against the most recently enumerated set (see
+   * `listProcessAudioCandidates`) and, if valid, starts real native process-loopback capture for it
+   * and arms a `MessageChannelMain` PCM bridge. On success, the transferred `MessagePort` arrives
+   * separately (see `processAudioPort`/`onProcessAudioEnded` and
+   * `apps/desktop/src/renderer/media/process-audio-bridge.ts`), not as part of this call's result.
+   */
+  startProcessAudioCapture: (pid: number) => Promise<DesktopProcessAudioStartResult>;
+  /** T12 — stops the currently-active process-audio capture (if any), releasing the native helper.
+   * Idempotent; a no-op if no capture is currently active. */
+  stopProcessAudioCapture: () => Promise<void>;
+  /**
+   * T12 — subscribes to `processAudioEnded` push notifications (see
+   * {@link DesktopProcessAudioEndedInfo}); returns an unsubscribe function. Never fires for a
+   * caller-initiated `stopProcessAudioCapture()`.
+   */
+  onProcessAudioEnded: (listener: (info: DesktopProcessAudioEndedInfo) => void) => () => void;
   /**
    * Loads (creating on first run) and returns the public half of this profile's local
    * cryptographic identity. Rejects with an actionable error message if the identity cannot be

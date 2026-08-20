@@ -23,9 +23,14 @@ with explicit runtime support results, user intent, an active indicator, stop be
 
 **Hypotheses, not accepted implementation:** Electron's exact system-loopback path, native addon
 versus isolated signed helper, native IPC and PCM transport, target-selection UX, and advanced
-process-capture support remain for T6 and T9 spikes. Process-loopback is expected to require Windows
+process-capture support remain for future spikes. Process-loopback is expected to require Windows
 build 20348 or later, practically Windows 11, but a future implementation must feature-test rather
 than infer support from a product label.
+
+_Resolved:_ system-wide loopback (T6) needed no native code — Electron/Chromium handle it
+internally. Process-scoped loopback (T12) does require native Win32/WASAPI C++; the addon-versus-
+helper question was decided in favor of an out-of-process helper — see
+[`adr/0017-windows-process-loopback-native-boundary.md`](0017-windows-process-loopback-native-boundary.md).
 
 ## Consequences
 

@@ -30,3 +30,9 @@ hypothesis. An accepted target decision may precede implementation; say so expli
 9. SQLite first behind a storage boundary
 10. No mandatory central user control plane
 11. Local cryptographic identity without central accounts
+12. Dedicated Server product boundary
+13. Server authorization storage and RBAC
+14. Persistent server-owned chat history
+15. Local client settings and bookmarks
+16. Automatic reconnect and media restoration policy
+17. Windows process-loopback native boundary

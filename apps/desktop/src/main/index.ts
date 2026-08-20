@@ -4,6 +4,7 @@ import path from 'node:path';
 import { loadDesktopConfig } from './desktop-config.js';
 import { allowedRendererOrigins } from './origins.js';
 import { installPermissionHandlers } from './permissions.js';
+import { disposeProcessAudioSession } from './process-audio.js';
 import { registerAppProtocolHandler, registerAppProtocolPrivileges } from './protocol.js';
 import { installScreenShareHandlers } from './screen-share.js';
 import { createMainWindow, devServerUrl } from './window.js';
@@ -665,6 +666,14 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit();
   }
+});
+
+// T12 — never leave a native process-loopback helper (or a live capture session) running once the
+// app itself is quitting; mirrors this app's existing "privacy-sensitive sources never outlive what
+// they were started for" discipline (T11's camera/screen non-restoration policy) applied to the one
+// source in this app backed by an actual OS child process.
+app.on('before-quit', () => {
+  disposeProcessAudioSession();
 });
 
 bootstrap().catch((error: unknown) => {

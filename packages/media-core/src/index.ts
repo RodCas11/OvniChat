@@ -22,3 +22,12 @@ export {
   type ScreenConstraints,
   type ScreenQualityPreset,
 } from './screen.js';
+export { ProcessAudioTrackError, type ProcessAudioErrorReason } from './process-audio-errors.js';
+export {
+  createProcessAudioTrack,
+  type ProcessAudioAckMessage,
+  type ProcessAudioFormat,
+  type ProcessAudioFrame,
+  type ProcessAudioPortMessage,
+  type ProcessAudioTrack,
+} from './process-audio-track.js';

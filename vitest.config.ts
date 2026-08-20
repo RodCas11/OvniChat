@@ -31,6 +31,10 @@ export default defineConfig({
         replacement: path.resolve(__dirname, 'packages/media-core/src/index.ts'),
       },
       {
+        find: '@disco-voador/windows-media',
+        replacement: path.resolve(__dirname, 'packages/windows-media/src/index.ts'),
+      },
+      {
         // Unlike other services/* workspaces (imported by relative path in tests, per convention),
         // @disco-voador/realtime is now also imported as a real package dependency by
         // services/dedicated-server (T8) — aliased for the same reason the packages/* entries

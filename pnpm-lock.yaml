@@ -60,6 +60,9 @@ importers:
       '@disco-voador/rtc-core':
         specifier: workspace:*
         version: link:../../packages/rtc-core
+      '@disco-voador/windows-media':
+        specifier: workspace:*
+        version: link:../../packages/windows-media
       react:
         specifier: 19.2.8
         version: 19.2.8

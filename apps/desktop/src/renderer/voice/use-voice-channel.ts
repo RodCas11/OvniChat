@@ -38,6 +38,7 @@ import {
   SCREEN_QUALITY_PRESETS,
   type Camera,
   type Microphone,
+  type ProcessAudioTrack,
   type Screen,
   type ScreenQualityPreset,
 } from '@disco-voador/media-core';
@@ -48,7 +49,11 @@ import {
   type RemoteTrackEvent,
 } from '@disco-voador/rtc-core';
 
-import type { DesktopRealtimeConfig } from '../../shared/ipc-contract.js';
+import type {
+  DesktopProcessAudioEndedInfo,
+  DesktopRealtimeConfig,
+} from '../../shared/ipc-contract.js';
+import { acquireProcessAudioTrack } from '../media/process-audio-bridge.js';
 import { IpcIdentitySigner } from '../realtime/identity-signer.js';
 import type { RealtimeClient, ServerInfo } from '../realtime/realtime-client.js';
 import {
@@ -63,6 +68,7 @@ import {
   RemoteMediaReconciler,
 } from './remote-media-reconciliation.js';
 import { releasePublishedScreen } from './screen-share-lifecycle.js';
+import type { ScreenShareAudioMode } from './ScreenSourcePicker.js';
 
 export interface VoiceParticipantView {
   readonly participantId: string;
@@ -288,11 +294,15 @@ export interface VoiceChannelActions {
   /** Call only after a source has already been armed via `desktopApp.selectScreenShareSource`
    * (e.g. by `ScreenSourcePicker`'s `onSourceSelected`) — this does not itself select a source, it
    * only acquires (`getDisplayMedia()`, fulfilled by whatever Main already has pending) and
-   * publishes whatever that selection resolves to. `shareAudio` must match what was armed via
+   * publishes whatever that selection resolves to. `audioMode` must match what was armed via
    * `selectScreenShareSource` for this same share (see `ScreenSourcePicker`'s doc comment) — video
-   * is always published; the audio track is published too only if `shareAudio` was `true` and the
-   * platform actually supplied one (optional, never a failure of the share itself). */
-  enableScreenShare(quality: ScreenQualityPreset, shareAudio: boolean): void;
+   * is always published; for `{ type: 'system' }` the system-audio track is published too only if
+   * the platform actually supplied one (optional, never a failure of the share itself); for
+   * `{ type: 'process', pid }` a separate Windows per-process/game audio capture (T12) is started
+   * and its resulting track published under the same `screen-audio` semantic source once it becomes
+   * available (also optional/best-effort — a failure here degrades to video-only, never fails the
+   * whole share). */
+  enableScreenShare(quality: ScreenQualityPreset, audioMode: ScreenShareAudioMode): void;
   disableScreenShare(): void;
   /** T9 — redeems a privilege key, invite token, or (on first-ever startup) the Server Admin
    * bootstrap token, granting its configured group to the caller's own identity. */
@@ -490,6 +500,44 @@ export function useVoiceChannel(
   // `getDisplayMedia()` — see `enableScreenShare`.
   const screenGenerationRef = useRef(0);
   const screenAcquiringRef = useRef(false);
+  /**
+   * T12 — the currently-live Windows per-process/game audio track (via `packages/windows-media`'s
+   * native process-loopback capture, bridged through `MessageChannelMain` — see
+   * `apps/desktop/src/renderer/media/process-audio-bridge.ts`), present only when the active screen
+   * share's audio mode is `{ type: 'process' }`. Entirely independent of `screenRef.current?.audioTrack`
+   * (T6 system audio) — the two are mutually exclusive per share (`ScreenSourcePicker`'s radio
+   * choice), but kept as a separate ref/publish call rather than unified onto `Screen`, since
+   * process-audio capture is this app's own Electron-specific session (Main's own
+   * `ProcessLoopbackSupervisor` instance), not part of `@disco-voador/media-core`'s platform-
+   * `getDisplayMedia`-based `Screen` abstraction.
+   */
+  const processAudioTrackRef = useRef<ProcessAudioTrack | undefined>(undefined);
+  /** T12 — the Main-process session id from the most recent successful `startProcessAudioCapture`;
+   * used only to ignore a stale `onProcessAudioEnded` push notification for a session this hook has
+   * already released or superseded (see the notification listener registered in the main connection
+   * effect below). */
+  const processAudioSessionIdRef = useRef<number | undefined>(undefined);
+
+  /**
+   * T12 — releases the currently-live process-audio track (if any): unpublishes it, stops the
+   * synthesized `MediaStreamTrack`, and tells Main to stop the underlying native capture. Hoisted to
+   * hook level (like `disableScreenShare` itself) rather than declared inside the main connection
+   * effect (unlike `releaseMicrophone`/`releaseCamera`/`releaseScreen`), because both the effect's
+   * own handlers (`onReconnecting`/`onLeft`/`releaseScreen`) and the standalone `enableScreenShare`/
+   * `disableScreenShare` callbacks need to call it, and only refs (stable across renders) are
+   * involved, so a single stable `useCallback` safely serves every call site.
+   */
+  const releaseProcessAudioTrack = useCallback((): void => {
+    const processAudioTrack = processAudioTrackRef.current;
+    if (!processAudioTrack) return;
+    processAudioTrackRef.current = undefined;
+    processAudioSessionIdRef.current = undefined;
+    transportRef.current?.unpublishTrack(processAudioTrack.track);
+    processAudioTrack.stop();
+    window.desktopApp.stopProcessAudioCapture().catch((error: unknown) => {
+      console.error('voice: failed to stop process-audio capture', error);
+    });
+  }, []);
   /** T10 — correlates an in-flight `client:chat-history-request` back to which thread it was for,
    * since `server:chat-history-page` itself carries no scope/channelId (correlation is via `id`
    * alone — see `packages/protocol/src/messages/chat.ts`). Reset (implicitly abandoned) on every
@@ -640,13 +688,17 @@ export function useVoiceChannel(
       setState((prev) => ({ ...prev, cameraUsingFallback: false }));
     }
 
-    /** Mirrors `releaseCamera()` exactly — screen share off always fully releases capture too. */
+    /** Mirrors `releaseCamera()` exactly — screen share off always fully releases capture too.
+     * T12: also releases a live process-audio track (see `releaseProcessAudioTrack`'s own doc
+     * comment) — every caller of `releaseScreen()` (`onReconnecting`, `onLeft`) must release
+     * process-audio the same way it releases system audio, since the two are mutually exclusive
+     * per share but otherwise follow the identical lifecycle. */
     function releaseScreen(): void {
       screenGenerationRef.current += 1;
       const screen = screenRef.current;
-      if (!screen) return;
       screenRef.current = undefined;
-      releasePublishedScreen(transport, screen);
+      if (screen) releasePublishedScreen(transport, screen);
+      releaseProcessAudioTrack();
     }
 
     /** T11 — replaces the (now-dead) transport with a fresh one, for an automatic-reconnect cycle.
@@ -1063,11 +1115,32 @@ export function useVoiceChannel(
             ? 'camera'
             : event.track === screenRef.current?.track
               ? 'screen-video'
-              : event.track === screenRef.current?.audioTrack
+              : event.track === screenRef.current?.audioTrack ||
+                  event.track === processAudioTrackRef.current?.track
                 ? 'screen-audio'
                 : undefined;
       if (!source) return;
       client.announceTrackSource(event.participantId, event.mid, source);
+    };
+
+    /**
+     * T12 — Main pushes this only when a process-audio session ends on its own (the captured
+     * process exited, the native helper crashed, or a capture error) — never for a caller-initiated
+     * `stopProcessAudioCapture()` (`releaseProcessAudioTrack` already knows about that one, since it
+     * asked for it). `sessionId` guards against a stale notification for a session this hook has
+     * already released or superseded (e.g. the user stopped sharing and started a new process-audio
+     * share in the same tick this notification was already in flight for the old one).
+     */
+    const onProcessAudioEnded = (info: DesktopProcessAudioEndedInfo) => {
+      if (processAudioSessionIdRef.current !== info.sessionId) return;
+      console.error(`voice: process-audio capture ended unexpectedly (${info.reason})`);
+      const processAudioTrack = processAudioTrackRef.current;
+      processAudioTrackRef.current = undefined;
+      processAudioSessionIdRef.current = undefined;
+      if (processAudioTrack) transport.unpublishTrack(processAudioTrack.track);
+      // Main's own session already tore itself down — no matching `stopProcessAudioCapture()` call
+      // is needed here, unlike `releaseProcessAudioTrack`'s caller-initiated path.
+      setState((prev) => ({ ...prev, screenShareAudioActive: false }));
     };
 
     const onPeerStateChanged = (event: PeerConnectionStateEvent) => {
@@ -1106,6 +1179,7 @@ export function useVoiceChannel(
     transport.on('remoteTrack', onRemoteTrack);
     transport.on('localTrackMid', onLocalTrackMid);
     transport.on('peerStateChanged', onPeerStateChanged);
+    const unsubscribeProcessAudioEnded = window.desktopApp.onProcessAudioEnded(onProcessAudioEnded);
 
     controller.connect();
 
@@ -1135,6 +1209,7 @@ export function useVoiceChannel(
       transport.off('remoteTrack', onRemoteTrack);
       transport.off('localTrackMid', onLocalTrackMid);
       transport.off('peerStateChanged', onPeerStateChanged);
+      unsubscribeProcessAudioEnded();
 
       // This is a genuinely final teardown (unmount, or the user connected to a different
       // server/address) — `controller.disconnect()` marks the sequence as deliberately ended, so no
@@ -1155,6 +1230,15 @@ export function useVoiceChannel(
       screenGenerationRef.current += 1;
       screenRef.current?.stop();
       screenRef.current = undefined;
+      // T12 — mirrors screen's own final-teardown shape: stop the local synthesized track directly
+      // (the transport itself is already being fully closed above, so an explicit unpublish is not
+      // needed here, same as microphone/camera/screen), and tell Main to release the native helper.
+      processAudioTrackRef.current?.stop();
+      processAudioTrackRef.current = undefined;
+      processAudioSessionIdRef.current = undefined;
+      window.desktopApp.stopProcessAudioCapture().catch((error: unknown) => {
+        console.error('voice: failed to stop process-audio capture on teardown', error);
+      });
       clientRef.current = undefined;
       controllerRef.current = undefined;
       transportRef.current = undefined;
@@ -1525,87 +1609,140 @@ export function useVoiceChannel(
     })();
   }, []);
 
-  const enableScreenShare = useCallback((quality: ScreenQualityPreset, shareAudio: boolean) => {
-    const transport = transportRef.current;
-    // Mirrors `enableCamera`'s double-click/concurrent-acquisition guard exactly — the same class
-    // of real bug T4 found for camera (a fast double-invocation starting two concurrent capture
-    // attempts) applies identically here.
-    if (!transport || screenRef.current || screenAcquiringRef.current) return;
+  const enableScreenShare = useCallback(
+    (quality: ScreenQualityPreset, audioMode: ScreenShareAudioMode) => {
+      const transport = transportRef.current;
+      // Mirrors `enableCamera`'s double-click/concurrent-acquisition guard exactly — the same class
+      // of real bug T4 found for camera (a fast double-invocation starting two concurrent capture
+      // attempts) applies identically here.
+      if (!transport || screenRef.current || screenAcquiringRef.current) return;
 
-    screenAcquiringRef.current = true;
-    const generation = ++screenGenerationRef.current;
-    setState((prev) => ({ ...prev, screenShareError: undefined, screenSharingState: 'starting' }));
+      screenAcquiringRef.current = true;
+      const generation = ++screenGenerationRef.current;
+      setState((prev) => ({
+        ...prev,
+        screenShareError: undefined,
+        screenSharingState: 'starting',
+      }));
 
-    void (async () => {
-      try {
-        const screen = await acquireScreen(SCREEN_QUALITY_PRESETS[quality], shareAudio);
-        if (transportRef.current !== transport || screenGenerationRef.current !== generation) {
-          // The transport was torn down, or the user stopped sharing again (or started a second
-          // share — the generation counter only ever matches the most recent call) while
-          // `getDisplayMedia()` was pending. Stop the device immediately instead of leaking the
-          // capture or publishing a track nobody asked for anymore — the same race class T3 fixed
-          // for the microphone and T4 fixed for the camera. `screen.stop()` releases both video
-          // and (if present) audio.
-          screen.stop();
-          return;
-        }
+      void (async () => {
+        try {
+          // T12: process-audio never rides Windows system-loopback — only `{ type: 'system' }` ever
+          // requests it from `acquireScreen` (matches what `ScreenSourcePicker` armed via
+          // `selectScreenShareSource`).
+          const screen = await acquireScreen(
+            SCREEN_QUALITY_PRESETS[quality],
+            audioMode.type === 'system',
+          );
+          if (transportRef.current !== transport || screenGenerationRef.current !== generation) {
+            // The transport was torn down, or the user stopped sharing again (or started a second
+            // share — the generation counter only ever matches the most recent call) while
+            // `getDisplayMedia()` was pending. Stop the device immediately instead of leaking the
+            // capture or publishing a track nobody asked for anymore — the same race class T3 fixed
+            // for the microphone and T4 fixed for the camera. `screen.stop()` releases both video
+            // and (if present) audio.
+            screen.stop();
+            return;
+          }
 
-        screenRef.current = screen;
-        screen.track.addEventListener('ended', () => {
-          // Native capture ended externally — the OS/browser-style "Stop sharing" control, or the
-          // captured window was closed — rather than via `disableScreenShare()`.
-          // `screenRef.current !== screen` means `disableScreenShare()` (or a newer
-          // `enableScreenShare()`) already handled cleanup for this instance, so this is a no-op.
-          // T6: video ending externally always tears down audio too — system audio must never keep
-          // broadcasting after the visual share ended.
-          if (screenRef.current !== screen) return;
-          screenRef.current = undefined;
-          releasePublishedScreen(transport, screen);
+          screenRef.current = screen;
+          screen.track.addEventListener('ended', () => {
+            // Native capture ended externally — the OS/browser-style "Stop sharing" control, or the
+            // captured window was closed — rather than via `disableScreenShare()`.
+            // `screenRef.current !== screen` means `disableScreenShare()` (or a newer
+            // `enableScreenShare()`) already handled cleanup for this instance, so this is a no-op.
+            // T6/T12: video ending externally always tears down audio too (system *or* process) —
+            // audio must never keep broadcasting after the visual share ended.
+            if (screenRef.current !== screen) return;
+            screenRef.current = undefined;
+            releasePublishedScreen(transport, screen);
+            releaseProcessAudioTrack();
+            setState((prev) => ({
+              ...prev,
+              screenSharingState: 'idle',
+              localScreenStream: undefined,
+              screenShareAudioActive: false,
+            }));
+          });
+
+          transport.publishTrack(screen.track);
+          // Announced by `onLocalTrackMid` once each peer's negotiated mid for this track is known —
+          // see the identical comment in `enableCamera`.
+          let audioActive = false;
+          const audioTrack = screen.audioTrack;
+          if (audioTrack) {
+            audioActive = true;
+            // Both `publishTrack` calls happen synchronously in this same task — the platform's own
+            // `negotiationneeded` batching (see `packages/rtc-core/src/peer.ts`) coalesces them into
+            // one renegotiation cycle for this share-start, not two.
+            transport.publishTrack(audioTrack);
+            // T6: system audio can independently stop supplying data (source app closed, platform
+            // revoked it) while video keeps sharing — must not end the whole share, only mark audio
+            // unavailable. `screenRef.current !== screen` means the video 'ended' handler above (or
+            // `disableScreenShare()`) already handled full cleanup for this instance.
+            audioTrack.addEventListener('ended', () => {
+              if (screenRef.current !== screen) return;
+              transport.unpublishTrack(audioTrack);
+              setState((prev) => ({ ...prev, screenShareAudioActive: false }));
+            });
+          }
+
           setState((prev) => ({
             ...prev,
-            screenSharingState: 'idle',
-            localScreenStream: undefined,
-            screenShareAudioActive: false,
+            screenSharingState: 'sharing',
+            localScreenStream: screen.stream,
+            screenShareAudioActive: audioActive,
           }));
-        });
 
-        transport.publishTrack(screen.track);
-        // Announced by `onLocalTrackMid` once each peer's negotiated mid for this track is known —
-        // see the identical comment in `enableCamera`.
-        let audioActive = false;
-        const audioTrack = screen.audioTrack;
-        if (audioTrack) {
-          audioActive = true;
-          // Both `publishTrack` calls happen synchronously in this same task — the platform's own
-          // `negotiationneeded` batching (see `packages/rtc-core/src/peer.ts`) coalesces them into
-          // one renegotiation cycle for this share-start, not two.
-          transport.publishTrack(audioTrack);
-          // T6: system audio can independently stop supplying data (source app closed, platform
-          // revoked it) while video keeps sharing — must not end the whole share, only mark audio
-          // unavailable. `screenRef.current !== screen` means the video 'ended' handler above (or
-          // `disableScreenShare()`) already handled full cleanup for this instance.
-          audioTrack.addEventListener('ended', () => {
-            if (screenRef.current !== screen) return;
-            transport.unpublishTrack(audioTrack);
-            setState((prev) => ({ ...prev, screenShareAudioActive: false }));
-          });
+          // T12 — application audio is acquired *after* video is already publishing, mirroring system
+          // audio's own "video always publishes; audio is optional/best-effort" contract exactly:
+          // acquisition/publication failure here degrades to video-only (surfaced via
+          // `screenShareError`), never fails the whole share.
+          if (audioMode.type === 'process') {
+            const pid = audioMode.pid;
+            void (async () => {
+              try {
+                const { processAudioTrack, sessionId } = await acquireProcessAudioTrack(pid);
+                if (
+                  screenRef.current !== screen ||
+                  transportRef.current !== transport ||
+                  screenGenerationRef.current !== generation
+                ) {
+                  // Stale by the time the capture actually started (the share was stopped, or a newer
+                  // share superseded this one, while the port/format round-trip was pending) — release
+                  // immediately instead of leaking the native capture or publishing an orphaned track.
+                  processAudioTrack.stop();
+                  window.desktopApp.stopProcessAudioCapture().catch(() => {
+                    // Best-effort — Main's own session bookkeeping is idempotent either way.
+                  });
+                  return;
+                }
+
+                processAudioTrackRef.current = processAudioTrack;
+                processAudioSessionIdRef.current = sessionId;
+                transport.publishTrack(processAudioTrack.track);
+                setState((prev) => ({ ...prev, screenShareAudioActive: true }));
+              } catch (error) {
+                console.error('voice: process-audio capture failed', error);
+                setState((prev) => ({
+                  ...prev,
+                  screenShareError: 'Could not capture application audio; sharing video only.',
+                }));
+              }
+            })();
+          }
+        } catch (error) {
+          const message =
+            error instanceof ScreenAccessError ? error.message : 'Screen share failed';
+          console.error('voice: screen share acquisition failed', message, error);
+          setState((prev) => ({ ...prev, screenShareError: message, screenSharingState: 'error' }));
+        } finally {
+          screenAcquiringRef.current = false;
         }
-
-        setState((prev) => ({
-          ...prev,
-          screenSharingState: 'sharing',
-          localScreenStream: screen.stream,
-          screenShareAudioActive: audioActive,
-        }));
-      } catch (error) {
-        const message = error instanceof ScreenAccessError ? error.message : 'Screen share failed';
-        console.error('voice: screen share acquisition failed', message, error);
-        setState((prev) => ({ ...prev, screenShareError: message, screenSharingState: 'error' }));
-      } finally {
-        screenAcquiringRef.current = false;
-      }
-    })();
-  }, []);
+      })();
+    },
+    [releaseProcessAudioTrack],
+  );
 
   const disableScreenShare = useCallback(() => {
     screenGenerationRef.current += 1;
@@ -1614,13 +1751,14 @@ export function useVoiceChannel(
     screenRef.current = undefined;
     if (transport && screen) releasePublishedScreen(transport, screen);
     else screen?.stop();
+    releaseProcessAudioTrack();
     setState((prev) => ({
       ...prev,
       screenSharingState: 'idle',
       localScreenStream: undefined,
       screenShareAudioActive: false,
     }));
-  }, []);
+  }, [releaseProcessAudioTrack]);
 
   // --- T9 server-local authorization actions --------------------------------------------------
   // Each is a thin pass-through to the current client — the server is the sole authority on

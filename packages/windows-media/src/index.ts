@@ -1,2 +1,38 @@
-/** T0 marker only. Windows capture behavior begins in T6 and T9. */
-export const windowsMediaStatus = 'not-implemented' as const;
+export {
+  MINIMUM_PROCESS_LOOPBACK_BUILD,
+  detectProcessAudioCapability,
+  type ProcessAudioCapabilityResult,
+} from './capability.js';
+export {
+  PROTOCOL_VERSION,
+  MAX_FRAME_PAYLOAD_BYTES,
+  MessageType,
+  ProcessAudioErrorCode,
+  ProtocolError,
+  TOKEN_LENGTH_BYTES,
+  FrameDecoder,
+  encodeHello,
+  encodeReady,
+  encodeEnumerateRequest,
+  encodeEnumerateResponse,
+  encodeStart,
+  encodeFormat,
+  encodeAudioFrame,
+  encodeTargetEnded,
+  encodeError,
+  encodeStop,
+  encodeStopped,
+  type HelloPayload,
+  type ReadyPayload,
+  type ProcessCandidate,
+  type EnumerateResponsePayload,
+  type StartPayload,
+  type FormatPayload,
+  type AudioFramePayload,
+  type ErrorPayload,
+  type DecodedMessage,
+} from './protocol.js';
+export {
+  ProcessLoopbackSupervisor,
+  type ProcessLoopbackSupervisorOptions,
+} from './process-loopback-supervisor.js';

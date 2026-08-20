@@ -20,6 +20,17 @@ const listScreenShareSourcesMock = vi.fn(async () => [
 ]);
 const selectScreenShareSourceMock = vi.fn((sourceId: string) => sourceId === 'screen:0:0');
 
+const getProcessAudioCapabilityMock = vi.fn(() => ({ supported: true }) as const);
+const listProcessAudioCandidatesMock = vi.fn(async () => ({
+  supported: true as const,
+  candidates: [{ pid: 4242, exeName: 'Game.exe', displayTitle: 'Game' }],
+}));
+const cancelProcessAudioEnumerationMock = vi.fn();
+const startProcessAudioCaptureMock = vi.fn(async (pid: number) =>
+  pid === 4242 ? { accepted: true as const, sessionId: 1 } : { accepted: false as const },
+);
+const stopProcessAudioCaptureMock = vi.fn();
+
 const getPublicIdentityMock = vi.fn(async () => ({
   identityId: `dv1_${'A'.repeat(43)}`,
   publicKey: 'B'.repeat(43),
@@ -60,6 +71,14 @@ vi.mock('electron', () => ({
 vi.mock('../../apps/desktop/src/main/screen-share.js', () => ({
   listScreenShareSources: listScreenShareSourcesMock,
   selectScreenShareSource: selectScreenShareSourceMock,
+}));
+
+vi.mock('../../apps/desktop/src/main/process-audio.js', () => ({
+  getProcessAudioCapability: getProcessAudioCapabilityMock,
+  listProcessAudioCandidates: listProcessAudioCandidatesMock,
+  cancelProcessAudioEnumeration: cancelProcessAudioEnumerationMock,
+  startProcessAudioCapture: startProcessAudioCaptureMock,
+  stopProcessAudioCapture: stopProcessAudioCaptureMock,
 }));
 
 vi.mock('../../apps/desktop/src/main/identity/identity-service.js', () => ({
@@ -159,12 +178,14 @@ describe('registerIpcHandlers', () => {
     expect(() =>
       registerIpcHandlers(fakeMainWebContents(2), allowedOrigins, realtimeConfig),
     ).not.toThrow();
-    // Sixteen channels (getVersionInfo, getRealtimeConfig, getE2EVoiceConfig,
+    // Twenty-one channels (getVersionInfo, getRealtimeConfig, getE2EVoiceConfig,
     // getE2ESettingsPersistenceConfig, listScreenShareSources, selectScreenShareSource,
-    // getIdentity, signIdentityChallenge, regenerateIdentity, getNickname, setNickname,
-    // getClientSettings, updateClientSettings, addBookmark, updateBookmark, removeBookmark) are
-    // each registered exactly once, ever — not once per `registerIpcHandlers` call.
-    expect(ipcHandleSpy).toHaveBeenCalledTimes(16);
+    // getProcessAudioCapability, listProcessAudioCandidates, cancelProcessAudioEnumeration,
+    // startProcessAudioCapture, stopProcessAudioCapture, getIdentity, signIdentityChallenge,
+    // regenerateIdentity, getNickname, setNickname, getClientSettings, updateClientSettings,
+    // addBookmark, updateBookmark, removeBookmark) are each registered exactly once, ever — not
+    // once per `registerIpcHandlers` call.
+    expect(ipcHandleSpy).toHaveBeenCalledTimes(21);
 
     const handler = handlers.get(IPC_CHANNELS.getVersionInfo);
     expect(() => handler?.(fakeEvent(1, 'app://renderer/index.html'))).toThrow(/untrusted sender/);
@@ -329,6 +350,94 @@ describe('registerIpcHandlers', () => {
     const result = await handler?.(fakeEvent(1, 'app://renderer/index.html'), 'screen:0:0', 'yes');
     expect(result).toBe(false);
     expect(selectScreenShareSourceMock).not.toHaveBeenCalled();
+  });
+
+  it('returns process-audio capability for a trusted sender', async () => {
+    registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig);
+
+    const handler = handlers.get(IPC_CHANNELS.getProcessAudioCapability);
+    expect(handler).toBeTypeOf('function');
+    const result = await handler?.(fakeEvent(1, 'app://renderer/index.html'));
+    expect(result).toEqual({ supported: true });
+  });
+
+  it('rejects getProcessAudioCapability from an untrusted sender', () => {
+    registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig);
+
+    const handler = handlers.get(IPC_CHANNELS.getProcessAudioCapability);
+    expect(() => handler?.(fakeEvent(99, 'https://evil.example/'))).toThrow(/untrusted sender/);
+  });
+
+  it('lists process-audio candidates for a trusted sender', async () => {
+    registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig);
+
+    const handler = handlers.get(IPC_CHANNELS.listProcessAudioCandidates);
+    const result = await handler?.(fakeEvent(1, 'app://renderer/index.html'));
+    expect(result).toEqual({
+      supported: true,
+      candidates: [{ pid: 4242, exeName: 'Game.exe', displayTitle: 'Game' }],
+    });
+  });
+
+  it('rejects listProcessAudioCandidates from an untrusted sender', async () => {
+    registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig);
+
+    const handler = handlers.get(IPC_CHANNELS.listProcessAudioCandidates);
+    await expect(handler?.(fakeEvent(99, 'https://evil.example/'))).rejects.toThrow(
+      /untrusted sender/,
+    );
+  });
+
+  it('cancels process-audio enumeration for a trusted sender', () => {
+    registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig);
+    cancelProcessAudioEnumerationMock.mockClear();
+
+    const handler = handlers.get(IPC_CHANNELS.cancelProcessAudioEnumeration);
+    handler?.(fakeEvent(1, 'app://renderer/index.html'));
+    expect(cancelProcessAudioEnumerationMock).toHaveBeenCalledOnce();
+  });
+
+  it('starts process-audio capture for a trusted sender with a valid pid', async () => {
+    registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig);
+
+    const handler = handlers.get(IPC_CHANNELS.startProcessAudioCapture);
+    const result = await handler?.(fakeEvent(1, 'app://renderer/index.html'), 4242);
+    expect(result).toEqual({ accepted: true, sessionId: 1 });
+    expect(startProcessAudioCaptureMock).toHaveBeenCalledWith(4242, expect.anything());
+  });
+
+  it('rejects startProcessAudioCapture from an untrusted sender without calling into process-audio.ts', async () => {
+    registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig);
+    startProcessAudioCaptureMock.mockClear();
+
+    // `async`, like `listScreenShareSources`/`getIdentity` above — a throw inside surfaces as a
+    // rejected promise, never a synchronous throw.
+    const handler = handlers.get(IPC_CHANNELS.startProcessAudioCapture);
+    await expect(handler?.(fakeEvent(99, 'https://evil.example/'), 4242)).rejects.toThrow(
+      /untrusted sender/,
+    );
+    expect(startProcessAudioCaptureMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a non-integer/negative/oversized pid without calling into process-audio.ts', async () => {
+    registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig);
+    startProcessAudioCaptureMock.mockClear();
+
+    const handler = handlers.get(IPC_CHANNELS.startProcessAudioCapture);
+    for (const badPid of [-1, 0, 1.5, 'evil', Number.MAX_SAFE_INTEGER]) {
+      const result = await handler?.(fakeEvent(1, 'app://renderer/index.html'), badPid);
+      expect(result).toEqual({ accepted: false });
+    }
+    expect(startProcessAudioCaptureMock).not.toHaveBeenCalled();
+  });
+
+  it('stops process-audio capture for a trusted sender', () => {
+    registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig);
+    stopProcessAudioCaptureMock.mockClear();
+
+    const handler = handlers.get(IPC_CHANNELS.stopProcessAudioCapture);
+    handler?.(fakeEvent(1, 'app://renderer/index.html'));
+    expect(stopProcessAudioCaptureMock).toHaveBeenCalledOnce();
   });
 
   it('returns the public identity for a trusted sender', async () => {

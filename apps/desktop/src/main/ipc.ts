@@ -17,6 +17,9 @@ import {
   type DesktopE2EVoiceConfig,
   type DesktopIdentity,
   type DesktopIdentityChallenge,
+  type DesktopProcessAudioCandidatesResult,
+  type DesktopProcessAudioCapabilityResult,
+  type DesktopProcessAudioStartResult,
   type DesktopRealtimeConfig,
   type DesktopScreenSource,
   type DesktopServerBookmark,
@@ -29,6 +32,13 @@ import {
 } from './identity/identity-service.js';
 import { getNickname, setNickname } from './identity/nickname-store.js';
 import { isAllowedOrigin } from './origins.js';
+import {
+  cancelProcessAudioEnumeration,
+  getProcessAudioCapability,
+  listProcessAudioCandidates,
+  startProcessAudioCapture,
+  stopProcessAudioCapture,
+} from './process-audio.js';
 import { listScreenShareSources, selectScreenShareSource } from './screen-share.js';
 import {
   addBookmark,
@@ -55,6 +65,11 @@ const identityChallengeSchema = z
  * `DesktopCapturerSource` ids are short (`window:1234:0`/`screen:0:0`-shaped); this is generous
  * headroom, not a real expected length, purely to reject an absurd payload cheaply. */
 const MAX_SCREEN_SOURCE_ID_LENGTH = 256;
+
+/** T12 — Windows `PROCESSENTRY32`'s own `th32ProcessID` is a `DWORD`; this is generous headroom
+ * above any real PID, purely to reject an absurd payload cheaply before it ever reaches
+ * `startProcessAudioCapture`'s own last-enumerated-set validation. */
+const MAX_PROCESS_AUDIO_PID = 4_294_967_295;
 
 // T11 — mirrors `settings/settings-file.ts`'s own bounds exactly (see that file's doc comment for
 // why), so a patch Main is willing to accept is always one `settings-file.ts`'s own schema would
@@ -218,6 +233,51 @@ export function registerIpcHandlers(
       return selectScreenShareSource(sourceId, shareAudio);
     },
   );
+
+  // --- T12 — Windows per-process/game audio capture ------------------------------------------
+
+  ipcMain.handle(
+    IPC_CHANNELS.getProcessAudioCapability,
+    (event: IpcMainInvokeEvent): DesktopProcessAudioCapabilityResult => {
+      assertTrustedSender(event, IPC_CHANNELS.getProcessAudioCapability);
+      return getProcessAudioCapability();
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.listProcessAudioCandidates,
+    async (event: IpcMainInvokeEvent): Promise<DesktopProcessAudioCandidatesResult> => {
+      assertTrustedSender(event, IPC_CHANNELS.listProcessAudioCandidates);
+      return listProcessAudioCandidates();
+    },
+  );
+
+  ipcMain.handle(IPC_CHANNELS.cancelProcessAudioEnumeration, (event: IpcMainInvokeEvent): void => {
+    assertTrustedSender(event, IPC_CHANNELS.cancelProcessAudioEnumeration);
+    cancelProcessAudioEnumeration();
+  });
+
+  ipcMain.handle(
+    IPC_CHANNELS.startProcessAudioCapture,
+    async (event: IpcMainInvokeEvent, pid: unknown): Promise<DesktopProcessAudioStartResult> => {
+      assertTrustedSender(event, IPC_CHANNELS.startProcessAudioCapture);
+      if (
+        typeof pid !== 'number' ||
+        !Number.isInteger(pid) ||
+        pid <= 0 ||
+        pid > MAX_PROCESS_AUDIO_PID
+      ) {
+        return { accepted: false };
+      }
+      if (!currentMainWebContents) return { accepted: false };
+      return startProcessAudioCapture(pid, currentMainWebContents);
+    },
+  );
+
+  ipcMain.handle(IPC_CHANNELS.stopProcessAudioCapture, (event: IpcMainInvokeEvent): void => {
+    assertTrustedSender(event, IPC_CHANNELS.stopProcessAudioCapture);
+    stopProcessAudioCapture();
+  });
 
   ipcMain.handle(
     IPC_CHANNELS.getIdentity,

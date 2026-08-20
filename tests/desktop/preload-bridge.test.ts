@@ -4,8 +4,16 @@ const exposed = new Map<string, unknown>();
 const invoke = vi.fn(async (channel: string) => {
   if (channel === 'app:list-screen-share-sources') return [];
   if (channel === 'app:select-screen-share-source') return true;
+  if (channel === 'app:get-process-audio-capability')
+    return { supported: false, reason: 'not-windows' };
+  if (channel === 'app:list-process-audio-candidates') {
+    return { supported: false, reason: 'not-windows' };
+  }
+  if (channel === 'app:start-process-audio-capture') return { accepted: false };
   return { appVersion: '0.0.0', electronVersion: '43.4.0' };
 });
+const on = vi.fn();
+const removeListener = vi.fn();
 
 vi.mock('electron', () => ({
   contextBridge: {
@@ -13,7 +21,7 @@ vi.mock('electron', () => ({
       exposed.set(key, api);
     },
   },
-  ipcRenderer: { invoke },
+  ipcRenderer: { invoke, on, removeListener },
 }));
 
 await import('../../apps/desktop/src/preload/index.js');
@@ -29,19 +37,25 @@ describe('preload bridge', () => {
 
     expect(Object.keys(api).sort()).toEqual([
       'addBookmark',
+      'cancelProcessAudioEnumeration',
       'getClientSettings',
       'getE2ESettingsPersistenceConfig',
       'getE2EVoiceConfig',
       'getIdentity',
       'getNickname',
+      'getProcessAudioCapability',
       'getRealtimeConfig',
       'getVersionInfo',
+      'listProcessAudioCandidates',
       'listScreenShareSources',
+      'onProcessAudioEnded',
       'regenerateIdentity',
       'removeBookmark',
       'selectScreenShareSource',
       'setNickname',
       'signIdentityChallenge',
+      'startProcessAudioCapture',
+      'stopProcessAudioCapture',
       'updateBookmark',
       'updateClientSettings',
     ]);
@@ -93,5 +107,48 @@ describe('preload bridge', () => {
 
     expect(invoke).toHaveBeenCalledWith(IPC_CHANNELS.selectScreenShareSource, 'screen:0:0', true);
     expect(result).toBe(true);
+  });
+
+  it('getProcessAudioCapability invokes the explicit versioned channel with no arguments', async () => {
+    const api = exposed.get('desktopApp') as { getProcessAudioCapability: () => Promise<unknown> };
+
+    const result = await api.getProcessAudioCapability();
+
+    expect(invoke).toHaveBeenCalledWith(IPC_CHANNELS.getProcessAudioCapability);
+    expect(result).toEqual({ supported: false, reason: 'not-windows' });
+  });
+
+  it('startProcessAudioCapture forwards exactly the caller-supplied pid', async () => {
+    const api = exposed.get('desktopApp') as {
+      startProcessAudioCapture: (pid: number) => Promise<unknown>;
+    };
+
+    await api.startProcessAudioCapture(4242);
+
+    expect(invoke).toHaveBeenCalledWith(IPC_CHANNELS.startProcessAudioCapture, 4242);
+  });
+
+  it('onProcessAudioEnded subscribes/unsubscribes via ipcRenderer.on without exposing ipcRenderer', () => {
+    const api = exposed.get('desktopApp') as {
+      onProcessAudioEnded: (listener: (info: unknown) => void) => () => void;
+    };
+    const listener = vi.fn();
+
+    const unsubscribe = api.onProcessAudioEnded(listener);
+    expect(on).toHaveBeenCalledWith(IPC_CHANNELS.processAudioEnded, expect.any(Function));
+
+    // Simulate Main pushing a well-formed notification through the registered listener.
+    const wrapped = on.mock.calls.find(
+      (call) => call[0] === IPC_CHANNELS.processAudioEnded,
+    )?.[1] as (event: unknown, info: unknown) => void;
+    wrapped({}, { sessionId: 1, reason: 'target-ended' });
+    expect(listener).toHaveBeenCalledWith({ sessionId: 1, reason: 'target-ended' });
+
+    // A malformed payload is dropped defensively, never forwarded to the caller's listener.
+    wrapped({}, { nonsense: true });
+    expect(listener).toHaveBeenCalledTimes(1);
+
+    unsubscribe();
+    expect(removeListener).toHaveBeenCalledWith(IPC_CHANNELS.processAudioEnded, wrapped);
   });
 });

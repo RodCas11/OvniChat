@@ -9,6 +9,14 @@ node_modules/
 **/out/
 *.tsbuildinfo
 
+# Native helper build output (packages/windows-media/native/*/build/) - never a committed binary; see
+# packages/windows-media/native/process-loopback-helper/build.ps1 for the reproducible build step.
+packages/windows-media/native/**/build/
+*.obj
+*.pdb
+*.ilk
+*.exp
+
 # Dedicated Server runtime data (default data directory, real SQLite files — see
 # services/dedicated-server/src/config.ts's DEFAULT_DATA_DIR)
 disco-voador-server-data/

@@ -41,6 +41,7 @@
     "@disco-voador/media-core": "workspace:*",
     "@disco-voador/protocol": "workspace:*",
     "@disco-voador/rtc-core": "workspace:*",
+    "@disco-voador/windows-media": "workspace:*",
     "react": "19.2.8",
     "react-dom": "19.2.8"
   }

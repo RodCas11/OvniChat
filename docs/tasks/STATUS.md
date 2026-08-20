@@ -1,24 +1,24 @@
 # Task status
 
-| Task                               | Status      | Outcome                                                            |
-| ---------------------------------- | ----------- | ------------------------------------------------------------------ |
-| [T0](T0_REPOSITORY_HARNESS.md)     | COMPLETE    | Repository and Claude development harness                          |
-| [T1](T1_ELECTRON_SHELL.md)         | COMPLETE    | Electron desktop shell and application foundation                  |
-| [T2](T2_REALTIME_PROTOCOL.md)      | COMPLETE    | Shared realtime protocol and realtime service foundation           |
-| [T3](T3_VOICE_WEBRTC.md)           | COMPLETE    | Voice channels and microphone WebRTC vertical slice                |
-| [T4](T4_CAMERA_STREAMING.md)       | COMPLETE    | Camera streaming over existing WebRTC voice sessions               |
-| [T5](T5_SCREEN_SHARE.md)           | COMPLETE    | Screen/window streaming over existing WebRTC voice sessions        |
-| [T6](T6_SCREEN_AUDIO.md)           | COMPLETE    | Windows system audio for screen sharing                            |
-| [T7](T7_LOCAL_IDENTITY.md)         | COMPLETE    | Local cryptographic client identity                                |
-| [T8](T8_DEDICATED_SERVER.md)       | COMPLETE    | Dedicated server product boundary                                  |
-| [T9](T9_SERVER_AUTHORIZATION.md)   | COMPLETE    | Server-local groups, permissions, invite/privilege tokens, bans    |
-| [T10](T10_PERSISTENT_TEXT_CHAT.md) | COMPLETE    | Persistent server-side text chat (server + per-channel)            |
-| [T11](T11_DAILY_USE_UX.md)         | COMPLETE    | Devices, bookmarks, reconnect, and product UX                      |
-| T12                                | NOT STARTED | Windows per-process/game audio                                     |
-| T13                                | NOT STARTED | Self-hosting production package (TURN, TLS, Docker, configuration) |
-| T14                                | NOT STARTED | Windows client installer and dedicated-server releases             |
-| T15                                | NOT STARTED | UX polish / private beta                                           |
-| T16                                | NOT STARTED | SFU evaluation/migration, only if measured scale requires it       |
+| Task                                | Status      | Outcome                                                            |
+| ----------------------------------- | ----------- | ------------------------------------------------------------------ |
+| [T0](T0_REPOSITORY_HARNESS.md)      | COMPLETE    | Repository and Claude development harness                          |
+| [T1](T1_ELECTRON_SHELL.md)          | COMPLETE    | Electron desktop shell and application foundation                  |
+| [T2](T2_REALTIME_PROTOCOL.md)       | COMPLETE    | Shared realtime protocol and realtime service foundation           |
+| [T3](T3_VOICE_WEBRTC.md)            | COMPLETE    | Voice channels and microphone WebRTC vertical slice                |
+| [T4](T4_CAMERA_STREAMING.md)        | COMPLETE    | Camera streaming over existing WebRTC voice sessions               |
+| [T5](T5_SCREEN_SHARE.md)            | COMPLETE    | Screen/window streaming over existing WebRTC voice sessions        |
+| [T6](T6_SCREEN_AUDIO.md)            | COMPLETE    | Windows system audio for screen sharing                            |
+| [T7](T7_LOCAL_IDENTITY.md)          | COMPLETE    | Local cryptographic client identity                                |
+| [T8](T8_DEDICATED_SERVER.md)        | COMPLETE    | Dedicated server product boundary                                  |
+| [T9](T9_SERVER_AUTHORIZATION.md)    | COMPLETE    | Server-local groups, permissions, invite/privilege tokens, bans    |
+| [T10](T10_PERSISTENT_TEXT_CHAT.md)  | COMPLETE    | Persistent server-side text chat (server + per-channel)            |
+| [T11](T11_DAILY_USE_UX.md)          | COMPLETE    | Devices, bookmarks, reconnect, and product UX                      |
+| [T12](T12_WINDOWS_PROCESS_AUDIO.md) | IN PROGRESS | Windows per-process/game audio                                     |
+| T13                                 | NOT STARTED | Self-hosting production package (TURN, TLS, Docker, configuration) |
+| T14                                 | NOT STARTED | Windows client installer and dedicated-server releases             |
+| T15                                 | NOT STARTED | UX polish / private beta                                           |
+| T16                                 | NOT STARTED | SFU evaluation/migration, only if measured scale requires it       |
 
 Statuses are `NOT STARTED`, `IN PROGRESS`, `BLOCKED`, or `COMPLETE`. A status summarizes evidence;
 it is not a substitute for the task handoff.
