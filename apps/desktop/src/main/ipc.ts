@@ -10,11 +10,16 @@ import { z } from 'zod';
 
 import {
   IPC_CHANNELS,
+  type DesktopBookmarkInput,
+  type DesktopClientSettings,
+  type DesktopClientSettingsPatch,
+  type DesktopE2ESettingsPersistenceConfig,
   type DesktopE2EVoiceConfig,
   type DesktopIdentity,
   type DesktopIdentityChallenge,
   type DesktopRealtimeConfig,
   type DesktopScreenSource,
+  type DesktopServerBookmark,
   type DesktopVersionInfo,
 } from '../shared/ipc-contract.js';
 import {
@@ -25,6 +30,13 @@ import {
 import { getNickname, setNickname } from './identity/nickname-store.js';
 import { isAllowedOrigin } from './origins.js';
 import { listScreenShareSources, selectScreenShareSource } from './screen-share.js';
+import {
+  addBookmark,
+  getClientSettings,
+  removeBookmark,
+  updateBookmark,
+  updateClientSettings,
+} from './settings/settings-service.js';
 
 /** Mirrors the wire protocol's own bounds for each field exactly (see `@disco-voador/protocol`'s
  * `identity.ts`), so a challenge Main is willing to sign is always one the realtime server would
@@ -43,6 +55,55 @@ const identityChallengeSchema = z
  * `DesktopCapturerSource` ids are short (`window:1234:0`/`screen:0:0`-shaped); this is generous
  * headroom, not a real expected length, purely to reject an absurd payload cheaply. */
 const MAX_SCREEN_SOURCE_ID_LENGTH = 256;
+
+// T11 — mirrors `settings/settings-file.ts`'s own bounds exactly (see that file's doc comment for
+// why), so a patch Main is willing to accept is always one `settings-file.ts`'s own schema would
+// also accept — the same "never looser than the storage layer" discipline `identityChallengeSchema`
+// above already establishes for the wire protocol.
+const MAX_BOOKMARK_NAME_LENGTH = 100;
+const MAX_SERVER_ADDRESS_LENGTH = 300;
+const MAX_BOOKMARK_ID_LENGTH = 64;
+const MAX_DEVICE_ID_LENGTH = 256;
+
+const deviceIdPatchSchema = z.string().min(1).max(MAX_DEVICE_ID_LENGTH).nullable();
+
+const clientSettingsPatchSchema = z
+  .object({
+    audio: z
+      .object({ inputDeviceId: deviceIdPatchSchema, outputDeviceId: deviceIdPatchSchema })
+      .strict()
+      .partial()
+      .optional(),
+    video: z.object({ cameraDeviceId: deviceIdPatchSchema }).strict().partial().optional(),
+    screenShare: z
+      .object({ qualityPreset: z.enum(['standard', 'high', 'smooth', 'smooth720']) })
+      .strict()
+      .partial()
+      .optional(),
+    voice: z
+      .object({ startMuted: z.boolean(), startDeafened: z.boolean() })
+      .strict()
+      .partial()
+      .optional(),
+    lastServerAddress: z.string().min(1).max(MAX_SERVER_ADDRESS_LENGTH).nullable().optional(),
+    connectOnStartup: z.boolean().optional(),
+  })
+  .strict();
+
+const bookmarkInputSchema = z
+  .object({
+    displayName: z.string().min(1).max(MAX_BOOKMARK_NAME_LENGTH),
+    serverAddress: z.string().min(1).max(MAX_SERVER_ADDRESS_LENGTH),
+  })
+  .strict();
+
+const bookmarkSchema = z
+  .object({
+    bookmarkId: z.string().min(1).max(MAX_BOOKMARK_ID_LENGTH),
+    displayName: z.string().min(1).max(MAX_BOOKMARK_NAME_LENGTH),
+    serverAddress: z.string().min(1).max(MAX_SERVER_ADDRESS_LENGTH),
+  })
+  .strict();
 
 /**
  * A sender is trusted only if the invoking WebContents is the one main-process window we created
@@ -63,6 +124,7 @@ let currentMainWebContents: WebContents | undefined;
 let currentAllowedOrigins: readonly string[] = [];
 let currentRealtimeConfig: DesktopRealtimeConfig = { url: '', iceServers: [] };
 let currentE2EVoiceConfig: DesktopE2EVoiceConfig | undefined;
+let currentE2ESettingsPersistenceConfig: DesktopE2ESettingsPersistenceConfig | undefined;
 let handlersRegistered = false;
 
 function assertTrustedSender(event: IpcMainInvokeEvent, channel: string): void {
@@ -87,11 +149,13 @@ export function registerIpcHandlers(
   allowedOrigins: readonly string[],
   realtimeConfig: DesktopRealtimeConfig,
   e2eVoiceConfig: DesktopE2EVoiceConfig | undefined = undefined,
+  e2eSettingsPersistenceConfig: DesktopE2ESettingsPersistenceConfig | undefined = undefined,
 ): void {
   currentMainWebContents = mainWebContents;
   currentAllowedOrigins = allowedOrigins;
   currentRealtimeConfig = realtimeConfig;
   currentE2EVoiceConfig = e2eVoiceConfig;
+  currentE2ESettingsPersistenceConfig = e2eSettingsPersistenceConfig;
 
   if (handlersRegistered) return;
   handlersRegistered = true;
@@ -117,6 +181,14 @@ export function registerIpcHandlers(
     (event: IpcMainInvokeEvent): DesktopE2EVoiceConfig | undefined => {
       assertTrustedSender(event, IPC_CHANNELS.getE2EVoiceConfig);
       return currentE2EVoiceConfig;
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.getE2ESettingsPersistenceConfig,
+    (event: IpcMainInvokeEvent): DesktopE2ESettingsPersistenceConfig | undefined => {
+      assertTrustedSender(event, IPC_CHANNELS.getE2ESettingsPersistenceConfig);
+      return currentE2ESettingsPersistenceConfig;
     },
   );
 
@@ -186,6 +258,53 @@ export function registerIpcHandlers(
       assertTrustedSender(event, IPC_CHANNELS.setNickname);
       if (typeof nickname !== 'string') return false;
       return setNickname(nickname);
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.getClientSettings,
+    async (event: IpcMainInvokeEvent): Promise<DesktopClientSettings> => {
+      assertTrustedSender(event, IPC_CHANNELS.getClientSettings);
+      return getClientSettings();
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.updateClientSettings,
+    async (event: IpcMainInvokeEvent, patch: unknown): Promise<DesktopClientSettings> => {
+      assertTrustedSender(event, IPC_CHANNELS.updateClientSettings);
+      const parsed = clientSettingsPatchSchema.safeParse(patch);
+      if (!parsed.success) throw new Error('Invalid client settings patch');
+      return updateClientSettings(parsed.data satisfies DesktopClientSettingsPatch);
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.addBookmark,
+    async (event: IpcMainInvokeEvent, input: unknown): Promise<DesktopServerBookmark> => {
+      assertTrustedSender(event, IPC_CHANNELS.addBookmark);
+      const parsed = bookmarkInputSchema.safeParse(input);
+      if (!parsed.success) throw new Error('Invalid bookmark');
+      return addBookmark(parsed.data satisfies DesktopBookmarkInput);
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.updateBookmark,
+    async (event: IpcMainInvokeEvent, bookmark: unknown): Promise<boolean> => {
+      assertTrustedSender(event, IPC_CHANNELS.updateBookmark);
+      const parsed = bookmarkSchema.safeParse(bookmark);
+      if (!parsed.success) return false;
+      return updateBookmark(parsed.data satisfies DesktopServerBookmark);
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.removeBookmark,
+    async (event: IpcMainInvokeEvent, bookmarkId: unknown): Promise<boolean> => {
+      assertTrustedSender(event, IPC_CHANNELS.removeBookmark);
+      if (typeof bookmarkId !== 'string') return false;
+      return removeBookmark(bookmarkId);
     },
   );
 }

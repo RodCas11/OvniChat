@@ -43,9 +43,11 @@ microphone stays owned entirely by `microphone.ts`. Constraints (`width`/`height
 default 1280×720@30) are all `ideal`, matching microphone's rationale: a device that can't honor one
 just captures without it. `deviceId` is accepted but never hardcoded — no picker UI exists in T4,
 but the capture layer doesn't preclude adding one later. `OverconstrainedError` triggers one
-fallback retry, deliberately **preserving** `deviceId` (unlike microphone's fallback, which drops
-everything) — `deviceId` identifies _which_ device, not a quality trade-off, so dropping it could
-silently capture from the wrong camera.
+fallback retry, deliberately **preserving** `deviceId` — it identifies _which_ device, not a quality
+trade-off, so dropping it could silently capture from the wrong camera. (T11 gave `microphone.ts` a
+`deviceId` field too, for mid-session device switching, and preserves it across its own fallback for
+the identical reason — see `docs/architecture/WEBRTC_VOICE.md`'s "Microphone lifecycle" and
+`packages/media-core/src/microphone.ts`'s `acquireMicrophone` doc comment.)
 
 **Camera OFF always fully stops the device** (`Camera.stop()` — `track.readyState` becomes
 `'ended'`), unlike microphone mute (`track.enabled = false`, device stays captured). There is no
@@ -204,9 +206,13 @@ seconds later. Each instance must prove, not merely assert:
   offer synthesis is still pending") are described in
   [`WEBRTC_SCREEN_SHARE.md`](WEBRTC_SCREEN_SHARE.md).
 - No device-picker UI (architecture supports a `deviceId` constraint; T4 doesn't build the picker).
-- No `RTCRtpSender.replaceTrack`-based device switching without renegotiation — T4's on/off model
-  (stop + fresh `acquireCamera()`) always renegotiates; a future device-switch feature could add
-  `replaceTrack` without a transport redesign.
+- **`RTCRtpSender.replaceTrack`-based device switching without renegotiation — the `rtc-core`
+  primitive was added in T11** (`MediaTransport.replaceTrack`/`Peer.replaceTrack`/
+  `P2PMeshTransport.replaceTrack`; see `docs/architecture/WEBRTC_VOICE.md`'s "Microphone lifecycle"
+  and `packages/rtc-core/src/types.ts`'s `MediaTransport.replaceTrack` doc comment). T4's own on/off
+  model (stop + fresh `acquireCamera()`) still always renegotiates and is unchanged by this — camera
+  device-switch UI/hook wiring on top of the new primitive is separate T11 work, tracked outside
+  `rtc-core`/`media-core`.
 - No TURN credential minting (same T3 gap, unaffected by camera).
 - No speaking indicators, camera quality/bitrate controls, or diagnostics dashboard — explicitly out
   of T4's scope.

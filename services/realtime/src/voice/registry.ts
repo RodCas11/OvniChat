@@ -1,16 +1,17 @@
 import { randomUUID } from 'node:crypto';
 
-import {
-  MAX_CHANNEL_PARTICIPANTS,
-  type VoiceChannelSummary,
-  type VoiceParticipant,
-} from '@disco-voador/protocol';
+import { MAX_CHANNEL_PARTICIPANTS, type VoiceChannelSummary } from '@disco-voador/protocol';
 
 export interface VoiceParticipantRecord {
   readonly connectionId: string;
   readonly participantId: string;
   readonly channelId: string;
   readonly displayName: string;
+  /** T9 — the server-verified identity behind this participant, never exposed on the wire directly
+   * (see `packages/protocol`'s `voiceParticipantSchema`, which carries only `participantId`/
+   * `displayName`/`groups`). Used server-side only, to resolve moderation targets
+   * (`findByParticipantId`) and to look up authorization badges/permissions. */
+  readonly identityId: string;
 }
 
 export interface LeaveOutcome {
@@ -26,8 +27,11 @@ export type JoinOutcome =
       readonly channelId: string;
       readonly participantId: string;
       readonly displayName: string;
-      /** Members already in the channel before this join — for the joiner's snapshot. */
-      readonly existingParticipants: readonly VoiceParticipant[];
+      /** Members already in the channel before this join — for the joiner's snapshot. Full
+       * server-side records (T9: including `identityId`), not yet the wire `VoiceParticipant`
+       * shape — `protocol-handlers.ts` maps each one to the wire shape itself, attaching
+       * authorization badges via the injected `AuthorizationPort`. */
+      readonly existingParticipants: readonly VoiceParticipantRecord[];
       /** Connection ids of those same existing members — who to notify of the newcomer. */
       readonly existingMemberConnectionIds: readonly string[];
       /** Set only if this connection was already in a different channel, which it just left. */
@@ -77,6 +81,40 @@ export class VoiceRegistry {
     return this.participantsByConnection.get(connectionId);
   }
 
+  /** T9 — resolves an admin-supplied `targetParticipantId` (moderation actions never accept a
+   * client-supplied `identityId`/`connectionId` directly, see
+   * `docs/architecture/SERVER_AUTHORIZATION.md`). Only ever finds a participant currently in *some*
+   * voice channel — moderation targets an online participant, matching this app's only current
+   * presence surface. */
+  findByParticipantId(participantId: string): VoiceParticipantRecord | undefined {
+    for (const record of this.participantsByConnection.values()) {
+      if (record.participantId === participantId) return record;
+    }
+    return undefined;
+  }
+
+  /** T10 — connection ids of every current member of `channelId`, for broadcasting a channel-scoped
+   * chat message to exactly the connections currently subscribed to it by being in that voice
+   * channel (T10 Section 41: no separate "watching this channel's chat without being in voice"
+   * subscription concept exists — see `docs/architecture/PERSISTENT_TEXT_CHAT.md`'s "Live delivery"
+   * section). Empty array for an unknown or currently-empty channel — callers check
+   * {@link isKnownChannel} separately when that distinction matters. */
+  getChannelMemberConnectionIds(channelId: string): readonly string[] {
+    return [...(this.membersByChannel.get(channelId) ?? [])];
+  }
+
+  /** T9 follow-up — resolves every online connection for a given `identityId` (normally zero or
+   * one, but not assumed to be at most one: nothing prevents the same identity from holding two
+   * simultaneous connections). Used only for authorization-store-driven side effects (e.g. a group
+   * deletion that leaves an identity with no admission basis), never for a client-facing lookup. */
+  findAllByIdentityId(identityId: string): readonly VoiceParticipantRecord[] {
+    const matches: VoiceParticipantRecord[] = [];
+    for (const record of this.participantsByConnection.values()) {
+      if (record.identityId === identityId) matches.push(record);
+    }
+    return matches;
+  }
+
   private membersOf(channelId: string): Set<string> {
     let members = this.membersByChannel.get(channelId);
     if (!members) {
@@ -86,7 +124,12 @@ export class VoiceRegistry {
     return members;
   }
 
-  join(connectionId: string, channelId: string, displayName: string): JoinOutcome {
+  join(
+    connectionId: string,
+    channelId: string,
+    displayName: string,
+    identityId: string,
+  ): JoinOutcome {
     if (!this.channelsById.has(channelId)) {
       return {
         ok: false,
@@ -109,14 +152,19 @@ export class VoiceRegistry {
     const previous = this.leaveInternal(connectionId);
 
     const participantId = randomUUID();
-    const record: VoiceParticipantRecord = { connectionId, participantId, channelId, displayName };
+    const record: VoiceParticipantRecord = {
+      connectionId,
+      participantId,
+      channelId,
+      displayName,
+      identityId,
+    };
 
     const members = this.membersOf(channelId);
     const existingMemberConnectionIds = [...members];
-    const existingParticipants: VoiceParticipant[] = existingMemberConnectionIds
+    const existingParticipants: VoiceParticipantRecord[] = existingMemberConnectionIds
       .map((id) => this.participantsByConnection.get(id))
-      .filter((p): p is VoiceParticipantRecord => p !== undefined)
-      .map((p) => ({ participantId: p.participantId, displayName: p.displayName }));
+      .filter((p): p is VoiceParticipantRecord => p !== undefined);
 
     this.participantsByConnection.set(connectionId, record);
     members.add(connectionId);

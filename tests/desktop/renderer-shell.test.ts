@@ -16,7 +16,7 @@ describe('App shell', () => {
   it('renders a loading placeholder, not a crash, without a preload bridge available', () => {
     const markup = renderToStaticMarkup(createElement(App));
 
-    expect(markup).toContain('Projeto Disco Voador');
+    expect(markup).toContain('OvniChat');
     expect(markup).toContain('Loading local identity');
   });
 

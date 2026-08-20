@@ -27,6 +27,13 @@ export class FakePeerConnection implements RtcPeerConnectionLike {
 
   readonly addTrackCalls: MediaStreamTrack[] = [];
   readonly removeTrackCalls: RTCRtpSender[] = [];
+  /**
+   * Records every `RTCRtpSender.replaceTrack()` call made on any sender this fake ever returned
+   * from `addTrack` (T11) — `sender` identifies *which* transceiver's sender was swapped, `newTrack`
+   * is what it was swapped to. Kept on the connection (not per-sender) so a test can assert on
+   * ordering/count across multiple senders without threading each sender through separately.
+   */
+  readonly replaceTrackCalls: { sender: RTCRtpSender; newTrack: MediaStreamTrack | null }[] = [];
   readonly setLocalDescriptionCalls: RTCSessionDescriptionInit[] = [];
   readonly setRemoteDescriptionCalls: RTCSessionDescriptionInit[] = [];
   readonly addIceCandidateCalls: (RTCIceCandidateInit | null | undefined)[] = [];
@@ -65,10 +72,27 @@ export class FakePeerConnection implements RtcPeerConnectionLike {
   addIceCandidateImpl: (candidate: RTCIceCandidateInit | null | undefined) => Promise<void> = () =>
     Promise.resolve();
   getStatsImpl: () => Promise<RTCStatsReport> = () => Promise.resolve({} as RTCStatsReport);
+  /**
+   * Controllable, like every other `*Impl` field here, so a test can inject a rejection to prove
+   * `Peer.replaceTrack`'s fire-and-forget `.catch()` handles a genuine platform failure without an
+   * unhandled rejection. Real `RTCRtpSender.replaceTrack()` resolves (or rejects) a `Promise<void>`.
+   */
+  replaceTrackImpl: () => Promise<void> = () => Promise.resolve();
 
   addTrack(track: MediaStreamTrack): RTCRtpSender {
     this.addTrackCalls.push(track);
-    const sender = { track } as unknown as RTCRtpSender;
+    const senderShape: {
+      track: MediaStreamTrack | null;
+      replaceTrack: (newTrack: MediaStreamTrack | null) => Promise<void>;
+    } = {
+      track,
+      replaceTrack: (newTrack) => {
+        this.replaceTrackCalls.push({ sender: senderShape as unknown as RTCRtpSender, newTrack });
+        senderShape.track = newTrack;
+        return this.replaceTrackImpl();
+      },
+    };
+    const sender = senderShape as unknown as RTCRtpSender;
     this.sendersByTrack.set(track, sender);
     // Mirrors a real, live-verified `RTCPeerConnection.addTrack()` behavior (see `Peer`'s
     // `wireRemoteVideoTrack` doc comment in `use-voice-channel.ts`, and

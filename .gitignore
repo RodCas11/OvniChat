@@ -9,6 +9,11 @@ node_modules/
 **/out/
 *.tsbuildinfo
 
+# Dedicated Server runtime data (default data directory, real SQLite files — see
+# services/dedicated-server/src/config.ts's DEFAULT_DATA_DIR)
+disco-voador-server-data/
+**/disco-voador-server-data/
+
 # Local configuration and secrets
 .env
 .env.*

@@ -6,8 +6,8 @@
   "type": "module",
   "scripts": {
     "build": "tsc -b --pretty false",
-    "dev": "tsx watch src/index.ts",
-    "start": "node dist/index.js",
+    "dev": "tsx watch src/cli.ts",
+    "start": "node dist/cli.js",
     "typecheck": "tsc --noEmit -p tsconfig.json --pretty false"
   },
   "main": "dist/index.js",

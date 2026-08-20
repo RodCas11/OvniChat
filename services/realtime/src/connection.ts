@@ -4,10 +4,13 @@ import {
   CLOSE_CODES,
   parseClientMessage,
   type ErrorCode,
+  type ServerCapability,
   type ServerMessage,
 } from '@disco-voador/protocol';
 import type { RawData, WebSocket } from 'ws';
 
+import type { AuthorizationPort } from './authorization-port.js';
+import type { ChatPort } from './chat-port.js';
 import type { RealtimeConfig } from './config.js';
 import type { ConnectionState } from './connection-state.js';
 import type { Logger } from './logging.js';
@@ -37,9 +40,20 @@ const CLOSE_CODE_BY_ERROR: Partial<Record<ErrorCode, number>> = {
   IDENTITY_PROTOCOL_ERROR: CLOSE_CODES.IDENTITY_PROTOCOL_ERROR,
   INTERNAL_ERROR: CLOSE_CODES.INTERNAL_ERROR,
   SERVER_AT_CAPACITY: CLOSE_CODES.SERVER_AT_CAPACITY,
+  // T9 — BANNED/INVITE_REQUIRED are fatal admission-time rejections; KICKED/BANNED (the same code
+  // reused) also close an already-`ready` connection an administrator acted on. AUTHORIZATION_DENIED,
+  // GROUP_NOT_FOUND, PROTECTED_GROUP, LAST_ADMIN, TOKEN_INVALID, TOKEN_EXPIRED, TOKEN_ALREADY_USED,
+  // and PARTICIPANT_NOT_FOUND are intentionally absent — ordinary, recoverable admin-UI conditions,
+  // not protocol violations (see errors.ts).
+  BANNED: CLOSE_CODES.BANNED,
+  INVITE_REQUIRED: CLOSE_CODES.INVITE_REQUIRED,
+  KICKED: CLOSE_CODES.KICKED,
   // CHANNEL_NOT_FOUND, NOT_IN_VOICE_CHANNEL, SIGNALING_TARGET_INVALID, CHANNEL_FULL are
   // intentionally absent: they are ordinary recoverable conditions (see errors.ts), not protocol
   // violations.
+  // T10 — CHAT_RATE_LIMITED is also intentionally absent: unlike the generic transport-level
+  // RATE_LIMITED above, a chatty-but-legitimate client is throttled, not disconnected (see
+  // errors.ts and config.ts's chat-specific rate-limit buckets).
 };
 
 /** How long to wait for a clean WS close handshake before forcing the socket shut. */
@@ -57,8 +71,16 @@ export class Connection {
   readonly id: string = randomUUID();
   readonly connectedAt: number;
   private _state: ConnectionState = 'awaiting_hello';
+  private _identityId: string | undefined;
+  private _nickname: string | undefined;
   private pendingChallenge: PendingIdentityChallenge | undefined;
   private readonly rateLimiter: RateLimiter;
+  /** T10 — separate, smaller buckets than {@link rateLimiter} for chat specifically (see
+   * `config.ts`'s doc comment). Checked in `handleRawMessage` after the message is known to be a
+   * chat message, before it ever reaches `routeClientMessage` — the same "stateful things live in
+   * `Connection`, the handler layer stays pure" split the generic rate limiter already uses. */
+  private readonly chatSendRateLimiter: RateLimiter;
+  private readonly chatHistoryRateLimiter: RateLimiter;
   private readonly heartbeat: HeartbeatMonitor;
   private handshakeTimer: NodeJS.Timeout | undefined;
   private forceCloseTimer: NodeJS.Timeout | undefined;
@@ -71,8 +93,30 @@ export class Connection {
     private readonly config: RealtimeConfig,
     private readonly logger: Logger,
     private readonly voiceRegistry: VoiceRegistry,
+    /** T8 — the Dedicated Server's own display metadata, echoed into every `server:hello` this
+     * connection produces. Composition config, immutable for the process lifetime. */
+    private readonly serverMetadata: {
+      readonly name: string;
+      readonly capabilities: readonly ServerCapability[];
+    },
+    /** T9 — server-local authorization (see `authorization-port.ts`). Composition config, shared
+     * across every connection this server accepts. */
+    private readonly authorization: AuthorizationPort,
+    /** T10 — server-local persistent chat (see `chat-port.ts`). Composition config, shared across
+     * every connection this server accepts. */
+    private readonly chat: ChatPort,
     /** Sends a message to a *different* connection, looked up by id, if it still exists. */
     private readonly deliverToConnection: (connectionId: string, message: ServerMessage) => void,
+    /** T9 — forcibly closes a *different* connection, looked up by id, with a `server:error` +
+     * matching close code (moderation: kick/ban). No-op if that connection no longer exists. */
+    private readonly closeOtherConnection: (
+      connectionId: string,
+      code: ErrorCode,
+      message: string,
+    ) => void,
+    /** T10 — pushes a message to every currently-`ready` connection (server-wide chat broadcast;
+     * see `protocol-handlers.ts`'s `'broadcast-ready'` `OutgoingAction`). */
+    private readonly broadcastToReadyConnections: (message: ServerMessage) => void,
     private readonly onClosed: (connection: Connection) => void,
     private readonly now: () => Date = () => new Date(),
   ) {
@@ -81,6 +125,8 @@ export class Connection {
     });
     this.connectedAt = this.now().getTime();
     this.rateLimiter = new RateLimiter(config.rateLimit);
+    this.chatSendRateLimiter = new RateLimiter(config.chatSendRateLimit);
+    this.chatHistoryRateLimiter = new RateLimiter(config.chatHistoryRateLimit);
     this.heartbeat = new HeartbeatMonitor(config.heartbeatIntervalMs, config.heartbeatTimeoutMs, {
       sendPing: () => {
         // Not currently reachable with a throw in `ws@8.21.3` (`ping()` only throws while
@@ -111,6 +157,18 @@ export class Connection {
     return this._state;
   }
 
+  /** T9 — this connection's server-verified identity, once authenticated; `undefined` before
+   * (or if) that ever happens. */
+  get identityId(): string | undefined {
+    return this._identityId;
+  }
+
+  /** T10 — the nickname claimed at `client:hello`, retained the same way `identityId` is (see
+   * `RouteResult.nickname`'s doc comment in `protocol-handlers.ts`). */
+  get nickname(): string | undefined {
+    return this._nickname;
+  }
+
   /** Resolves once the underlying socket has actually finished closing. */
   get closed(): Promise<void> {
     return this.closedPromise;
@@ -119,6 +177,14 @@ export class Connection {
   /** Pushes a server-originated message to this connection (e.g. forwarded signaling, presence). */
   deliver(message: ServerMessage): void {
     this.send(message);
+  }
+
+  /** T9 — forcibly rejects and closes this connection from an *external* trigger (moderation:
+   * kick/ban targeting this connection) — the same send-error-then-close policy every internal
+   * fatal rejection already uses, just invokable from outside (see `server.ts`'s
+   * `closeOtherConnection`). */
+  forceReject(code: ErrorCode, message: string): void {
+    this.rejectAndClose(code, message);
   }
 
   private handleHandshakeTimeout(): void {
@@ -162,6 +228,25 @@ export class Connection {
       return;
     }
 
+    // T10 — a separate, smaller rate-limit bucket for chat specifically, checked once the message
+    // type is known but *before* `routeClientMessage` — non-fatal (see `errors.ts`'s
+    // `CHAT_RATE_LIMITED`), unlike the generic transport-level check above.
+    if (parsed.message.type === 'client:chat-send' && !this.chatSendRateLimiter.tryConsume()) {
+      this.rejectOrWarn('CHAT_RATE_LIMITED', 'Chat message rate limit exceeded', parsed.message.id);
+      return;
+    }
+    if (
+      parsed.message.type === 'client:chat-history-request' &&
+      !this.chatHistoryRateLimiter.tryConsume()
+    ) {
+      this.rejectOrWarn(
+        'CHAT_RATE_LIMITED',
+        'Chat history request rate limit exceeded',
+        parsed.message.id,
+      );
+      return;
+    }
+
     // Everything past this point operates on an already-validated message, but this is a
     // single-process service shared by every connected client: an uncaught exception here would
     // crash the process and drop every connection, not just this one. Contain any unexpected
@@ -179,6 +264,11 @@ export class Connection {
         voiceRegistry: this.voiceRegistry,
         identityChallengeTtlMs: this.config.identityChallengeTtlMs,
         pendingChallenge: this.pendingChallenge,
+        serverMetadata: this.serverMetadata,
+        authorization: this.authorization,
+        chat: this.chat,
+        identityId: this._identityId,
+        nickname: this._nickname,
       });
 
       if (!result.ok) {
@@ -189,6 +279,8 @@ export class Connection {
       const enteringReady = this._state !== 'ready' && result.nextState === 'ready';
       this._state = result.nextState;
       this.pendingChallenge = result.pendingChallenge;
+      if (result.identityId) this._identityId = result.identityId;
+      if (result.nickname) this._nickname = result.nickname;
 
       if (enteringReady) {
         this.clearHandshakeTimer();
@@ -199,8 +291,12 @@ export class Connection {
       for (const action of result.actions) {
         if (action.kind === 'reply') {
           this.send(action.message);
-        } else {
+        } else if (action.kind === 'deliver') {
           this.deliverToConnection(action.connectionId, action.message);
+        } else if (action.kind === 'broadcast-ready') {
+          this.broadcastToReadyConnections(action.message);
+        } else {
+          this.closeOtherConnection(action.connectionId, action.code, action.message);
         }
       }
     } catch (error) {

@@ -4,6 +4,8 @@ import { CURRENT_PROTOCOL_VERSION } from '@disco-voador/protocol';
 import { describe, expect, it } from 'vitest';
 import type { WebSocket } from 'ws';
 
+import { createNoopAuthorizationPort } from '../../services/realtime/src/authorization-port.js';
+import { createNoopChatPort } from '../../services/realtime/src/chat-port.js';
 import type { RealtimeConfig } from '../../services/realtime/src/config.js';
 import { Connection } from '../../services/realtime/src/connection.js';
 import { createNoopLogger } from '../../services/realtime/src/logging.js';
@@ -51,6 +53,8 @@ const TEST_CONFIG: RealtimeConfig = {
   heartbeatIntervalMs: 60_000,
   heartbeatTimeoutMs: 60_000,
   rateLimit: { maxMessages: 100, windowMs: 10_000 },
+  chatSendRateLimit: { maxMessages: 100, windowMs: 10_000 },
+  chatHistoryRateLimit: { maxMessages: 100, windowMs: 10_000 },
   logLevel: 'error',
 };
 
@@ -72,6 +76,11 @@ describe('Connection — unexpected handler failure containment', () => {
       TEST_CONFIG,
       createNoopLogger(),
       new VoiceRegistry(DEFAULT_VOICE_CHANNELS),
+      { name: 'Test Server', capabilities: [] },
+      createNoopAuthorizationPort(),
+      createNoopChatPort(),
+      () => {},
+      () => {},
       () => {},
       () => {},
       now,

@@ -27,6 +27,12 @@ import type { DesktopScreenSource } from '../../shared/ipc-contract.js';
 export interface ScreenSourcePickerProps {
   readonly onSourceSelected: (quality: ScreenQualityPreset, shareAudio: boolean) => void;
   readonly onCancel: () => void;
+  /** T11 — pre-selects the quality dropdown from the persisted `screenShare.qualityPreset`
+   * preference (`SettingsPanel.tsx`). Only changes this picker's default selection, exactly like
+   * today's hardcoded `DEFAULT_QUALITY` did — still never starts a capture by itself, and the user
+   * can still freely change it before sharing. Defaults to `'high'` (this module's own prior
+   * default) when the caller has not loaded a preference yet. */
+  readonly defaultQuality?: ScreenQualityPreset | undefined;
 }
 
 type SourceTab = 'screen' | 'window';
@@ -50,13 +56,14 @@ const DEFAULT_QUALITY: ScreenQualityPreset = 'high';
 export function ScreenSourcePicker({
   onSourceSelected,
   onCancel,
+  defaultQuality,
 }: ScreenSourcePickerProps): ReactElement {
   const [sources, setSources] = useState<readonly DesktopScreenSource[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | undefined>(undefined);
   const [activeTab, setActiveTab] = useState<SourceTab>('screen');
   const [selectedSourceId, setSelectedSourceId] = useState<string | undefined>(undefined);
-  const [quality, setQuality] = useState<ScreenQualityPreset>(DEFAULT_QUALITY);
+  const [quality, setQuality] = useState<ScreenQualityPreset>(defaultQuality ?? DEFAULT_QUALITY);
   // T6: off by default — system audio is never shared unless the user explicitly opts in for this
   // specific share (see this component's doc comment and docs/architecture/WEBRTC_SCREEN_AUDIO.md).
   const [shareAudio, setShareAudio] = useState(false);

@@ -28,6 +28,9 @@ describe('preload bridge', () => {
     const api = exposed.get('desktopApp') as Record<string, unknown>;
 
     expect(Object.keys(api).sort()).toEqual([
+      'addBookmark',
+      'getClientSettings',
+      'getE2ESettingsPersistenceConfig',
       'getE2EVoiceConfig',
       'getIdentity',
       'getNickname',
@@ -35,9 +38,12 @@ describe('preload bridge', () => {
       'getVersionInfo',
       'listScreenShareSources',
       'regenerateIdentity',
+      'removeBookmark',
       'selectScreenShareSource',
       'setNickname',
       'signIdentityChallenge',
+      'updateBookmark',
+      'updateClientSettings',
     ]);
     expect(api['ipcRenderer']).toBeUndefined();
     expect(api['invoke']).toBeUndefined();

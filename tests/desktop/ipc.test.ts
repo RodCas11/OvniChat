@@ -32,6 +32,26 @@ const regenerateIdentityMock = vi.fn(async () => ({
 const getNicknameMock = vi.fn(async () => 'Ana');
 const setNicknameMock = vi.fn((nickname: string) => nickname.length > 0 && nickname.length <= 32);
 
+const DEFAULT_SETTINGS = {
+  version: 1,
+  audio: { inputDeviceId: null, outputDeviceId: null },
+  video: { cameraDeviceId: null },
+  screenShare: { qualityPreset: 'high' as const },
+  voice: { startMuted: false, startDeafened: false },
+  bookmarks: [],
+  lastServerAddress: null,
+  connectOnStartup: false,
+};
+const getClientSettingsMock = vi.fn(async () => DEFAULT_SETTINGS);
+const updateClientSettingsMock = vi.fn(async () => DEFAULT_SETTINGS);
+const addBookmarkMock = vi.fn(async () => ({
+  bookmarkId: 'bm-1',
+  displayName: 'Rodrigo Server',
+  serverAddress: 'voice.rodrigo.com:8090',
+}));
+const updateBookmarkMock = vi.fn(async () => true);
+const removeBookmarkMock = vi.fn(async () => true);
+
 vi.mock('electron', () => ({
   app: { getVersion: () => '0.0.0' },
   ipcMain: { handle: ipcHandleSpy },
@@ -51,6 +71,14 @@ vi.mock('../../apps/desktop/src/main/identity/identity-service.js', () => ({
 vi.mock('../../apps/desktop/src/main/identity/nickname-store.js', () => ({
   getNickname: getNicknameMock,
   setNickname: setNicknameMock,
+}));
+
+vi.mock('../../apps/desktop/src/main/settings/settings-service.js', () => ({
+  getClientSettings: getClientSettingsMock,
+  updateClientSettings: updateClientSettingsMock,
+  addBookmark: addBookmarkMock,
+  updateBookmark: updateBookmarkMock,
+  removeBookmark: removeBookmarkMock,
 }));
 
 const { IPC_CHANNELS } = await import('../../apps/desktop/src/shared/ipc-contract.js');
@@ -131,11 +159,12 @@ describe('registerIpcHandlers', () => {
     expect(() =>
       registerIpcHandlers(fakeMainWebContents(2), allowedOrigins, realtimeConfig),
     ).not.toThrow();
-    // Ten channels (getVersionInfo, getRealtimeConfig, getE2EVoiceConfig,
-    // listScreenShareSources, selectScreenShareSource, getIdentity, signIdentityChallenge,
-    // regenerateIdentity, getNickname, setNickname) are each registered exactly once, ever — not
-    // once per `registerIpcHandlers` call.
-    expect(ipcHandleSpy).toHaveBeenCalledTimes(10);
+    // Sixteen channels (getVersionInfo, getRealtimeConfig, getE2EVoiceConfig,
+    // getE2ESettingsPersistenceConfig, listScreenShareSources, selectScreenShareSource,
+    // getIdentity, signIdentityChallenge, regenerateIdentity, getNickname, setNickname,
+    // getClientSettings, updateClientSettings, addBookmark, updateBookmark, removeBookmark) are
+    // each registered exactly once, ever — not once per `registerIpcHandlers` call.
+    expect(ipcHandleSpy).toHaveBeenCalledTimes(16);
 
     const handler = handlers.get(IPC_CHANNELS.getVersionInfo);
     expect(() => handler?.(fakeEvent(1, 'app://renderer/index.html'))).toThrow(/untrusted sender/);
@@ -174,12 +203,39 @@ describe('registerIpcHandlers', () => {
       autoScreenShareOffAfterMs: undefined,
       autoScreenShareReshareAfterMs: undefined,
       autoScreenShareAudio: false,
+      connectUrl: undefined,
+      redeemToken: undefined,
+      autoChatSendServerBody: undefined,
+      autoChatSendChannelBody: undefined,
     };
     registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig, e2eVoiceConfig);
 
     const handler = handlers.get(IPC_CHANNELS.getE2EVoiceConfig);
     const result = await handler?.(fakeEvent(1, 'app://renderer/index.html'));
     expect(result).toEqual(e2eVoiceConfig);
+  });
+
+  it('returns undefined for getE2ESettingsPersistenceConfig when not supplied', async () => {
+    registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig);
+
+    const handler = handlers.get(IPC_CHANNELS.getE2ESettingsPersistenceConfig);
+    const result = await handler?.(fakeEvent(1, 'app://renderer/index.html'));
+    expect(result).toBeUndefined();
+  });
+
+  it('returns the configured E2E settings-persistence config for a trusted sender when supplied', async () => {
+    const e2eSettingsPersistenceConfig = { write: true };
+    registerIpcHandlers(
+      fakeMainWebContents(1),
+      allowedOrigins,
+      realtimeConfig,
+      undefined,
+      e2eSettingsPersistenceConfig,
+    );
+
+    const handler = handlers.get(IPC_CHANNELS.getE2ESettingsPersistenceConfig);
+    const result = await handler?.(fakeEvent(1, 'app://renderer/index.html'));
+    expect(result).toEqual(e2eSettingsPersistenceConfig);
   });
 
   it('lists screen share sources for a trusted sender', async () => {
@@ -395,5 +451,203 @@ describe('registerIpcHandlers', () => {
       /untrusted sender/,
     );
     expect(setNicknameMock).not.toHaveBeenCalled();
+  });
+
+  it('returns the client settings for a trusted sender', async () => {
+    registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig);
+
+    const handler = handlers.get(IPC_CHANNELS.getClientSettings);
+    const result = await handler?.(fakeEvent(1, 'app://renderer/index.html'));
+    expect(result).toEqual(DEFAULT_SETTINGS);
+  });
+
+  it('rejects getClientSettings from an untrusted sender without calling into settings-service.ts', async () => {
+    registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig);
+    getClientSettingsMock.mockClear();
+
+    const handler = handlers.get(IPC_CHANNELS.getClientSettings);
+    await expect(handler?.(fakeEvent(99, 'https://evil.example/'))).rejects.toThrow(
+      /untrusted sender/,
+    );
+    expect(getClientSettingsMock).not.toHaveBeenCalled();
+  });
+
+  it('applies a well-formed settings patch for a trusted sender', async () => {
+    registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig);
+    updateClientSettingsMock.mockClear();
+
+    const patch = { audio: { inputDeviceId: 'mic-1' } };
+    const handler = handlers.get(IPC_CHANNELS.updateClientSettings);
+    const result = await handler?.(fakeEvent(1, 'app://renderer/index.html'), patch);
+    expect(result).toEqual(DEFAULT_SETTINGS);
+    expect(updateClientSettingsMock).toHaveBeenCalledWith(patch);
+  });
+
+  it('rejects a malformed settings patch (unknown key) without calling into settings-service.ts', async () => {
+    registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig);
+    updateClientSettingsMock.mockClear();
+
+    const handler = handlers.get(IPC_CHANNELS.updateClientSettings);
+    await expect(
+      handler?.(fakeEvent(1, 'app://renderer/index.html'), { evil: true }),
+    ).rejects.toThrow(/Invalid client settings patch/);
+    expect(updateClientSettingsMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a settings patch with an unexpected *nested* field, not only a top-level one', async () => {
+    // `clientSettingsPatchSchema`'s nested objects are built with `.strict().partial()` — this
+    // confirms `.partial()` preserves the inner `.strict()`'s rejection of an extra key (a real,
+    // non-obvious zod behavior flagged during T11's security review), not just that the top-level
+    // patch object itself is strict.
+    registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig);
+    updateClientSettingsMock.mockClear();
+
+    const handler = handlers.get(IPC_CHANNELS.updateClientSettings);
+    await expect(
+      handler?.(fakeEvent(1, 'app://renderer/index.html'), {
+        audio: { inputDeviceId: 'mic-1', evilField: true },
+      }),
+    ).rejects.toThrow(/Invalid client settings patch/);
+    expect(updateClientSettingsMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects updateClientSettings from an untrusted sender without calling into settings-service.ts', async () => {
+    registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig);
+    updateClientSettingsMock.mockClear();
+
+    const handler = handlers.get(IPC_CHANNELS.updateClientSettings);
+    await expect(
+      handler?.(fakeEvent(99, 'https://evil.example/'), { connectOnStartup: true }),
+    ).rejects.toThrow(/untrusted sender/);
+    expect(updateClientSettingsMock).not.toHaveBeenCalled();
+  });
+
+  it('adds a well-formed bookmark for a trusted sender', async () => {
+    registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig);
+    addBookmarkMock.mockClear();
+
+    const input = { displayName: 'Rodrigo Server', serverAddress: 'voice.rodrigo.com:8090' };
+    const handler = handlers.get(IPC_CHANNELS.addBookmark);
+    const result = await handler?.(fakeEvent(1, 'app://renderer/index.html'), input);
+    expect(result).toEqual({
+      bookmarkId: 'bm-1',
+      displayName: 'Rodrigo Server',
+      serverAddress: 'voice.rodrigo.com:8090',
+    });
+    expect(addBookmarkMock).toHaveBeenCalledWith(input);
+  });
+
+  it('rejects a bookmark input carrying an unexpected field (e.g. a token) without calling into settings-service.ts', async () => {
+    registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig);
+    addBookmarkMock.mockClear();
+
+    const handler = handlers.get(IPC_CHANNELS.addBookmark);
+    await expect(
+      handler?.(fakeEvent(1, 'app://renderer/index.html'), {
+        displayName: 'X',
+        serverAddress: 'x:1',
+        token: 'DV-secret',
+      }),
+    ).rejects.toThrow(/Invalid bookmark/);
+    expect(addBookmarkMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects addBookmark from an untrusted sender without calling into settings-service.ts', async () => {
+    registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig);
+    addBookmarkMock.mockClear();
+
+    const handler = handlers.get(IPC_CHANNELS.addBookmark);
+    await expect(
+      handler?.(fakeEvent(99, 'https://evil.example/'), {
+        displayName: 'X',
+        serverAddress: 'x:1',
+      }),
+    ).rejects.toThrow(/untrusted sender/);
+    expect(addBookmarkMock).not.toHaveBeenCalled();
+  });
+
+  it('updates a well-formed bookmark for a trusted sender', async () => {
+    registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig);
+    updateBookmarkMock.mockClear();
+
+    const bookmark = { bookmarkId: 'bm-1', displayName: 'Renamed', serverAddress: 'x:1' };
+    const handler = handlers.get(IPC_CHANNELS.updateBookmark);
+    const result = await handler?.(fakeEvent(1, 'app://renderer/index.html'), bookmark);
+    expect(result).toBe(true);
+    expect(updateBookmarkMock).toHaveBeenCalledWith(bookmark);
+  });
+
+  it('rejects a malformed updateBookmark argument (missing bookmarkId) without calling into settings-service.ts', async () => {
+    registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig);
+    updateBookmarkMock.mockClear();
+
+    const handler = handlers.get(IPC_CHANNELS.updateBookmark);
+    const result = await handler?.(fakeEvent(1, 'app://renderer/index.html'), {
+      displayName: 'X',
+      serverAddress: 'x:1',
+    });
+    expect(result).toBe(false);
+    expect(updateBookmarkMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects an updateBookmark argument carrying an unexpected field (e.g. a token) without calling into settings-service.ts', async () => {
+    registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig);
+    updateBookmarkMock.mockClear();
+
+    const handler = handlers.get(IPC_CHANNELS.updateBookmark);
+    const result = await handler?.(fakeEvent(1, 'app://renderer/index.html'), {
+      bookmarkId: 'bm-1',
+      displayName: 'X',
+      serverAddress: 'x:1',
+      token: 'DV-secret',
+    });
+    expect(result).toBe(false);
+    expect(updateBookmarkMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects updateBookmark from an untrusted sender without calling into settings-service.ts', async () => {
+    registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig);
+    updateBookmarkMock.mockClear();
+
+    const handler = handlers.get(IPC_CHANNELS.updateBookmark);
+    await expect(
+      handler?.(fakeEvent(99, 'https://evil.example/'), {
+        bookmarkId: 'bm-1',
+        displayName: 'X',
+        serverAddress: 'x:1',
+      }),
+    ).rejects.toThrow(/untrusted sender/);
+    expect(updateBookmarkMock).not.toHaveBeenCalled();
+  });
+
+  it('removes a bookmark by id for a trusted sender', async () => {
+    registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig);
+    removeBookmarkMock.mockClear();
+
+    const handler = handlers.get(IPC_CHANNELS.removeBookmark);
+    const result = await handler?.(fakeEvent(1, 'app://renderer/index.html'), 'bm-1');
+    expect(result).toBe(true);
+    expect(removeBookmarkMock).toHaveBeenCalledWith('bm-1');
+  });
+
+  it('rejects a non-string removeBookmark argument without calling into settings-service.ts', async () => {
+    registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig);
+    removeBookmarkMock.mockClear();
+
+    const handler = handlers.get(IPC_CHANNELS.removeBookmark);
+    const result = await handler?.(fakeEvent(1, 'app://renderer/index.html'), { evil: true });
+    expect(result).toBe(false);
+    expect(removeBookmarkMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects removeBookmark from an untrusted sender without calling into settings-service.ts', async () => {
+    registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig);
+    removeBookmarkMock.mockClear();
+
+    const handler = handlers.get(IPC_CHANNELS.removeBookmark);
+    await expect(handler?.(fakeEvent(99, 'https://evil.example/'), 'bm-1')).rejects.toThrow(
+      /untrusted sender/,
+    );
+    expect(removeBookmarkMock).not.toHaveBeenCalled();
   });
 });

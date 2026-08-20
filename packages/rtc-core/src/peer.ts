@@ -134,6 +134,51 @@ export class Peer {
   }
 
   /**
+   * T11: swaps `oldTrack`'s already-negotiated `RTCRtpSender` to send `newTrack` instead — see
+   * `MediaTransport.replaceTrack` (`types.ts`) for the full contract this implements. Looks up the
+   * sender by identity of `oldTrack` in `senders` (the same map `addTrack`/`removeTrack` maintain)
+   * and re-keys it to `newTrack`, so a later `removeTrack(newTrack)` or another
+   * `replaceTrack(newTrack, ...)` call finds the same sender.
+   *
+   * Unlike `addTrack`/`removeTrack`, an unknown `oldTrack` is not a silent no-op here: it means the
+   * caller tried to replace a track that was never published through this peer, which should never
+   * happen if `publishTrack`/`addTrack` was called for it first — a caller bug, not a runtime race,
+   * so this throws a clear, actionable error instead of doing nothing.
+   *
+   * `RTCRtpSender.replaceTrack()` returns a `Promise<void>` per spec, but this method stays
+   * synchronous from the caller's point of view, matching `addTrack`/`removeTrack`'s existing
+   * fire-and-forget convention for sender-level platform calls (neither of those awaits `pc.addTrack`/
+   * `pc.removeTrack` either, since both are themselves synchronous on a real `RTCPeerConnection`) —
+   * the one difference is `replaceTrack()` itself is genuinely async on the platform, so this method
+   * does not await it but does attach a `.catch()` to avoid an unhandled rejection, logging (not
+   * throwing) if the underlying platform call itself fails.
+   *
+   * Deliberately does not trigger renegotiation: `replaceTrack()` does not change the transceiver's
+   * direction or m-line, so the platform never fires `negotiationneeded` for it, and this method must
+   * not simulate one — that is the entire point of using `replaceTrack` for device switching instead
+   * of `removeTrack` + `addTrack`.
+   */
+  replaceTrack(oldTrack: MediaStreamTrack, newTrack: MediaStreamTrack): void {
+    if (this.closed) return;
+    const sender = this.senders.get(oldTrack);
+    if (!sender) {
+      throw new Error(
+        `rtc-core: Peer.replaceTrack(participantId=${this.participantId}) called for a track with ` +
+          `no known sender — oldTrack must already be published (addTrack/publishTrack) before it ` +
+          `can be replaced`,
+      );
+    }
+    this.senders.delete(oldTrack);
+    this.senders.set(newTrack, sender);
+    sender.replaceTrack(newTrack).catch((error: unknown) => {
+      console.error(`rtc-core: RTCRtpSender.replaceTrack failed`, {
+        participantId: this.participantId,
+        error,
+      });
+    });
+  }
+
+  /**
    * Creates and sends an offer: the initiator's first offer for this pair, or (once `negotiated`)
    * any later renegotiation offer — both the initial and every later call reuse this same logic.
    *

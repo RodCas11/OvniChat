@@ -36,10 +36,10 @@ export function FirstRunPrompt({ onContinue }: FirstRunPromptProps): ReactElemen
 
   return (
     <main>
-      <h1>Welcome to Disco Voador</h1>
+      <h1>Welcome to OvniChat</h1>
       <p>
-        Choose a nickname to get started. There is no account, no email, and no password — Disco
-        Voador generates a local cryptographic identity for you that stays on this device.
+        Choose a nickname to get started. There is no account, no email, and no password — OvniChat
+        generates a local cryptographic identity for you that stays on this device.
       </p>
       <form onSubmit={handleSubmit}>
         <label>

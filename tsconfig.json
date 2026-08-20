@@ -4,6 +4,7 @@
   "references": [
     { "path": "apps/desktop" },
     { "path": "services/realtime" },
+    { "path": "services/dedicated-server" },
     { "path": "packages/protocol" },
     { "path": "packages/identity" },
     { "path": "packages/rtc-core" },

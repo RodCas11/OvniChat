@@ -1,9 +1,10 @@
 // T7 identity-authentication E2E: two Electron instances, each with its own local identity (own
-// `--user-data-dir`), connect to a real realtime service and complete the full T7 handshake
-// (`client:hello` -> `server:identity-challenge` -> `client:identity-proof` -> `server:hello`)
-// before joining the same voice channel — exactly `e2e-voice-smoke.mjs`'s proven harness, reused
-// as-is (it already relays every renderer console line, including the two new identity markers
-// `use-identity.ts`/`realtime-client.ts` log), plus identity-specific assertions on top:
+// `--user-data-dir`), connect to a real Disco Voador Dedicated Server (T8's actual product
+// entrypoint) and complete the full T7 handshake (`client:hello` -> `server:identity-challenge` ->
+// `client:identity-proof` -> `server:hello`) before joining the same voice channel — exactly
+// `e2e-voice-smoke.mjs`'s proven harness, reused as-is (it already relays every renderer console
+// line, including the two identity markers `use-identity.ts`/`realtime-client.ts` log), plus
+// identity-specific assertions on top:
 //
 //   1. Each instance's locally-generated identityId matches the identityId the server reports
 //      back in `server:hello` (proving the server independently re-derived the same id from the
@@ -14,8 +15,8 @@
 //      markers `e2e-voice-smoke.mjs` requires) — proving identity auth is not a regression on the
 //      existing voice path, only an additional gate before it.
 //
-// Prerequisites: identical to `e2e-voice-smoke.mjs` — `pnpm --filter @disco-voador/realtime run
-// build` and `pnpm --filter @disco-voador/desktop exec electron-forge package`.
+// Prerequisites: identical to `e2e-voice-smoke.mjs` — `pnpm --filter @disco-voador/dedicated-server
+// run build` and `pnpm --filter @disco-voador/desktop exec electron-forge package`.
 
 import { spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
@@ -26,13 +27,11 @@ import { fileURLToPath } from 'node:url';
 import electronPath from 'electron';
 
 import { buildElectronE2EEnvironment } from './lib/electron-e2e-env.mjs';
+import { startDedicatedServer } from './lib/start-dedicated-server.mjs';
 
 const desktopDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const repoRoot = path.resolve(desktopDir, '../..');
 const mainEntry = path.join(desktopDir, '.vite', 'build', 'main.cjs');
-const realtimeEntry = path.join(repoRoot, 'services', 'realtime', 'dist', 'index.js');
 
-const REALTIME_START_TIMEOUT_MS = 15_000;
 const INSTANCE_TIMEOUT_MS = 90_000;
 
 function fail(message) {
@@ -44,52 +43,6 @@ if (!existsSync(mainEntry)) {
   fail(
     `Built Vite main entry not found at ${mainEntry}.\nRun "pnpm --filter @disco-voador/desktop exec electron-forge package" first (this also produces .vite/build/).`,
   );
-}
-if (!existsSync(realtimeEntry)) {
-  fail(
-    `Built realtime service not found at ${realtimeEntry}.\nRun "pnpm --filter @disco-voador/realtime run build" first.`,
-  );
-}
-
-function startRealtimeService() {
-  return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [realtimeEntry], {
-      cwd: path.dirname(realtimeEntry),
-      env: { ...process.env, REALTIME_HOST: '127.0.0.1', REALTIME_PORT: '0', LOG_LEVEL: 'error' },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-
-    let settled = false;
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      child.kill();
-      reject(
-        new Error(
-          `Realtime service did not report "listening" within ${REALTIME_START_TIMEOUT_MS}ms`,
-        ),
-      );
-    }, REALTIME_START_TIMEOUT_MS);
-
-    let stdout = '';
-    child.stdout.on('data', (chunk) => {
-      stdout += chunk.toString();
-      const match = /Realtime server listening on ([\d.]+):(\d+)/.exec(stdout);
-      if (match && !settled) {
-        settled = true;
-        clearTimeout(timer);
-        resolve({ child, host: match[1], port: Number(match[2]) });
-      }
-    });
-    child.stderr.on('data', (chunk) => process.stderr.write(`[realtime] ${chunk.toString()}`));
-    child.on('exit', (code) => {
-      if (!settled) {
-        settled = true;
-        clearTimeout(timer);
-        reject(new Error(`Realtime service exited early (code ${String(code)})`));
-      }
-    });
-  });
 }
 
 /** Launches one unpackaged Electron instance configured to auto-join the smoke-test voice channel
@@ -152,9 +105,9 @@ function runVoiceInstance(label, realtimeUrl, displayName) {
 }
 
 async function main() {
-  console.info('Starting realtime service...');
-  const { child: realtimeChild, host, port } = await startRealtimeService();
-  console.info(`Realtime service listening on ${host}:${String(port)}`);
+  console.info('Starting Dedicated Server...');
+  const { child: realtimeChild, host, port } = await startDedicatedServer();
+  console.info(`Dedicated Server listening on ${host}:${String(port)}`);
   const realtimeUrl = `ws://${host}:${String(port)}`;
 
   try {

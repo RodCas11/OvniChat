@@ -145,6 +145,42 @@ export class P2PMeshTransport implements MediaTransport {
     for (const peer of this.peers.values()) peer.removeTrack(track);
   }
 
+  /**
+   * T11: swaps an already-published track's content in place across every current peer — see
+   * `MediaTransport.replaceTrack` (`types.ts`) for the full contract. Updates `publishedTracks` so a
+   * peer added *after* this call is seeded with `newTrack`, not the stale `oldTrack`, exactly the
+   * same "future peers see current state" guarantee `publishTrack`/`unpublishTrack` already give.
+   *
+   * `oldTrack` not being a currently published track at all is treated as a caller bug (mirroring
+   * `Peer.replaceTrack`'s own contract) — `replaceTrack` has no legitimate "hasn't arrived yet" race
+   * to swallow silently, unlike this transport's async `handleRemote*` methods.
+   *
+   * A single already-connected peer lacking a sender for `oldTrack` (a real, if rare, per-peer mesh
+   * timing quirk — e.g. that peer connection is mid-teardown, or its own `addParticipant` seeding
+   * raced this call in a narrow window) is handled defensively: `Peer.replaceTrack` throws for that
+   * peer specifically, and this method catches and logs it rather than letting one peer's bookkeeping
+   * gap abort replacement for every other, healthy peer in the mesh.
+   */
+  replaceTrack(oldTrack: MediaStreamTrack, newTrack: MediaStreamTrack): void {
+    if (!this.publishedTracks.has(oldTrack)) {
+      throw new Error(
+        `rtc-core: P2PMeshTransport.replaceTrack called for a track that was never published — ` +
+          `publishTrack(oldTrack) must be called before replaceTrack(oldTrack, newTrack)`,
+      );
+    }
+    this.publishedTracks.delete(oldTrack);
+    this.publishedTracks.add(newTrack);
+    for (const peer of this.peers.values()) {
+      try {
+        peer.replaceTrack(oldTrack, newTrack);
+      } catch (error) {
+        console.error(`rtc-core: replaceTrack failed for one peer, continuing for the rest`, {
+          error,
+        });
+      }
+    }
+  }
+
   async getStats(participantId: ParticipantId): Promise<RTCStatsReport | undefined> {
     const peer = this.peers.get(participantId);
     if (!peer) return undefined;

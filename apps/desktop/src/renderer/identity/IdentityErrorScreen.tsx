@@ -38,7 +38,7 @@ export function IdentityErrorScreen({
 
   return (
     <main>
-      <h1>Projeto Disco Voador</h1>
+      <h1>OvniChat</h1>
       <p role="alert">Local identity error: {message}</p>
       <p>
         <button type="button" onClick={handleStartOver} disabled={regenerating}>

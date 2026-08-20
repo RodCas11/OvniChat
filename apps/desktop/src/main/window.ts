@@ -12,14 +12,12 @@ export function devServerUrl(): string | undefined {
   return MAIN_WINDOW_VITE_DEV_SERVER_URL;
 }
 
-function installDevelopmentCsp(devServer: string, realtimeOrigin: string): void {
+function installDevelopmentCsp(devServer: string): void {
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
     callback({
       responseHeaders: {
         ...details.responseHeaders,
-        'Content-Security-Policy': [
-          buildContentSecurityPolicy({ devServerOrigin: devServer, realtimeOrigin }),
-        ],
+        'Content-Security-Policy': [buildContentSecurityPolicy({ devServerOrigin: devServer })],
         'X-Content-Type-Options': ['nosniff'],
         'Referrer-Policy': ['no-referrer'],
       },
@@ -29,7 +27,6 @@ function installDevelopmentCsp(devServer: string, realtimeOrigin: string): void 
 
 export function createMainWindow(
   config: DesktopConfig,
-  realtimeOrigin: string,
   allowedOrigins: readonly string[],
 ): BrowserWindow {
   const devServer = devServerUrl();
@@ -47,6 +44,7 @@ export function createMainWindow(
     // Packaged builds never expose this to the Renderer, regardless of environment variables —
     // the same `!app.isPackaged` gate used for the fake-media-device switches in `main/index.ts`.
     !app.isPackaged ? config.e2eVoiceAutoJoin : undefined,
+    !app.isPackaged ? config.e2eSettingsPersistence : undefined,
   );
 
   window.once('ready-to-show', () => {
@@ -58,7 +56,7 @@ export function createMainWindow(
   });
 
   if (devServer) {
-    installDevelopmentCsp(devServer, realtimeOrigin);
+    installDevelopmentCsp(devServer);
     void window.loadURL(devServer);
   } else {
     void window.loadURL(appEntryUrl());

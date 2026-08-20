@@ -1,0 +1,206 @@
+import { mkdir, readFile, rename } from 'node:fs/promises';
+import path from 'node:path';
+
+import { app } from 'electron';
+import { z } from 'zod';
+
+import { writeFileAtomic } from '../identity/atomic-write.js';
+
+/**
+ * T11 local client settings — device preferences, bookmarks, and other deliberate UI choices the
+ * Client owns for itself (see `docs/architecture/CLIENT_SETTINGS_AND_RECONNECT.md`). Deliberately
+ * separate from `identity-file.ts` (fail-closed, security-sensitive) and modeled instead on
+ * `nickname-store.ts`'s fail-open discipline: losing a device preference or bookmark has no
+ * security implication and is annoying, not dangerous, so a corrupted settings file must never
+ * block the application from starting. Unlike `nickname-store.ts`'s whole-file fail-open reset,
+ * a corrupt file here is (a) never overwritten or deleted in place — it is renamed aside so the
+ * original bytes survive for manual inspection/recovery — and (b) recovered section-by-section
+ * (see `salvageSections`) rather than reset wholesale, since a single malformed field must not
+ * also discard an otherwise-valid bookmark list. This satisfies T11 Section 7's "do not silently
+ * overwrite corrupt settings with an empty file before giving the application a chance to recover
+ * safely."
+ */
+
+const SETTINGS_FILE_VERSION = 1;
+
+const MAX_BOOKMARKS = 100;
+const MAX_BOOKMARK_NAME_LENGTH = 100;
+/** Matches `parse-server-address.ts`'s own `MAX_INPUT_LENGTH` — a bookmark's address is exactly the
+ * same free-text a user could type directly into `ConnectionScreen`. */
+const MAX_SERVER_ADDRESS_LENGTH = 300;
+/** `crypto.randomUUID()` output length (36 chars) — bounded generously, not hardcoded to exactly
+ * 36, so a future id scheme change doesn't require a settings-file migration by itself. */
+const MAX_BOOKMARK_ID_LENGTH = 64;
+
+const deviceIdSchema = z.string().min(1).max(256).nullable();
+
+const bookmarkSchema = z
+  .object({
+    bookmarkId: z.string().min(1).max(MAX_BOOKMARK_ID_LENGTH),
+    displayName: z.string().min(1).max(MAX_BOOKMARK_NAME_LENGTH),
+    serverAddress: z.string().min(1).max(MAX_SERVER_ADDRESS_LENGTH),
+  })
+  .strict();
+
+export type StoredBookmark = z.infer<typeof bookmarkSchema>;
+
+// Each top-level section has its own schema, kept separate from `settingsFileSchema` below, so a
+// corrupted file can be salvaged section-by-section (see `salvageSections`) instead of one bad
+// field forcing every section — including the bookmark list, the most painful one to lose — back
+// to defaults.
+const audioSchema = z
+  .object({ inputDeviceId: deviceIdSchema, outputDeviceId: deviceIdSchema })
+  .strict();
+const videoSchema = z.object({ cameraDeviceId: deviceIdSchema }).strict();
+const screenShareSchema = z
+  .object({ qualityPreset: z.enum(['standard', 'high', 'smooth', 'smooth720']) })
+  .strict();
+const voiceSchema = z.object({ startMuted: z.boolean(), startDeafened: z.boolean() }).strict();
+const bookmarksSchema = z.array(bookmarkSchema).max(MAX_BOOKMARKS);
+const lastServerAddressSchema = z.string().max(MAX_SERVER_ADDRESS_LENGTH).nullable();
+const connectOnStartupSchema = z.boolean();
+
+const settingsFileSchema = z
+  .object({
+    version: z.literal(SETTINGS_FILE_VERSION),
+    audio: audioSchema,
+    video: videoSchema,
+    screenShare: screenShareSchema,
+    voice: voiceSchema,
+    bookmarks: bookmarksSchema,
+    lastServerAddress: lastServerAddressSchema,
+    connectOnStartup: connectOnStartupSchema,
+  })
+  .strict();
+
+export type StoredClientSettings = z.infer<typeof settingsFileSchema>;
+
+export const DEFAULT_CLIENT_SETTINGS: StoredClientSettings = {
+  version: SETTINGS_FILE_VERSION,
+  audio: { inputDeviceId: null, outputDeviceId: null },
+  video: { cameraDeviceId: null },
+  screenShare: { qualityPreset: 'high' },
+  voice: { startMuted: false, startDeafened: false },
+  bookmarks: [],
+  lastServerAddress: null,
+  connectOnStartup: false,
+};
+
+function settingsFilePath(): string {
+  return path.join(app.getPath('userData'), 'settings.json');
+}
+
+/**
+ * Renames the unreadable/corrupted file aside instead of deleting or overwriting it in place, so a
+ * later write of fresh (or salvaged) settings can never destroy whatever was actually on disk.
+ * Best-effort: if even the rename fails (e.g. the file vanished between the failed read and this
+ * call), that is not itself a reason to block startup — settings are not security-sensitive.
+ */
+async function preserveCorruptFile(): Promise<string | undefined> {
+  const original = settingsFilePath();
+  const preserved = `${original}.corrupted-${String(Date.now())}`;
+  try {
+    await rename(original, preserved);
+    return preserved;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Validates each top-level section independently against its own schema, defaulting only the
+ * sections that actually fail to validate, rather than discarding the whole file because one
+ * section is malformed — the bookmark list in particular is the section most costly to a daily
+ * user to lose, so a corrupted `audio`/`video` section must never take it down too. `parsedJson`
+ * need not be an object at all (a fully garbled file still salvages to all-defaults via this same
+ * path, just with every section falling back).
+ */
+function salvageSections(parsedJson: unknown): StoredClientSettings {
+  const source: Record<string, unknown> =
+    typeof parsedJson === 'object' && parsedJson !== null
+      ? (parsedJson as Record<string, unknown>)
+      : {};
+
+  const audio = audioSchema.safeParse(source.audio);
+  const video = videoSchema.safeParse(source.video);
+  const screenShare = screenShareSchema.safeParse(source.screenShare);
+  const voice = voiceSchema.safeParse(source.voice);
+  const bookmarks = bookmarksSchema.safeParse(source.bookmarks);
+  const lastServerAddress = lastServerAddressSchema.safeParse(source.lastServerAddress);
+  const connectOnStartup = connectOnStartupSchema.safeParse(source.connectOnStartup);
+
+  return {
+    version: SETTINGS_FILE_VERSION,
+    audio: audio.success ? audio.data : DEFAULT_CLIENT_SETTINGS.audio,
+    video: video.success ? video.data : DEFAULT_CLIENT_SETTINGS.video,
+    screenShare: screenShare.success ? screenShare.data : DEFAULT_CLIENT_SETTINGS.screenShare,
+    voice: voice.success ? voice.data : DEFAULT_CLIENT_SETTINGS.voice,
+    bookmarks: bookmarks.success ? bookmarks.data : DEFAULT_CLIENT_SETTINGS.bookmarks,
+    lastServerAddress: lastServerAddress.success
+      ? lastServerAddress.data
+      : DEFAULT_CLIENT_SETTINGS.lastServerAddress,
+    connectOnStartup: connectOnStartup.success
+      ? connectOnStartup.data
+      : DEFAULT_CLIENT_SETTINGS.connectOnStartup,
+  };
+}
+
+/**
+ * Returns `undefined` only for "no settings file yet" (first run) — every other failure mode
+ * (unreadable, not JSON, fails whole-file validation) is handled by preserving the original file
+ * aside (never overwritten or deleted in place — see {@link preserveCorruptFile}) and returning a
+ * best-effort, section-by-section salvage (see {@link salvageSections}) instead of resetting
+ * everything to defaults. Unlike `identity-file.ts`, this never throws — a device preference or
+ * bookmark list has no security implication and must never block the application from starting.
+ * The salvaged result is immediately re-persisted as the new `settings.json` (by the caller, via
+ * {@link writeClientSettingsFile}) so the recovery survives a second restart, not only the current
+ * session.
+ */
+export async function readClientSettingsFile(): Promise<StoredClientSettings | undefined> {
+  let raw: string;
+  try {
+    raw = await readFile(settingsFilePath(), 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    // Unreadable for a reason other than "does not exist yet" (permissions, I/O error, etc.) —
+    // there is nothing to parse or salvage; proceed on in-memory defaults for this session without
+    // attempting to rename a file that could not even be read.
+    return undefined;
+  }
+
+  let parsedJson: unknown;
+  try {
+    parsedJson = JSON.parse(raw);
+  } catch {
+    const preserved = await preserveCorruptFile();
+    const salvaged = salvageSections(undefined);
+    warnSalvaged(preserved);
+    await writeClientSettingsFile(salvaged);
+    return salvaged;
+  }
+
+  const result = settingsFileSchema.safeParse(parsedJson);
+  if (result.success) return result.data;
+
+  const preserved = await preserveCorruptFile();
+  const salvaged = salvageSections(parsedJson);
+  warnSalvaged(preserved);
+  await writeClientSettingsFile(salvaged);
+  return salvaged;
+}
+
+function warnSalvaged(preservedPath: string | undefined): void {
+  console.warn(
+    preservedPath
+      ? `[settings] Local settings file was invalid; the original was preserved at ` +
+          `"${preservedPath}" and a recovered settings file (salvaging whatever sections were ` +
+          'still valid) has replaced it.'
+      : '[settings] Local settings file was invalid and could not be preserved; a recovered ' +
+          'settings file (salvaging whatever sections were still valid) has replaced it.',
+  );
+}
+
+export async function writeClientSettingsFile(settings: StoredClientSettings): Promise<void> {
+  await mkdir(app.getPath('userData'), { recursive: true });
+  await writeFileAtomic(settingsFilePath(), JSON.stringify(settings));
+}

@@ -30,6 +30,8 @@ const DEFAULT_TEST_CONFIG: RealtimeConfig = {
   heartbeatIntervalMs: 60_000,
   heartbeatTimeoutMs: 60_000,
   rateLimit: { maxMessages: 100, windowMs: 10_000 },
+  chatSendRateLimit: { maxMessages: 100, windowMs: 10_000 },
+  chatHistoryRateLimit: { maxMessages: 100, windowMs: 10_000 },
   logLevel: 'error',
 };
 
@@ -138,10 +140,11 @@ function sendIdentityProof(
 }
 
 /**
- * Drives the full T7 handshake — `client:hello` -> `server:identity-challenge` ->
- * `client:identity-proof` -> `server:hello` + `voice:catalog` — against an already-open socket,
- * using a freshly generated local identity unless one is supplied. Returns what a real client
- * would learn from it: its own `connectionId` and the server-derived `identityId`.
+ * Drives the full T7/T9 handshake — `client:hello` -> `server:identity-challenge` ->
+ * `client:identity-proof` -> `server:hello` + `server:authorization-state` + `voice:catalog` —
+ * against an already-open socket, using a freshly generated local identity unless one is
+ * supplied. Returns what a real client would learn from it: its own `connectionId` and the
+ * server-derived `identityId`.
  */
 async function handshake(
   ws: WebSocket,
@@ -154,7 +157,7 @@ async function handshake(
   ws.send(JSON.stringify(hello));
   const challenge = await challengeReceived;
 
-  const readyReplies = nextMessages(ws, 2); // server:hello, then voice:catalog
+  const readyReplies = nextMessages(ws, 3); // server:hello, server:authorization-state, voice:catalog
   sendIdentityProof(ws, challenge, keyPair, {
     protocolVersion: hello['protocolVersion'] as number,
     nickname: hello['nickname'] as string,
@@ -327,6 +330,42 @@ describe('realtime server integration (real sockets)', () => {
     await server.stop();
     const { code } = await closed;
     expect(code).toBe(1001);
+  });
+
+  it('T8: an injected voiceChannels/serverMetadata dependency is used instead of the defaults', async () => {
+    const injected = createRealtimeServer(testConfig(), {
+      voiceChannels: [{ channelId: 'lobby', name: 'Lobby' }],
+      serverMetadata: { name: 'Injected Server', capabilities: ['voice'] },
+    });
+    const address = await injected.start();
+    const injectedUrl = `ws://${address.host}:${String(address.port)}`;
+
+    const ws = track(await connect(injectedUrl));
+    const keyPair = generateIdentityKeyPair();
+    const hello = helloMessage({}, keyPair);
+
+    const challengeReceived = nextMessage(ws);
+    ws.send(JSON.stringify(hello));
+    const challenge = await challengeReceived;
+
+    const helloAndCatalog = nextMessages(ws, 3);
+    sendIdentityProof(ws, challenge, keyPair, {
+      protocolVersion: hello['protocolVersion'] as number,
+      nickname: hello['nickname'] as string,
+    });
+    const [serverHello, , catalog] = await helloAndCatalog;
+
+    expect(serverHello).toMatchObject({
+      type: 'server:hello',
+      serverName: 'Injected Server',
+      serverCapabilities: ['voice'],
+    });
+    expect(catalog).toMatchObject({
+      type: 'voice:catalog',
+      channels: [{ channelId: 'lobby', name: 'Lobby' }],
+    });
+
+    await injected.stop();
   });
 
   describe('heartbeat liveness (real sockets)', () => {
@@ -600,7 +639,9 @@ describe('realtime server integration (real sockets)', () => {
         'general',
         'Arthur',
       );
-      expect(bSnapshot).toEqual([{ participantId: participantIdA, displayName: 'Rodrigo' }]);
+      expect(bSnapshot).toEqual([
+        { participantId: participantIdA, displayName: 'Rodrigo', groups: [] },
+      ]);
 
       const notice = await bJoinedNotice;
       expect(notice).toMatchObject({

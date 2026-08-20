@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { messageIdSchema } from '../envelope.js';
+import { groupBadgeListSchema } from '../authorization.js';
 import { channelIdSchema, displayNameSchema, participantIdSchema } from '../identifiers.js';
 
 /**
@@ -30,11 +31,20 @@ export const clientVoiceLeaveMessageSchema = z
 
 export type ClientVoiceLeaveMessage = z.infer<typeof clientVoiceLeaveMessageSchema>;
 
-/** A participant as seen by other participants — never includes `connectionId`. */
+/**
+ * A participant as seen by other participants — never includes `connectionId` or `identityId`.
+ * T9: `groups` is an optional snapshot of the participant's server-local group badges at the
+ * moment they joined (see `authorization.ts`'s `groupBadgeSchema`) — display-only, never a trust
+ * signal, and never live-updated to other viewers if the participant's groups change mid-session
+ * (see `docs/architecture/SERVER_AUTHORIZATION.md`'s known limitations). Absent/empty for a
+ * connection whose authorization port grants no group badges (e.g. `services/realtime`'s own
+ * no-op default).
+ */
 export const voiceParticipantSchema = z
   .object({
     participantId: participantIdSchema,
     displayName: displayNameSchema,
+    groups: groupBadgeListSchema.optional(),
   })
   .strict();
 

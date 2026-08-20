@@ -18,12 +18,37 @@ describe('serverHelloMessageSchema', () => {
     protocolVersion: 1,
     connectionId: 'conn-abc',
     identityId: validIdentityId,
+    serverName: 'Test Server',
+    serverCapabilities: ['voice'],
     serverTime: new Date().toISOString(),
     heartbeat: { intervalMs: 15000, timeoutMs: 10000 },
   };
 
   it('accepts a valid server:hello', () => {
     expect(serverHelloMessageSchema.safeParse(valid).success).toBe(true);
+  });
+
+  it('rejects a missing serverName', () => {
+    const withoutServerName: Record<string, unknown> = { ...valid };
+    delete withoutServerName.serverName;
+    expect(serverHelloMessageSchema.safeParse(withoutServerName).success).toBe(false);
+  });
+
+  it('rejects a blank serverName', () => {
+    expect(serverHelloMessageSchema.safeParse({ ...valid, serverName: '' }).success).toBe(false);
+  });
+
+  it('rejects an unrecognized server capability', () => {
+    expect(
+      serverHelloMessageSchema.safeParse({ ...valid, serverCapabilities: ['not-a-capability'] })
+        .success,
+    ).toBe(false);
+  });
+
+  it('accepts an empty server capabilities list', () => {
+    expect(serverHelloMessageSchema.safeParse({ ...valid, serverCapabilities: [] }).success).toBe(
+      true,
+    );
   });
 
   it('rejects a non-positive heartbeat interval', () => {

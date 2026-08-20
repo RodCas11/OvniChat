@@ -362,7 +362,11 @@ Additional coverage below the Electron layer:
 
 ## Not implemented in T7 (explicitly deferred)
 
-Dedicated Server product packaging (T8); server persistence of identities/accounts; server-local
-permissions, groups, invite/privilege tokens, or bans (T9); text chat (T10); bookmarks/device-
-settings overhaul (T11); a mandatory Disco Voador cloud/control-plane service (never planned — see
-ADR 0010 and 0011).
+Dedicated Server product packaging (implemented in T8); server-local permissions, groups, invite/
+privilege tokens, and bans (implemented in T9 — see
+[`SERVER_AUTHORIZATION.md`](SERVER_AUTHORIZATION.md) and
+[`../adr/0013-server-authorization-storage-and-rbac.md`](../adr/0013-server-authorization-storage-and-rbac.md));
+text chat (T10); bookmarks/device-settings overhaul (T11); a mandatory Disco Voador cloud/
+control-plane service (never planned — see ADR 0010 and 0011). T9 layers authorization strictly on
+top of this document's identity proof — it never weakens or bypasses it; see
+`SERVER_AUTHORIZATION.md`'s "Core product rule".

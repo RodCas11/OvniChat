@@ -635,6 +635,91 @@ describe('Peer — remote track and stats', () => {
   });
 });
 
+describe('Peer — replaceTrack (T11)', () => {
+  it('swaps the sender to the new track without touching addTrack/removeTrack or triggering renegotiation', () => {
+    const pc = new FakePeerConnection();
+    const signalingPort = createFakeSignalingPort();
+    const peer = new Peer('peer-1', 'initiator', pc, signalingPort, createCallbacks());
+    const oldTrack = fakeAudioTrack('mic-old');
+    const newTrack = fakeAudioTrack('mic-new');
+    peer.addTrack(oldTrack);
+    const sender = pc.senderFor(oldTrack);
+
+    peer.replaceTrack(oldTrack, newTrack);
+
+    expect(pc.replaceTrackCalls).toEqual([{ sender, newTrack }]);
+    // No renegotiation: replaceTrack must not call addTrack/removeTrack again, and must not create
+    // an offer — this is the entire point of using replaceTrack over remove+add.
+    expect(pc.addTrackCalls).toEqual([oldTrack]);
+    expect(pc.removeTrackCalls).toEqual([]);
+    expect(pc.setLocalDescriptionCalls).toEqual([]);
+    expect(signalingPort.offers).toEqual([]);
+  });
+
+  it('re-keys the internal sender map so removeTrack(newTrack) finds the same sender afterward', () => {
+    const pc = new FakePeerConnection();
+    const peer = new Peer('peer-1', 'initiator', pc, createFakeSignalingPort(), createCallbacks());
+    const oldTrack = fakeAudioTrack('mic-old');
+    const newTrack = fakeAudioTrack('mic-new');
+    peer.addTrack(oldTrack);
+    const sender = pc.senderFor(oldTrack);
+
+    peer.replaceTrack(oldTrack, newTrack);
+    peer.removeTrack(newTrack);
+
+    expect(pc.removeTrackCalls).toEqual([sender]);
+  });
+
+  it('removeTrack(oldTrack) after a replaceTrack is a no-op — the old key is gone', () => {
+    const pc = new FakePeerConnection();
+    const peer = new Peer('peer-1', 'initiator', pc, createFakeSignalingPort(), createCallbacks());
+    const oldTrack = fakeAudioTrack('mic-old');
+    const newTrack = fakeAudioTrack('mic-new');
+    peer.addTrack(oldTrack);
+
+    peer.replaceTrack(oldTrack, newTrack);
+    peer.removeTrack(oldTrack);
+
+    expect(pc.removeTrackCalls).toEqual([]);
+  });
+
+  it('throws a clear error for a track with no known sender (never published to this peer)', () => {
+    const pc = new FakePeerConnection();
+    const peer = new Peer('peer-1', 'initiator', pc, createFakeSignalingPort(), createCallbacks());
+
+    expect(() =>
+      peer.replaceTrack(fakeAudioTrack('never-published'), fakeAudioTrack('new')),
+    ).toThrow(/no known sender/);
+  });
+
+  it("is a no-op (not a throw) once the peer is closed, matching every other method's closed-is-controlled-no-op contract", () => {
+    const pc = new FakePeerConnection();
+    const peer = new Peer('peer-1', 'initiator', pc, createFakeSignalingPort(), createCallbacks());
+    const oldTrack = fakeAudioTrack('mic-old');
+    peer.addTrack(oldTrack);
+    peer.close();
+
+    expect(() => peer.replaceTrack(oldTrack, fakeAudioTrack('new'))).not.toThrow();
+    expect(pc.replaceTrackCalls).toEqual([]);
+  });
+
+  it('a rejected platform replaceTrack() is logged, not thrown, and does not produce an unhandled rejection', async () => {
+    const pc = new FakePeerConnection();
+    const peer = new Peer('peer-1', 'initiator', pc, createFakeSignalingPort(), createCallbacks());
+    const oldTrack = fakeAudioTrack('mic-old');
+    peer.addTrack(oldTrack);
+    const failure = new Error('replaceTrack failed');
+    pc.replaceTrackImpl = () => Promise.reject(failure);
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    expect(() => peer.replaceTrack(oldTrack, fakeAudioTrack('new'))).not.toThrow();
+    await flushMicrotasks();
+
+    expect(consoleErrorSpy).toHaveBeenCalled();
+    consoleErrorSpy.mockRestore();
+  });
+});
+
 function flushMicrotasks(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }

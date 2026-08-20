@@ -116,3 +116,71 @@ describe('loadDesktopConfig — T5 screen-share env vars', () => {
     expect(config.e2eVoiceAutoJoin).toBeUndefined();
   });
 });
+
+describe('loadDesktopConfig — T10 persistent text chat env vars', () => {
+  const baseEnv = {
+    DISCO_VOADOR_E2E_VOICE_AUTO_JOIN_CHANNEL: 'general',
+  };
+
+  it('defaults autoChatSendServerBody/autoChatSendChannelBody to undefined when unset', () => {
+    const config = loadDesktopConfig(baseEnv);
+
+    expect(config.e2eVoiceAutoJoin).toMatchObject({
+      autoChatSendServerBody: undefined,
+      autoChatSendChannelBody: undefined,
+    });
+  });
+
+  it('parses DISCO_VOADOR_E2E_CHAT_SEND_SERVER through unchanged', () => {
+    const config = loadDesktopConfig({
+      ...baseEnv,
+      DISCO_VOADOR_E2E_CHAT_SEND_SERVER: 'PERSIST_A_1',
+    });
+
+    expect(config.e2eVoiceAutoJoin?.autoChatSendServerBody).toBe('PERSIST_A_1');
+  });
+
+  it('parses DISCO_VOADOR_E2E_CHAT_SEND_CHANNEL through unchanged', () => {
+    const config = loadDesktopConfig({
+      ...baseEnv,
+      DISCO_VOADOR_E2E_CHAT_SEND_CHANNEL: 'GAME_HISTORY_1',
+    });
+
+    expect(config.e2eVoiceAutoJoin?.autoChatSendChannelBody).toBe('GAME_HISTORY_1');
+  });
+});
+
+describe('loadDesktopConfig — T11 settings-persistence E2E env vars', () => {
+  it('leaves e2eSettingsPersistence undefined when unset', () => {
+    const config = loadDesktopConfig({});
+    expect(config.e2eSettingsPersistence).toBeUndefined();
+  });
+
+  it('is independent of the voice auto-join flag — no channel needed', () => {
+    const config = loadDesktopConfig({ DISCO_VOADOR_E2E_SETTINGS_PERSISTENCE: '1' });
+    expect(config.e2eSettingsPersistence).toEqual({ write: false });
+    expect(config.e2eVoiceAutoJoin).toBeUndefined();
+  });
+
+  it('defaults write to false when only the persistence flag is set', () => {
+    const config = loadDesktopConfig({ DISCO_VOADOR_E2E_SETTINGS_PERSISTENCE: '1' });
+    expect(config.e2eSettingsPersistence?.write).toBe(false);
+  });
+
+  it('parses the write flag as true when both env vars are set', () => {
+    const config = loadDesktopConfig({
+      DISCO_VOADOR_E2E_SETTINGS_PERSISTENCE: '1',
+      DISCO_VOADOR_E2E_SETTINGS_PERSISTENCE_WRITE: '1',
+    });
+    expect(config.e2eSettingsPersistence).toEqual({ write: true });
+  });
+
+  it('ignores the write flag when the persistence flag itself is unset', () => {
+    const config = loadDesktopConfig({ DISCO_VOADOR_E2E_SETTINGS_PERSISTENCE_WRITE: '1' });
+    expect(config.e2eSettingsPersistence).toBeUndefined();
+  });
+
+  it('rejects an invalid DISCO_VOADOR_E2E_SETTINGS_PERSISTENCE value', () => {
+    expect(() => loadDesktopConfig({ DISCO_VOADOR_E2E_SETTINGS_PERSISTENCE: 'yes' })).toThrow();
+  });
+});

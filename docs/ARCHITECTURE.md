@@ -2,13 +2,19 @@
 
 > This document describes the intended architecture. The Electron desktop shell (T1), the realtime
 > connection/protocol foundation (T2), voice channels/microphone/P2P WebRTC (T3), camera streaming
-> (T4), screen/window video sharing (T5), screen/system audio (T6), and local cryptographic client
-> identity (T7) are implemented and live-verified — see
+> (T4), screen/window video sharing (T5), screen/system audio (T6), local cryptographic client
+> identity (T7), the Dedicated Server product boundary (T8), server-local authorization (T9),
+> persistent server-side text chat (T10), and local device management/bookmarks/automatic reconnect
+> (T11) are implemented and live-verified — see
 > [`tasks/T3_VOICE_WEBRTC.md`](tasks/T3_VOICE_WEBRTC.md),
 > [`tasks/T4_CAMERA_STREAMING.md`](tasks/T4_CAMERA_STREAMING.md),
 > [`tasks/T5_SCREEN_SHARE.md`](tasks/T5_SCREEN_SHARE.md),
-> [`tasks/T6_SCREEN_AUDIO.md`](tasks/T6_SCREEN_AUDIO.md), and
-> [`tasks/T7_LOCAL_IDENTITY.md`](tasks/T7_LOCAL_IDENTITY.md). See
+> [`tasks/T6_SCREEN_AUDIO.md`](tasks/T6_SCREEN_AUDIO.md),
+> [`tasks/T7_LOCAL_IDENTITY.md`](tasks/T7_LOCAL_IDENTITY.md),
+> [`tasks/T8_DEDICATED_SERVER.md`](tasks/T8_DEDICATED_SERVER.md),
+> [`tasks/T9_SERVER_AUTHORIZATION.md`](tasks/T9_SERVER_AUTHORIZATION.md),
+> [`tasks/T10_PERSISTENT_TEXT_CHAT.md`](tasks/T10_PERSISTENT_TEXT_CHAT.md), and
+> [`tasks/T11_DAILY_USE_UX.md`](tasks/T11_DAILY_USE_UX.md). See
 > [`tasks/STATUS.md`](tasks/STATUS.md) for what remains a marker or is not yet started. Treat any
 > capability this document describes as unimplemented unless STATUS.md says otherwise.
 
@@ -31,12 +37,18 @@ flowchart LR
     Main --> WinMedia
   end
 
-  Renderer <-->|validated WebSocket events| Realtime[Self-hosted realtime service]
+  Renderer <-->|validated WebSocket events| Dedicated[Disco Voador Dedicated Server
+  operator-hosted, self-contained]
   RTC <-->|WebRTC media, P2P first| Peers[Other desktop clients]
   RTC --> STUN[STUN]
   RTC --> TURN[Self-hosted Coturn]
-  Realtime --> Storage[(SQLite initially)]
+  Dedicated --> Storage[(SQLite initially)]
 ```
+
+The client connects directly to an operator-chosen Dedicated Server address (T8) — there is no
+Disco Voador–operated infrastructure between them. `services/dedicated-server` is the product/
+process the operator runs; it composes `services/realtime`'s reusable connection/session library.
+See [`architecture/DEDICATED_SERVER.md`](architecture/DEDICATED_SERVER.md).
 
 Electron Main owns privileged lifecycle and platform integration. Preload exposes a narrow,
 capability-oriented bridge. The sandboxed Renderer owns React UI and application orchestration.
@@ -87,17 +99,18 @@ service never becomes a media relay. WebRTC data channels are not the text-chat 
 
 ## Workspace ownership
 
-| Workspace                | Target ownership                                                         | Must not own or depend on                                |
-| ------------------------ | ------------------------------------------------------------------------ | -------------------------------------------------------- |
-| `apps/desktop`           | Electron Main, Preload, Renderer, window lifecycle, desktop composition  | Generic RTC algorithms or Windows capture implementation |
-| `services/realtime`      | WebSocket connections, presence, voice signaling, text events            | Media payload relay or UI logic                          |
-| `packages/protocol`      | Canonical runtime schemas, derived types, message/version contracts      | Desktop/server implementations, crypto (`node:crypto`)   |
-| `packages/identity`      | Ed25519 keygen/sign/verify/identityId derivation (Node-only)             | Renderer/Preload, environment-neutral packages           |
-| `packages/rtc-core`      | Environment-neutral peer/session transport, tracks, ICE, stats, recovery | Electron, React, Windows APIs, `windows-media`           |
-| `packages/media-core`    | Semantic source ownership and generic media lifecycle                    | Electron/native Windows implementation                   |
-| `packages/windows-media` | System/process loopback and any native/helper adapters                   | Generic UI or signaling behavior                         |
-| `packages/config`        | Typed parsing and validation for configuration                           | Secrets, implicit production defaults                    |
-| `packages/shared`        | Small stable primitives with multiple real consumers                     | Domain dumping ground                                    |
+| Workspace                   | Target ownership                                                                                                                                                                                                                                                           | Must not own or depend on                                                                                                                                                                      |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `apps/desktop`              | Electron Main, Preload, Renderer, window lifecycle, desktop composition                                                                                                                                                                                                    | Generic RTC algorithms or Windows capture implementation                                                                                                                                       |
+| `services/dedicated-server` | The OvniChat Dedicated Server product: config loading, composition root, CLI/process entrypoint, server identity/capabilities, server-local authorization (groups/tokens/bans, SQLite-backed, T9), persistent chat history (server-wide + per-channel, SQLite-backed, T10) | Protocol/session logic (composes `services/realtime` instead of duplicating it), Electron/Renderer                                                                                             |
+| `services/realtime`         | Reusable WebSocket connection/session library: connections, presence, voice signaling, text events                                                                                                                                                                         | Media payload relay, UI logic, product/process/authorization/chat storage concerns (owned by `services/dedicated-server`; only narrow injected `AuthorizationPort`/`ChatPort` seams live here) |
+| `packages/protocol`         | Canonical runtime schemas, derived types, message/version contracts                                                                                                                                                                                                        | Desktop/server implementations, crypto (`node:crypto`)                                                                                                                                         |
+| `packages/identity`         | Ed25519 keygen/sign/verify/identityId derivation (Node-only)                                                                                                                                                                                                               | Renderer/Preload, environment-neutral packages                                                                                                                                                 |
+| `packages/rtc-core`         | Environment-neutral peer/session transport, tracks, ICE, stats, recovery                                                                                                                                                                                                   | Electron, React, Windows APIs, `windows-media`                                                                                                                                                 |
+| `packages/media-core`       | Semantic source ownership and generic media lifecycle                                                                                                                                                                                                                      | Electron/native Windows implementation                                                                                                                                                         |
+| `packages/windows-media`    | System/process loopback and any native/helper adapters                                                                                                                                                                                                                     | Generic UI or signaling behavior                                                                                                                                                               |
+| `packages/config`           | Typed parsing and validation for configuration                                                                                                                                                                                                                             | Secrets, implicit production defaults                                                                                                                                                          |
+| `packages/shared`           | Small stable primitives with multiple real consumers                                                                                                                                                                                                                       | Domain dumping ground                                                                                                                                                                          |
 
 Preferred dependency direction:
 
@@ -108,7 +121,8 @@ flowchart LR
   Desktop --> Media[packages/media-core]
   Desktop --> Win[packages/windows-media]
   DesktopMain[apps/desktop Main only] --> Identity[packages/identity]
-  Realtime[services/realtime] --> Protocol
+  DedicatedServer[services/dedicated-server] --> Realtime[services/realtime]
+  Realtime --> Protocol
   Realtime --> Identity
   RTC --> Protocol
   Win --> Media
@@ -132,17 +146,30 @@ hand-written copies are prohibited. Full protocol design:
 [`architecture/REALTIME_PROTOCOL.md`](architecture/REALTIME_PROTOCOL.md).
 
 Voice signaling was added in T3 alongside the connection module T2 built; T7 added the identity-
-challenge step to the same connection module. Presence beyond raw connection lifecycle and
-text-chat remain unimplemented internal modules for a later task (T10):
+challenge step to the same connection module. T8 turned this module into the product a self-hoster
+actually runs: `services/dedicated-server` composes `services/realtime`'s `createRealtimeServer`
+with an operator-configured voice-channel catalog and server display identity, rather than
+`services/realtime` itself growing product/process concerns — see
+[`architecture/DEDICATED_SERVER.md`](architecture/DEDICATED_SERVER.md) and
+[`adr/0012-dedicated-server-product-boundary.md`](adr/0012-dedicated-server-product-boundary.md) for
+the full composition decision. T9 added one more injected seam the same way: `services/realtime`
+depends only on a narrow `AuthorizationPort` interface (defaulting to a permissive no-op), while the
+actual SQLite-backed authorization store lives entirely in `services/dedicated-server` — see
+[`architecture/SERVER_AUTHORIZATION.md`](architecture/SERVER_AUTHORIZATION.md). T10 added a second,
+identically-shaped seam for persistent chat: `ChatPort` (`services/realtime/src/chat-port.ts`),
+implemented by `services/dedicated-server`'s own SQLite-backed `ChatStore` — see
+[`architecture/PERSISTENT_TEXT_CHAT.md`](architecture/PERSISTENT_TEXT_CHAT.md). Presence beyond raw
+connection lifecycle remains an unimplemented internal module for a later task:
 
 ```text
 services/realtime/src/
-  connection.ts, connection-state.ts   # T2, extended T7 — implemented
-  protocol-handlers.ts, heartbeat.ts   # T2, extended T7 — implemented
-  rate-limiter.ts, config.ts, logging.ts, server.ts, index.ts   # T2, extended T7 — implemented
-  voice/catalog.ts, voice/registry.ts  # T3 — implemented
+  connection.ts, connection-state.ts   # T2, extended T7/T9/T10 — implemented
+  protocol-handlers.ts, heartbeat.ts   # T2, extended T7/T9/T10 — implemented
+  rate-limiter.ts, config.ts, logging.ts, server.ts, index.ts   # T2, extended T7/T9/T10 — implemented
+  voice/catalog.ts, voice/registry.ts  # T3, extended T10 — implemented
+  authorization-port.ts                # T9 — implemented
+  chat-port.ts                         # T10 — implemented
   presence/          # not yet implemented
-  text-chat/          # not yet implemented
 ```
 
 Bounding message size/rate is implemented (`REALTIME_MAX_MESSAGE_BYTES`,
@@ -164,8 +191,34 @@ possible later.
 T7's client identity is deliberately **not** SQLite-backed: it is a single JSON file per profile
 (`%APPDATA%/DiscoVoador/identity/identity.json`, atomic writes, `safeStorage`-encrypted private
 key) owned entirely by the Electron Main process, with no server-side persistence at all — the
-realtime server holds identity state only for a connection's lifetime. No application schema or
-database code exists yet.
+realtime server holds identity state only for a connection's lifetime.
+
+T9 is the first task to introduce real application persistence: the Dedicated Server's authorization
+store (groups, memberships, token digests, bans) at `<dataDir>/authorization.sqlite`, via `node:sqlite`'s
+built-in `DatabaseSync` — zero new dependencies, and synchronous, matching `services/realtime`'s
+existing fully-synchronous connection state machine (see
+[`architecture/SERVER_AUTHORIZATION.md`](architecture/SERVER_AUTHORIZATION.md) and
+[`adr/0013-server-authorization-storage-and-rbac.md`](adr/0013-server-authorization-storage-and-rbac.md)).
+This is client-identity-adjacent but architecturally distinct: it is server-local authorization
+state, never a users/accounts database, and holds no client identity secrets whatsoever.
+
+T10 added the Dedicated Server's second persistent SQLite file, `<dataDir>/chat.sqlite` — deliberately
+**separate** from T9's `authorization.sqlite`, not merged into it (see
+[`architecture/PERSISTENT_TEXT_CHAT.md`](architecture/PERSISTENT_TEXT_CHAT.md) and
+[`adr/0014-persistent-server-owned-chat-history.md`](adr/0014-persistent-server-owned-chat-history.md)
+for the full reasoning: independent retention-policy futures, an asymmetric acceptable-loss profile
+between chat and authorization data, and module-boundary consistency with T9's own `authorization/`
+module). Both stores share a small `withTransaction`/migration-runner _pattern_
+(`services/dedicated-server/src/storage/sqlite-store-utils.ts`), never a shared file, shared
+connection, or shared `schema_migrations` table.
+
+T11 added the Client's own first genuine local-settings file, `%APPDATA%/DiscoVoador/settings.json`
+(`apps/desktop/src/main/settings/`) — device preferences, screen-quality/mute/deafen defaults, and
+server bookmarks, deliberately kept separate from both T7's `identity.json`/`preferences.json` (a
+different corruption-recovery discipline; see
+[`adr/0015-local-client-settings-and-bookmarks.md`](adr/0015-local-client-settings-and-bookmarks.md))
+and from anything server-side. This remains client-local persistence only — no new server-side
+storage concern was introduced.
 
 ## RTC transport strategy
 
@@ -274,8 +327,13 @@ Electron/Chromium build, replaced with one anchored to `RTCRtpTransceiver.mid`),
 
 ## Deployment shape
 
-- Desktop clients connect to one self-hosted realtime URL.
-- SQLite initially lives with the realtime service and is backed up operationally.
+- Desktop clients connect directly to an operator-chosen Disco Voador Dedicated Server address
+  (T8) — no Disco Voador–operated infrastructure sits between them; a user enters the address
+  manually (`docs/architecture/DEDICATED_SERVER.md`).
+- Any number of independent Dedicated Server installations may exist with no relationship or
+  communication between them; the same client identity (T7) may authenticate to several
+  independently, with no cross-server correlation.
+- SQLite initially lives with the Dedicated Server and is backed up operationally.
 - Coturn is an independent network service with short-lived credentials minted server-side.
 - A reverse proxy may terminate HTTPS/WSS; TURN needs direct or L4-aware exposure.
 - Core operation cannot require vendor SaaS.

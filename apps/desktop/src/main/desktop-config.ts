@@ -4,11 +4,12 @@ import type { RtcIceServerConfig } from '@disco-voador/rtc-core';
 import { z } from 'zod';
 
 /**
- * The realtime server URL is operator/deployment configuration, not an end-user-editable field in
- * the Renderer — see `docs/architecture/WEBRTC_VOICE.md` for why. This keeps the Content-Security-
- * Policy's `connect-src` an exact, single allowlisted origin (computed from this same value) rather
- * than a wildcard: an arbitrary runtime-user-typed endpoint could never be safely pre-declared in a
- * CSP set before the page loads.
+ * `DISCO_VOADOR_REALTIME_URL` is a deployment/development default only (T8): a pre-fill convenience
+ * for `ConnectionScreen`'s address field and the E2E auto-connect path, never the sole allowed
+ * server. Before T8 this value was the one CSP `connect-src` origin the Renderer could ever reach;
+ * T8 made the connect target a runtime, user-typed value instead, so `content-security-policy.ts`
+ * now scopes `connect-src` to the `ws:`/`wss:` schemes generically rather than one pre-declared
+ * origin — see that file's doc comment and `docs/architecture/DEDICATED_SERVER.md`.
  */
 function isWebSocketUrl(value: string): boolean {
   try {
@@ -108,6 +109,38 @@ const desktopConfigSchema = z.object({
   // `DISCO_VOADOR_E2E_VOICE_AUTO_SCREEN_SHARE=1` also set on the publisher instance. Same
   // `!app.isPackaged` gating as everything else here.
   DISCO_VOADOR_E2E_VOICE_AUTO_SCREEN_SHARE_AUDIO: z.enum(['1', '0']).optional(),
+  // T8: overrides AutoConnect's target address, independent of DISCO_VOADOR_REALTIME_URL — see
+  // `DesktopE2EVoiceConfig.connectUrl`'s doc comment in `shared/ipc-contract.ts` for why this exists
+  // as its own field rather than reusing DISCO_VOADOR_REALTIME_URL. Same `!app.isPackaged` gating as
+  // everything else here.
+  DISCO_VOADOR_E2E_CONNECT_URL: z
+    .string()
+    .min(1)
+    .refine(isWebSocketUrl, 'must be a ws:// or wss:// URL')
+    .optional(),
+  // T9: once connected, automatically redeems this bearer token (privilege key, invite token, or
+  // the bootstrap Server Admin token) via `client:authorization-redeem-token` — the same production
+  // action the "Use Privilege Key" panel drives, with no human interaction. See
+  // `apps/desktop/scripts/e2e-authorization.mjs`. Same `!app.isPackaged` gating as everything else
+  // here.
+  DISCO_VOADOR_E2E_REDEEM_TOKEN: z.string().min(1).optional(),
+  // T10: once connected, automatically sends this body to Server Chat via `client:chat-send` — the
+  // same production `sendChatMessage` action the chat composer drives, with no human interaction.
+  // See `apps/desktop/scripts/e2e-text-chat-persistence.mjs`. Same `!app.isPackaged` gating as
+  // everything else here.
+  DISCO_VOADOR_E2E_CHAT_SEND_SERVER: z.string().min(1).optional(),
+  // T10: once joined to the auto-join voice channel, automatically sends this body to that
+  // channel's chat. See `apps/desktop/scripts/e2e-text-chat-channel-persistence.mjs`.
+  DISCO_VOADOR_E2E_CHAT_SEND_CHANNEL: z.string().min(1).optional(),
+  // T11: arms `apps/desktop/scripts/e2e-settings-persistence.mjs` — deliberately independent of
+  // `DISCO_VOADOR_E2E_VOICE_AUTO_JOIN_CHANNEL`/`e2eVoiceAutoJoin` (see
+  // `DesktopE2ESettingsPersistenceConfig`'s own doc comment in `shared/ipc-contract.ts` for why: this
+  // scenario needs no realtime service at all). Same `!app.isPackaged` gating as everything else
+  // here, applied one layer up in `main/window.ts`.
+  DISCO_VOADOR_E2E_SETTINGS_PERSISTENCE: z.enum(['1', '0']).optional(),
+  // T11: only meaningful alongside the flag above — see
+  // `DesktopE2ESettingsPersistenceConfig.write`'s doc comment.
+  DISCO_VOADOR_E2E_SETTINGS_PERSISTENCE_WRITE: z.enum(['1', '0']).optional(),
 });
 
 export interface DesktopConfig {
@@ -124,8 +157,16 @@ export interface DesktopConfig {
         readonly autoScreenShareOffAfterMs: number | undefined;
         readonly autoScreenShareReshareAfterMs: number | undefined;
         readonly autoScreenShareAudio: boolean;
+        readonly connectUrl: string | undefined;
+        readonly redeemToken: string | undefined;
+        readonly autoChatSendServerBody: string | undefined;
+        readonly autoChatSendChannelBody: string | undefined;
       }
     | undefined;
+  // T11 — see `DesktopE2ESettingsPersistenceConfig`'s doc comment; `undefined` unless
+  // `DISCO_VOADOR_E2E_SETTINGS_PERSISTENCE=1`, mirroring `e2eVoiceAutoJoin`'s own presence-gating
+  // shape exactly.
+  readonly e2eSettingsPersistence: { readonly write: boolean } | undefined;
 }
 
 export function loadDesktopConfig(
@@ -149,7 +190,15 @@ export function loadDesktopConfig(
           autoScreenShareReshareAfterMs:
             parsed.DISCO_VOADOR_E2E_VOICE_AUTO_SCREEN_SHARE_RESHARE_AFTER_MS,
           autoScreenShareAudio: parsed.DISCO_VOADOR_E2E_VOICE_AUTO_SCREEN_SHARE_AUDIO === '1',
+          connectUrl: parsed.DISCO_VOADOR_E2E_CONNECT_URL,
+          redeemToken: parsed.DISCO_VOADOR_E2E_REDEEM_TOKEN,
+          autoChatSendServerBody: parsed.DISCO_VOADOR_E2E_CHAT_SEND_SERVER,
+          autoChatSendChannelBody: parsed.DISCO_VOADOR_E2E_CHAT_SEND_CHANNEL,
         }
       : undefined,
+    e2eSettingsPersistence:
+      parsed.DISCO_VOADOR_E2E_SETTINGS_PERSISTENCE === '1'
+        ? { write: parsed.DISCO_VOADOR_E2E_SETTINGS_PERSISTENCE_WRITE === '1' }
+        : undefined,
   };
 }

@@ -1,9 +1,17 @@
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 
-import { CLOSE_CODES, type ServerMessage } from '@disco-voador/protocol';
+import {
+  CLOSE_CODES,
+  type ErrorCode,
+  type ServerCapability,
+  type ServerMessage,
+  type VoiceChannelSummary,
+} from '@disco-voador/protocol';
 import { WebSocketServer, type WebSocket } from 'ws';
 
+import { createNoopAuthorizationPort, type AuthorizationPort } from './authorization-port.js';
+import { createNoopChatPort, type ChatPort } from './chat-port.js';
 import { Connection } from './connection.js';
 import type { RealtimeConfig } from './config.js';
 import { createNoopLogger, type Logger } from './logging.js';
@@ -22,26 +30,76 @@ export interface RealtimeServerHandle {
   stop(): Promise<void>;
 }
 
+/** Default display metadata for a `createRealtimeServer` caller that doesn't compose its own —
+ * `services/dedicated-server` always supplies its own via {@link RealtimeServerDependencies}. */
+const DEFAULT_SERVER_NAME = 'Disco Voador Realtime Service';
+const DEFAULT_SERVER_CAPABILITIES: readonly ServerCapability[] = [
+  'voice',
+  'camera',
+  'screen-video',
+  'screen-audio',
+];
+
 export interface RealtimeServerDependencies {
   readonly logger?: Logger;
+  /** T8 — the voice-channel catalog this server instance offers, server-operator configuration
+   * (see `services/dedicated-server`) rather than a hardcoded constant. Defaults to
+   * {@link DEFAULT_VOICE_CHANNELS} for direct `@disco-voador/realtime` consumers (its own dev CLI,
+   * `tests/realtime/*`) that don't compose their own. */
+  readonly voiceChannels?: readonly VoiceChannelSummary[];
+  /** T8 — this server's own display metadata, echoed into every `server:hello`. */
+  readonly serverMetadata?: {
+    readonly name: string;
+    readonly capabilities: readonly ServerCapability[];
+  };
+  /** T9 — server-local authorization (see `authorization-port.ts`). Defaults to a permissive
+   * no-op port for direct `@disco-voador/realtime` consumers that don't compose their own —
+   * `services/dedicated-server` always supplies `SqliteAuthorizationPort` instead. */
+  readonly authorization?: AuthorizationPort;
+  /** T10 — server-local persistent chat (see `chat-port.ts`). Defaults to a permissive no-op port
+   * for direct `@disco-voador/realtime` consumers that don't compose their own —
+   * `services/dedicated-server` always supplies `ChatStore` instead. */
+  readonly chat?: ChatPort;
 }
 
 /**
  * Builds a realtime server instance without starting it — `start()`/`stop()` are explicit so
- * integration tests (and the CLI bootstrap in `index.ts`) share the exact same reusable service
- * code rather than the implementation being reachable only through a CLI entrypoint.
+ * integration tests (and the CLI bootstrap in `index.ts`, and `services/dedicated-server`'s own
+ * composition root) share the exact same reusable service code rather than the implementation
+ * being reachable only through one CLI entrypoint.
  */
 export function createRealtimeServer(
   config: RealtimeConfig,
   deps: RealtimeServerDependencies = {},
 ): RealtimeServerHandle {
   const logger = deps.logger ?? createNoopLogger();
+  const serverMetadata = deps.serverMetadata ?? {
+    name: DEFAULT_SERVER_NAME,
+    capabilities: DEFAULT_SERVER_CAPABILITIES,
+  };
+  const authorization = deps.authorization ?? createNoopAuthorizationPort();
+  const chat = deps.chat ?? createNoopChatPort();
   const connections = new Map<string, Connection>();
-  const voiceRegistry = new VoiceRegistry(DEFAULT_VOICE_CHANNELS);
+  const voiceRegistry = new VoiceRegistry(deps.voiceChannels ?? DEFAULT_VOICE_CHANNELS);
   let wss: WebSocketServer | undefined;
 
   function deliverToConnection(connectionId: string, message: ServerMessage): void {
     connections.get(connectionId)?.deliver(message);
+  }
+
+  /** T9 — the `Connection`-level counterpart to `deliverToConnection`, for moderation actions
+   * (kick/ban) targeting a *different* connection than the one that triggered them. */
+  function closeOtherConnection(connectionId: string, code: ErrorCode, message: string): void {
+    connections.get(connectionId)?.forceReject(code, message);
+  }
+
+  /** T10 — pushes `message` to every currently-`ready` connection (server-wide chat broadcast).
+   * `connections` tracks every connection regardless of handshake state, so this filters to `ready`
+   * itself rather than assuming every tracked connection can receive a chat message. */
+  function broadcastToReady(message: ServerMessage): void {
+    for (const connection of connections.values()) {
+      if (connection.state === 'ready') connection.deliver(message);
+    }
   }
 
   function handleConnection(socket: WebSocket): void {
@@ -69,7 +127,12 @@ export function createRealtimeServer(
       config,
       logger,
       voiceRegistry,
+      serverMetadata,
+      authorization,
+      chat,
       deliverToConnection,
+      closeOtherConnection,
+      broadcastToReady,
       (closed) => {
         connections.delete(closed.id);
       },

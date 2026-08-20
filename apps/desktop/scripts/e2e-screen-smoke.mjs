@@ -31,7 +31,7 @@
 // (unpackaged app only, `ELECTRON_RUN_AS_NODE` must be genuinely absent, isolated `--user-data-dir`
 // per instance) — this script mirrors it rather than duplicating those comments.
 //
-// Prerequisites: `pnpm --filter @disco-voador/realtime run build` and
+// Prerequisites: `pnpm --filter @disco-voador/dedicated-server run build` and
 // `pnpm --filter @disco-voador/desktop exec electron-forge package` must have already been run.
 
 import { spawn } from 'node:child_process';
@@ -43,13 +43,11 @@ import { fileURLToPath } from 'node:url';
 import electronPath from 'electron';
 
 import { buildElectronE2EEnvironment } from './lib/electron-e2e-env.mjs';
+import { startDedicatedServer } from './lib/start-dedicated-server.mjs';
 
 const desktopDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const repoRoot = path.resolve(desktopDir, '../..');
 const mainEntry = path.join(desktopDir, '.vite', 'build', 'main.cjs');
-const realtimeEntry = path.join(repoRoot, 'services', 'realtime', 'dist', 'index.js');
 
-const REALTIME_START_TIMEOUT_MS = 15_000;
 const INSTANCE_TIMEOUT_MS = 120_000;
 
 // Publisher-only timing (primary scenario). Kept short: with only one instance performing real
@@ -70,52 +68,6 @@ if (!existsSync(mainEntry)) {
   fail(
     `Built Vite main entry not found at ${mainEntry}.\nRun "pnpm --filter @disco-voador/desktop exec electron-forge package" first (this also produces .vite/build/).`,
   );
-}
-if (!existsSync(realtimeEntry)) {
-  fail(
-    `Built realtime service not found at ${realtimeEntry}.\nRun "pnpm --filter @disco-voador/realtime run build" first.`,
-  );
-}
-
-function startRealtimeService() {
-  return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [realtimeEntry], {
-      cwd: path.dirname(realtimeEntry),
-      env: { ...process.env, REALTIME_HOST: '127.0.0.1', REALTIME_PORT: '0', LOG_LEVEL: 'error' },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-
-    let settled = false;
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      child.kill();
-      reject(
-        new Error(
-          `Realtime service did not report "listening" within ${REALTIME_START_TIMEOUT_MS}ms`,
-        ),
-      );
-    }, REALTIME_START_TIMEOUT_MS);
-
-    let stdout = '';
-    child.stdout.on('data', (chunk) => {
-      stdout += chunk.toString();
-      const match = /Realtime server listening on ([\d.]+):(\d+)/.exec(stdout);
-      if (match && !settled) {
-        settled = true;
-        clearTimeout(timer);
-        resolve({ child, host: match[1], port: Number(match[2]) });
-      }
-    });
-    child.stderr.on('data', (chunk) => process.stderr.write(`[realtime] ${chunk.toString()}`));
-    child.on('exit', (code) => {
-      if (!settled) {
-        settled = true;
-        clearTimeout(timer);
-        reject(new Error(`Realtime service exited early (code ${String(code)})`));
-      }
-    });
-  });
 }
 
 /** Launches one unpackaged Electron instance with the given E2E env overrides, relays its stdout
@@ -251,9 +203,9 @@ async function runDualCaptureStressTest(realtimeUrl) {
 async function main() {
   const dualCapture = process.argv.includes('--dual-capture');
 
-  console.info('Starting realtime service...');
-  const { child: realtimeChild, host, port } = await startRealtimeService();
-  console.info(`Realtime service listening on ${host}:${String(port)}`);
+  console.info('Starting Dedicated Server...');
+  const { child: realtimeChild, host, port } = await startDedicatedServer();
+  console.info(`Dedicated Server listening on ${host}:${String(port)}`);
   const realtimeUrl = `ws://${host}:${String(port)}`;
 
   try {

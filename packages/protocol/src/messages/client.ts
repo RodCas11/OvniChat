@@ -1,8 +1,11 @@
 import { z } from 'zod';
 
 import { messageIdSchema } from '../envelope.js';
+import { serverTokenSchema } from '../authorization.js';
 import { displayNameSchema } from '../identifiers.js';
 import { identityPublicKeySchema, identitySignatureSchema } from '../identity.js';
+import { clientAuthorizationMessageSchema } from './authorization.js';
+import { clientChatMessageSchema } from './chat.js';
 import { clientMediaTrackSourceMessageSchema } from './media.js';
 import {
   clientWebrtcAnswerMessageSchema,
@@ -26,6 +29,14 @@ import { clientVoiceJoinMessageSchema, clientVoiceLeaveMessageSchema } from './v
  * bounds already proven for `voice:join`'s `displayName` — deliberately: it is a separate,
  * connection-scoped preference, not a merge of the two concepts (a nickname change never affects
  * a channel session already in progress, and vice versa).
+ *
+ * T9: `serverToken` is an optional bearer capability (see `authorization.ts`) presented at
+ * admission time -- only meaningful against a server configured `accessMode: invite-only` and an
+ * identity with no existing persistent group membership (see
+ * `docs/architecture/SERVER_AUTHORIZATION.md`'s admission flow). Additive and optional, so this
+ * does not require a protocol version bump (`version.ts`'s evolution policy) -- an older client
+ * simply never sends it, which is indistinguishable from a present client connecting to an
+ * `accessMode: open` server.
  */
 export const clientHelloMessageSchema = z
   .object({
@@ -40,6 +51,7 @@ export const clientHelloMessageSchema = z
       .strict(),
     nickname: displayNameSchema,
     publicKey: identityPublicKeySchema,
+    serverToken: serverTokenSchema.optional(),
   })
   .strict();
 
@@ -81,6 +93,8 @@ export const clientMessageSchema = z.discriminatedUnion('type', [
   clientWebrtcAnswerMessageSchema,
   clientWebrtcIceCandidateMessageSchema,
   clientMediaTrackSourceMessageSchema,
+  ...clientAuthorizationMessageSchema.options,
+  ...clientChatMessageSchema.options,
 ]);
 
 export type ClientMessage = z.infer<typeof clientMessageSchema>;

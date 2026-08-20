@@ -60,6 +60,50 @@ import { z } from 'zod';
  * - `IDENTITY_PROTOCOL_ERROR` — an identity message arrived out of order for the connection's
  *   current state (e.g. `client:identity-proof` with no outstanding challenge, or a second
  *   `client:hello` after one was already accepted).
+ *
+ * The T9 codes below cover server-local authorization (see
+ * `docs/architecture/SERVER_AUTHORIZATION.md`). Two are **fatal admission-time** rejections —
+ * evaluated after identity verification succeeds but before the connection ever reaches `ready`,
+ * so they close the connection exactly like the `IDENTITY_*` codes above:
+ *
+ * - `BANNED` — the verified identity is currently subject to an active ban on this server. Also
+ *   used to close an already-`ready` connection when an administrator bans it live.
+ * - `INVITE_REQUIRED` — the server is configured `accessMode: invite-only`, the identity has no
+ *   persistent server-local group membership, and `client:hello.serverToken` was absent, invalid,
+ *   expired, or already consumed.
+ *
+ * `KICKED` is also fatal, but never an admission-time rejection — it only ever closes an
+ * already-`ready` connection an administrator explicitly kicked, and unlike `BANNED` does not
+ * imply anything persists past that one disconnect.
+ *
+ * Everything else below is **non-fatal** — an authorization mutation a caller was not permitted to
+ * perform, or a nonexistent target, is an ordinary, expected condition an admin UI can recover from
+ * without tearing down the connection, exactly like T3's own signaling error codes:
+ *
+ * - `AUTHORIZATION_DENIED` — the caller's current permissions do not include the one a requested
+ *   action requires. Never distinguishes *why* beyond that (e.g. never reveals whether a group even
+ *   exists to a caller who couldn't manage it anyway).
+ * - `GROUP_NOT_FOUND` — a `groupId` does not exist in this server's authorization store.
+ * - `PROTECTED_GROUP` — an operation targeted one of the three built-in groups in a way that isn't
+ *   allowed (deleting any of them, or an edit to `server-admin` that would leave it materially
+ *   unable to administer the server).
+ * - `LAST_ADMIN` — an operation would leave the server with zero identities holding the built-in
+ *   Server Admin group. Rejected unconditionally, regardless of who requests it.
+ * - `TOKEN_INVALID` — a redeemed token's digest matches no known, unconsumed token.
+ * - `TOKEN_EXPIRED` — the token matched a known record, but its `expiresAt` has passed.
+ * - `TOKEN_ALREADY_USED` — the token matched a known record already consumed by an earlier,
+ *   successful redemption.
+ * - `PARTICIPANT_NOT_FOUND` — a `targetParticipantId` does not resolve to a connection currently in
+ *   any voice channel on this server (moderation targets an *online* participant; see
+ *   `docs/architecture/SERVER_AUTHORIZATION.md`).
+ *
+ * The T10 code below covers persistent server-side text chat (see
+ * `docs/architecture/PERSISTENT_TEXT_CHAT.md`). Non-fatal, matching every other rate-limit-shaped
+ * condition in this list — a chatty-but-legitimate client is throttled, not disconnected:
+ *
+ * - `CHAT_RATE_LIMITED` — the connection exceeded its per-connection chat-send or chat-history-
+ *   request rate limit (a separate, smaller bucket than the generic transport-level `RATE_LIMITED`
+ *   — see `services/realtime/src/connection.ts`).
  */
 export const errorCodeSchema = z.enum([
   'INVALID_MESSAGE',
@@ -79,6 +123,18 @@ export const errorCodeSchema = z.enum([
   'IDENTITY_INVALID_SIGNATURE',
   'IDENTITY_CHALLENGE_EXPIRED',
   'IDENTITY_PROTOCOL_ERROR',
+  'BANNED',
+  'INVITE_REQUIRED',
+  'KICKED',
+  'AUTHORIZATION_DENIED',
+  'GROUP_NOT_FOUND',
+  'PROTECTED_GROUP',
+  'LAST_ADMIN',
+  'TOKEN_INVALID',
+  'TOKEN_EXPIRED',
+  'TOKEN_ALREADY_USED',
+  'PARTICIPANT_NOT_FOUND',
+  'CHAT_RATE_LIMITED',
 ]);
 
 export type ErrorCode = z.infer<typeof errorCodeSchema>;

@@ -306,6 +306,224 @@ recording T7's own identity-design decision (Ed25519, challenge/response, no acc
 derived identity) — see [`tasks/STATUS.md`](tasks/STATUS.md) for the resulting T8+ roadmap toward a
 Dedicated Server product boundary and server-local permissions.
 
+T8 turned the previously-internal `services/realtime` into an explicitly independently-operated
+**Disco Voador Dedicated Server** product — a client now connects directly to an operator-chosen
+server address, with no Disco Voador–operated infrastructure required or assumed:
+
+- **New `services/dedicated-server` workspace** (`@disco-voador/dedicated-server`) composes
+  `services/realtime`'s reusable connection/session library rather than duplicating or renaming it —
+  a `software-architect` review confirmed this boundary; see
+  [`adr/0012-dedicated-server-product-boundary.md`](adr/0012-dedicated-server-product-boundary.md).
+  `services/realtime` gained exactly one new, optional dependency-injection seam
+  (`voiceChannels`/`serverMetadata`) so a composing caller can supply its own channel catalog and
+  server identity — zero existing consumers needed to change. `services/realtime/src/index.ts` and
+  `cli.ts` were split so importing the package as a library no longer has the side effect of starting
+  a server.
+- **Typed, strictly validated server configuration**: a JSON config file (server name, listen
+  host/port, connection cap, voice-channel catalog) plus environment variables, precedence
+  `defaults < file < environment`, reusing `services/realtime`'s already-tested
+  `loadRealtimeConfig` rather than a second parallel implementation. Invalid configuration and port
+  collisions fail loudly before the process ever binds a socket.
+- **Voice channels became server-owned configuration**, delivered via the existing `voice:catalog`
+  message the client already rendered dynamically since T3 — the real gap was server-side (a
+  hardcoded catalog every server shared), not client-side.
+- **Server metadata added to `server:hello`**: `serverName`/`serverCapabilities`, bounded and
+  schema-validated, sent only after T7's identity-proof step already succeeded. Protocol version
+  bumped 2 → 3 (breaking — v2 support dropped, same reasoning T7's own bump already established).
+- **`apps/desktop`'s Renderer stopped auto-connecting to one implicit development server**: a new
+  `ConnectionScreen` (nickname context, manually entered server address via a real `URL`-parser-based
+  `parseServerAddress`, Connect button — no login/password/email) and an explicit Disconnect action
+  replace the previous always-on auto-connect. Connecting to a second, independent server within the
+  same running app instance reuses T3–T7's already-correct effect-teardown lifecycle with **zero new
+  teardown code** — verified by direct inspection of the cleanup path, not just by the E2E scripts
+  continuing to pass.
+- **All six pre-existing Electron E2E scripts** (`e2e:voice-smoke`, `e2e:camera-smoke`,
+  `e2e:screen-smoke`, `e2e:screen-audio-smoke`, `e2e:identity-auth`, `e2e:identity-persistence`) now
+  launch the real Dedicated Server product entrypoint (`services/dedicated-server/dist/cli.js`) via a
+  new shared helper, rather than a second, bypassed "internal realtime-only" startup path — there is
+  exactly one way this codebase starts a real server, in tests and product use alike. A new
+  `e2e:connection-smoke` proves the full real-Electron connection flow end to end: start
+  disconnected, connect to a real, distinctively-configured Dedicated Server, authenticate via T7
+  identity, render its actual configured name.
+- **A new Dedicated Server smoke test** (`pnpm --filter @disco-voador/dedicated-server run smoke`)
+  and a real two-independent-server isolation integration suite
+  (`tests/dedicated-server/integration.test.ts`, real sockets, real ephemeral ports, two full server
+  instances in one Vitest process) prove sessions, channel state, and server metadata never cross
+  between independently configured servers, and that the same local T7 identity authenticates
+  independently to both with no cross-server correlation.
+
+**T8 is complete.** `security-reviewer` found and this task fixed one release-blocking issue: a
+stale Content-Security-Policy `connect-src` (fixed to one pre-declared origin since T2) that would
+have silently blocked a real user from ever connecting to any server address other than the one
+baked in via `DISCO_VOADOR_REALTIME_URL` at launch — the exact mechanism T8's own architecture
+claimed to remove. Fixed by scoping `connect-src` to the `ws:`/`wss:` schemes generically; verified
+with a genuine regression (`e2e:connection-smoke` now connects through a deliberately mismatched
+default address). `qa-engineer` separately found and fixed a real config-validation gap (the
+Dedicated Server's `name`/`DISCO_VOADOR_SERVER_NAME` fields did not enforce the same bounds the wire
+protocol's `serverNameSchema` requires, so an invalid name would start the server successfully but
+then be silently rejected by every connecting client's own strict message validation, hanging with
+no visible error) and added regression coverage. See
+[`tasks/T8_DEDICATED_SERVER.md`](tasks/T8_DEDICATED_SERVER.md)'s handoff notes and
+[`architecture/DEDICATED_SERVER.md`](architecture/DEDICATED_SERVER.md) for the full record, including
+the `services/realtime`-vs-Dedicated-Server composition decision, the server-local instance-id
+deferral (T8 Section 12), and known limitations.
+
+T9 gave the Dedicated Server its first authorization model -- server-local groups/permissions keyed
+by T7's `identityId`, TeamSpeak-style bearer tokens, and identity-based bans -- and, with it, the
+Dedicated Server's first persistent runtime state:
+
+- **Storage**: `node:sqlite`'s built-in `DatabaseSync` -- zero new dependencies, and deliberately
+  synchronous so token-redemption atomicity falls directly out of Node's own single-threaded event
+  loop rather than needing manual locking (see
+  [`adr/0013-server-authorization-storage-and-rbac.md`](adr/0013-server-authorization-storage-and-rbac.md)).
+  The store lives entirely inside `services/dedicated-server`; `services/realtime` gained one more
+  narrow injected seam (`AuthorizationPort`, defaulting to a permissive no-op) mirroring T8's own
+  `voiceChannels`/`serverMetadata` pattern exactly.
+- **Admission**: evaluated inside T7's existing `handleIdentityProof`, immediately after signature
+  verification and before a connection can ever reach `ready`. `open` servers admit any non-banned
+  identity as a non-persistent virtual Guest (no database row written); `invite-only` servers
+  require either an existing persistent membership or a valid invite token presented at
+  `client:hello`.
+- **Bootstrap**: a fresh authorization store generates a one-time, cryptographically random Server
+  Admin token, printed once to the operator's console, never persisted in raw form. Found and fixed
+  a real gap while building this: a server started directly in `invite-only` mode would otherwise
+  permanently lock out its own operator, since the bootstrap token's row is `kind: 'bootstrap'`, not
+  `'invite'` -- fixed by having admission accept either kind.
+- **Tokens**: privilege keys (admin-issued, any target group) and invite tokens (admission-time) are
+  the same underlying mechanism -- opaque bearer secrets, digest-only in storage, atomically
+  single-use by construction, no password-hashing KDF (deliberately unjustified for high-entropy
+  random tokens).
+- **Bans**: identity-based only (never IP/hardware), permanent or temporary, enforced at admission
+  and live against an already-connected participant (a ban immediately force-closes that
+  connection).
+- **Last-admin protection**: structurally guaranteed -- the built-in `server-admin` group's
+  permission set is a compile-time constant no mutation can edit, and revoking the group from the
+  _last_ remaining admin is rejected inside the same transaction as the check.
+- **Server-side enforcement**: every `client:authorization-*` mutation is permission-checked in
+  `services/realtime/src/protocol-handlers.ts` against the caller's actual current permissions --
+  the new `AuthorizationPanel.tsx` client UI hiding a section is a presentation courtesy, never the
+  real boundary, proven by a real-socket test where a Guest hand-crafting an admin-only message is
+  rejected regardless of what its own UI shows.
+- **Cross-server isolation**: each Dedicated Server's `AuthorizationStore` is a private, unrelated
+  SQLite connection -- proven with two real independent server instances in one Vitest process,
+  including that a bootstrap/privilege/invite token created by Server A digests to something Server
+  B's store has simply never seen.
+- **New real-Electron E2E** (`e2e:authorization`, T9 Section 78): a full bootstrap -> Server Admin,
+  invite redemption -> Member, live ban -> rejected reconnect, unban -> successful reconnect journey,
+  the same local identity relaunched three times throughout. Found and fixed a real Windows-specific
+  bug while building it: relaunching the same `--user-data-dir` immediately after externally
+  `kill()`-ing the previous Electron instance produced a reproducible `safeStorage`/DPAPI decrypt
+  failure reading the same, never-corrupted `identity.json` -- fixed by having each instance exit via
+  Electron's own `app.exit()` instead (the same technique `e2e-identity-persistence.mjs` already
+  relied on). Two consecutive clean runs.
+- All six pre-existing E2E scripts re-verified passing against T9's default `open` access mode -- no
+  regression from the new mandatory admission gate.
+
+See [`tasks/T9_SERVER_AUTHORIZATION.md`](tasks/T9_SERVER_AUTHORIZATION.md)'s handoff notes and
+[`architecture/SERVER_AUTHORIZATION.md`](architecture/SERVER_AUTHORIZATION.md) for the full record.
+
+T10 gave the Dedicated Server persistent server-side text chat -- two scopes (server-wide, and one
+per existing voice channel), correcting an earlier roadmap assumption that chat would be ephemeral:
+
+- **Storage**: a _second_, deliberately separate SQLite file (`chat.sqlite`), never merged into T9's
+  `authorization.sqlite` -- retention-policy independence and an asymmetric acceptable-loss profile
+  (chat is written far more often, and losing it is tolerable; losing authorization state is not)
+  were the load-bearing reasons, per a `software-architect` review (see
+  [`adr/0014-persistent-server-owned-chat-history.md`](adr/0014-persistent-server-owned-chat-history.md)).
+  Both stores now share a small `withTransaction`/migration-runner _pattern_
+  (`services/dedicated-server/src/storage/sqlite-store-utils.ts`), never a shared file or connection
+  -- `AuthorizationStore` was refactored to use it too, with the full T9 test suite as the regression
+  guard.
+- **Ordering**: the message's own SQLite `AUTOINCREMENT` rowid is the ordering/pagination-cursor
+  authority, never wall-clock `created_at` alone (two messages can share a millisecond).
+- **Sending**: server-derived sender identity/nickname always, never client-supplied -- neither chat
+  message type has a sender field to spoof. Server Chat requires `chat.server.send`; Channel Chat
+  requires both `chat.channel.send` _and_ current voice-channel membership. Reading history requires
+  no permission at all, a deliberate asymmetry with sending.
+- **Live delivery**: Server Chat broadcasts to every `ready` connection (a new `'broadcast-ready'`
+  action, since server-wide has no bounded membership set); Channel Chat reuses the existing
+  per-channel `deliver` fan-out `voice:participant-joined` already used.
+- **Client**: never the authoritative store -- `use-voice-channel.ts`'s `chatThreads` holds only
+  threads the UI actually opened, deduplicated by message id, cleared on every disconnect/reconnect.
+  `ChatPanel.tsx` never uses `dangerouslySetInnerHTML`, so a persisted `<script>` body always renders
+  as inert literal text.
+- **Guest data minimization, corrected**: T9's "a Guest creates no persistent server data" is no
+  longer accurate without qualification -- a Guest's chat _send_ now persists a message row (this is
+  the point of persistent chat), while still never creating a T9 authorization membership row. Both
+  documents now state this precisely rather than leaving the old claim stale.
+- **New real-Electron E2E** (`e2e:text-chat-persistence`): B connects and opens Server Chat; A sends
+  a Server Chat message (observed live by B), joins a voice channel, and sends a Channel Chat
+  message; A and B exit; the real Dedicated Server process is stopped and restarted against the same
+  data directory; a third, genuinely fresh Electron profile (different `--user-data-dir`, different
+  local identity, no relationship to A or B) connects and retrieves both messages purely through the
+  history API, confirmed never received as a live event. Three consecutive clean runs.
+- All eight pre-existing E2E scripts (including `e2e:authorization`) re-verified passing against the
+  new chat surface -- no regression.
+- Product-facing rename to **OvniChat** applied to client/server UI titles, startup banners, and new
+  documentation; the internal `@disco-voador/*` package namespace deliberately left unchanged, per
+  the task's own explicit instruction not to fold an uncontrolled rename migration into T10.
+
+See [`tasks/T10_PERSISTENT_TEXT_CHAT.md`](tasks/T10_PERSISTENT_TEXT_CHAT.md)'s handoff notes and
+[`architecture/PERSISTENT_TEXT_CHAT.md`](architecture/PERSISTENT_TEXT_CHAT.md) for the full record.
+
+T11 made the Client practical for daily use -- local device management, server bookmarks, and
+automatic reconnect, entirely client-local (never sent to any Dedicated Server):
+
+- **Client settings and bookmarks**: a new versioned, `.strict()`-zod-validated `settings.json`
+  (`apps/desktop/src/main/settings/`), atomic-write and corruption-recovery disciplined like T7's own
+  identity/preferences files but with its own section-by-section salvage policy (a malformed
+  `screenShare` section never discards the bookmark list) -- see
+  [`adr/0015-local-client-settings-and-bookmarks.md`](adr/0015-local-client-settings-and-bookmarks.md).
+  A bookmark is exactly `{bookmarkId, displayName, serverAddress}`; an invite/privilege/bootstrap
+  token is never persisted through this or any other path.
+- **Device management**: live device enumeration/hot-plug (`navigator.mediaDevices`), and -- the one
+  genuinely new `rtc-core` primitive this task needed -- `MediaTransport.replaceTrack(oldTrack,
+newTrack)`, a transceiver-level swap with no renegotiation, letting `switchMicrophone`/
+  `switchCamera` change the active device without leaving voice. Atomicity is mandatory and verified:
+  acquire the new device, `replaceTrack`, stop the old device only after success -- a failed switch
+  never disturbs a working device. A missing/unavailable preferred device is detected after the fact
+  (`deviceId` is an _ideal_, not _exact_, constraint, so acquisition never rejects for it) and
+  surfaced, never silently mismatched with no explanation. `setSinkId()` output-device selection is
+  supported on this app's pinned Electron build and honored by both remote-audio playback paths
+  (microphone and T6 screen-audio).
+- **Automatic reconnect**: `RealtimeClient` gained one additive `closed` event (real WebSocket close
+  code/reason); a new wrapping `ReconnectController` (never inside `RealtimeClient` itself, so the
+  existing E2E scripts that construct it directly are unaffected) owns one bounded
+  exponential-backoff-with-jitter retry loop, applied only to an _already-established_ session --
+  a first connection attempt that fails never silently retry-loops. Every reconnect performs a
+  genuinely fresh T7 handshake and T9 admission re-evaluation; the P2P mesh is fully rebuilt each
+  cycle (`P2PMeshTransport.closeAll()` permanently disables an instance); voice-channel membership,
+  microphone, and mute/deafen state are restored automatically, while camera and screen-video/audio
+  are **never** auto-restored -- a mandatory, independently security-reviewed privacy constraint, not
+  a default. See
+  [`adr/0016-automatic-reconnect-and-media-restoration-policy.md`](adr/0016-automatic-reconnect-and-media-restoration-policy.md).
+- **New real-Electron E2E** (`e2e:reconnect-smoke`): a real Dedicated Server is killed (SIGTERM) mid
+  voice-call and restarted on the same port/data directory; both clients are proven to detect the
+  loss, automatically reconnect with the _same_ `identityId` via a fresh handshake, rejoin voice with
+  _fresh_ server-issued participant ids and real peer audio, correctly reload Server Chat history sent
+  before the restart through the history API, and never show any evidence of camera/screen activity.
+  4 consecutive clean runs. A second new E2E (`e2e:settings-persistence`) proves a bookmark and device
+  preference survive a same-profile restart and never leak to a different profile.
+- All nine pre-existing E2E scripts (including `e2e:text-chat-persistence` and `e2e:authorization`)
+  re-verified passing against the final combined, repackaged build -- no regression. One intermittent
+  `e2e:camera-smoke` failure was observed once, matching the class of pre-existing, environmental
+  flakiness already documented in T6's own handoff notes (not root-caused to a specific fix there
+  either); 3 consecutive clean runs followed immediately.
+- `security-reviewer` found no release-blocking issues, independently verifying by direct code reading
+  (not doc-trust) that camera/screen genuinely never auto-restart after a reconnect -- the single
+  highest-priority claim in this task. `qa-engineer` found no product-code defects and closed three
+  real test-coverage gaps (a multi-cycle backoff-reset test, a Server-A-to-Server-B reconnect-race
+  test, and an `updateBookmark` token-smuggling rejection test its `addBookmark` sibling already had)
+  -- see [`tasks/T11_DAILY_USE_UX.md`](tasks/T11_DAILY_USE_UX.md)'s handoff notes for the full findings
+  from both reviews, including two honestly-recorded, not-fabricated coverage gaps (live device
+  switching has no automated regression test today, genuinely infeasible given this environment's
+  single-fake-device-per-kind Chromium setup; no E2E proves an explicit channel `leave()` is never
+  restored after a later reconnect).
+
+See [`tasks/T11_DAILY_USE_UX.md`](tasks/T11_DAILY_USE_UX.md)'s handoff notes and
+[`architecture/CLIENT_SETTINGS_AND_RECONNECT.md`](architecture/CLIENT_SETTINGS_AND_RECONNECT.md) for
+the full record.
+
 Read [`tasks/STATUS.md`](tasks/STATUS.md) for the authoritative status,
 [`tasks/T1_ELECTRON_SHELL.md`](tasks/T1_ELECTRON_SHELL.md) /
 [`tasks/T2_REALTIME_PROTOCOL.md`](tasks/T2_REALTIME_PROTOCOL.md) /
@@ -329,27 +547,47 @@ Renderer/Main trust boundary.
 
 ## What does not exist?
 
-There is no text chat, database schema, running Coturn stack (templates exist but no TURN credential
-minting), installer/maker artifact, dedicated-server product boundary, server-local permissions/
-groups/bans, or SFU. Production configuration/TLS termination for the realtime service is also not
-yet implemented. Voice, camera, screen-video, and screen-audio sharing (T3–T6, P2P-mesh, small-room,
-self-hosted scope) and local cryptographic client identity (T7) are all implemented,
-mechanism-verified, and live-verified end to end — the core media-engineering vertical plus the
-first piece of the real product's identity model are both complete.
+There is no running Coturn stack (templates exist but no TURN credential minting), installer/maker
+artifact, or SFU. Production configuration/TLS termination and Docker packaging for the Dedicated
+Server are also not yet implemented (T13). Windows per-process/game audio is not implemented (T12).
+Voice, camera, screen-video, and screen-audio sharing (T3–T6, P2P-mesh, small-room, self-hosted
+scope), local cryptographic client identity (T7), the Dedicated Server product boundary (T8),
+server-local groups/permissions/tokens/bans (T9), persistent server-side text chat (T10 — server-wide
+and per-voice-channel, real restart persistence, no message editing/deletion yet), and local device
+management/bookmarks/automatic reconnect (T11) are all implemented, mechanism-verified, and
+live-verified end to end. The product is now marketed as **OvniChat** (see [`PRODUCT.md`](PRODUCT.md));
+the internal `@disco-voador/*` package namespace is unchanged.
 
 ## What should happen next?
 
-**T8 — Dedicated Server product boundary**: a client connects to an independently-hosted,
-self-operated Disco Voador server — no mandatory Disco Voador cloud/control plane — per
-[`adr/0010-no-mandatory-central-control-plane.md`](adr/0010-no-mandatory-central-control-plane.md)'s
-recorded direction. T7's `identityId` is the identity primitive T8/T9 build on top of; do not
-implement T9 (server-local permissions/groups/tokens/bans) as part of T8. Before starting, two
-non-blocking follow-ups remain recorded from T6's own review, cheap relative to the risk they guard
-against: (1) a frequency-domain (e.g. dominant-frequency-near-440Hz) check for
-`e2e:screen-audio-smoke`'s `E2E_SCREEN_AUDIO_OK` proof, strengthening it beyond the current
-RMS-only non-silence check; (2) if `e2e:camera-smoke` flakiness recurs, a targeted failing-vs-
-passing stdout trace comparison to either root-cause it the way T5 stabilization's own flakiness
-was, or confirm it really is environmental.
+**T12 — Windows per-process/game audio** is next (sharing a specific process's audio, e.g.
+`game.exe`, instead of the entire system output). Do not implement it as part of T11.
+
+Non-blocking follow-ups still open, cheap relative to the risk they guard against: (1) a
+frequency-domain (e.g. dominant-frequency-near-440Hz) check for `e2e:screen-audio-smoke`'s
+`E2E_SCREEN_AUDIO_OK` proof, strengthening it beyond the current RMS-only non-silence check (recorded
+since T6); (2) `e2e:camera-smoke`'s intermittent, environmental flakiness (recorded since T6, observed
+again during T11 — see T11's own handoff notes) remains un-root-caused; a targeted failing-vs-passing
+stdout trace comparison across several deliberately-provoked failures would be the next diagnostic
+step if it becomes disruptive rather than occasional. (3) T11-specific: no automated regression test
+exists for live microphone/camera device switching (`switchMicrophone`/`switchCamera`) — genuinely
+infeasible today given this environment's single-fake-device-per-kind Chromium setup and lack of a
+React testing library; a future task adding a synthetic multi-device Chromium setup could close this.
+(4) T11-specific: no E2E proves an explicit voice-channel `leave()` is never restored by a later
+unexpected reconnect — the underlying logic is simple and verified correct by direct reading, but has
+no automated regression guard; would need a new E2E-only auto-leave hook.
+
+Two older follow-ups are now resolved by T11, recorded here for continuity rather than silently
+dropped: `ConnectionScreen`'s own `connectionError` prop (recorded since T8/T9) remains always
+`undefined` by design — T11 chose a different, more general mechanism instead
+(`VoiceChannelState.connectionError`, surfaced by `VoiceChannelView` once the hook has mounted, which
+covers both a first-connection failure and a post-reconnect non-retryable failure uniformly) rather
+than routing back to `ConnectionScreen`; see
+[`architecture/CLIENT_SETTINGS_AND_RECONNECT.md`](architecture/CLIENT_SETTINGS_AND_RECONNECT.md). The
+T10-recorded gap ("`ChatPanel.tsx`'s channel tab only ever targets the currently-joined voice channel,
+no picker for an arbitrary channel's history without joining it") was evaluated for T11 and explicitly
+deferred rather than built — the task's own spec permitted deferring it if it created disproportionate
+scope, and T11 already had a large surface; still open for a future task.
 
 ## Fixed foundation decisions
 
@@ -362,7 +600,16 @@ was, or confirm it really is environmental.
 - P2P first with an SFU-ready UI/transport seam.
 - Independent microphone, camera, screen-video, and screen-audio sources.
 - Windows-specific media isolated in `packages/windows-media`.
-- SQLite first behind a storage boundary.
+- SQLite first behind a storage boundary — implemented for the Dedicated Server's authorization
+  store (T9) and its chat store (T10), both via `node:sqlite`, in two deliberately separate physical
+  files (`authorization.sqlite`, `chat.sqlite` — see
+  [`adr/0014-persistent-server-owned-chat-history.md`](adr/0014-persistent-server-owned-chat-history.md)).
+- Local client settings/bookmarks are entirely client-local, versioned JSON, never sent to a
+  Dedicated Server — implemented for the Client's own settings store (T11, see
+  [`adr/0015-local-client-settings-and-bookmarks.md`](adr/0015-local-client-settings-and-bookmarks.md)).
+  Automatic reconnect is a wrapping controller around `RealtimeClient`, never new states inside it,
+  always performing a fresh T7 handshake, and camera/screen never auto-restart after one (T11, see
+  [`adr/0016-automatic-reconnect-and-media-restoration-policy.md`](adr/0016-automatic-reconnect-and-media-restoration-policy.md)).
 - VDO.Ninja/reference code follows the conservative provenance/license policy.
 
 See accepted ADRs in [`adr/`](adr/); supersede them explicitly if evidence changes a decision.
@@ -370,10 +617,14 @@ See accepted ADRs in [`adr/`](adr/); supersede them explicitly if evidence chang
 ## Decisions still open
 
 - Concrete application state, routing, and UI component choices.
-- Server-local authorization model (T9): permissions, groups, invite/privilege tokens, bans, all
-  keyed by T7's `identityId` — client identity itself (T7) is now implemented and is not open.
+- Message editing/deletion, retention-policy configuration, and full-text search for chat (T10
+  deferred all three deliberately — message ids are already shaped so deletion can be added later
+  without a schema migration). Text chat's own persistence model itself is implemented and not open;
+  see [`adr/0013-server-authorization-storage-and-rbac.md`](adr/0013-server-authorization-storage-and-rbac.md)
+  and [`adr/0014-persistent-server-owned-chat-history.md`](adr/0014-persistent-server-owned-chat-history.md).
+- Whether/when the internal `@disco-voador/*` package namespace is migrated to match the OvniChat
+  product name — deliberately deferred to its own, separately verified task (not part of T10).
 - Exact RTC transport API, negotiation topology, diagnostics model, and room limits.
-- Storage interface and SQLite driver/schema/migration tooling.
 - Native addon versus isolated helper for advanced Windows audio.
 - Installer/signing/update approach and production deployment topology.
 - Whether/when measured scale justifies an SFU and which implementation to use.
@@ -495,6 +746,98 @@ Definition of Done items satisfied. See [`tasks/T7_LOCAL_IDENTITY.md`](tasks/T7_
 handoff notes for the full record, including the canonical signing-payload design, the
 `packages/identity` package-boundary decision, the anti-oracle IPC design, and the corruption/race
 handling.
+
+T8's clean-state evidence, 2026-08-19, is the same gate with 667 Vitest tests (the same one
+pre-existing, already-allowlisted high-severity dependency advisory; no new advisories) —
+formatting, lint, whole-repo typecheck, `vitest run`, composite build, `verify-repository.mjs`, and
+the dependency audit all pass — plus its own required real-runtime evidence:
+`pnpm --filter @disco-voador/dedicated-server run smoke` passed (real process spawn, real `ws`
+client, full T7 handshake, server metadata/channel-catalog assertions, clean disconnect);
+`e2e:connection-smoke` passed, including after being strengthened to prove the CSP fix by
+deliberately connecting through an address different from the one baked in at launch; all six
+pre-existing Electron E2E scripts (`e2e:voice-smoke`, `e2e:camera-smoke`, `e2e:screen-smoke`,
+`e2e:screen-audio-smoke`, `e2e:identity-auth`, `e2e:identity-persistence`) were re-verified passing
+against the real Dedicated Server product entrypoint. **T8 is marked COMPLETE in
+[`tasks/STATUS.md`](tasks/STATUS.md)** — its mechanism is implemented, reviewed (`security-reviewer`
+and `qa-engineer` each found and this task fixed one real, actionable issue — see above), and
+unit/integration/live-verified through real independently-configured server instances and a real
+Electron connection flow, with all Definition of Done items satisfied. See
+[`tasks/T8_DEDICATED_SERVER.md`](tasks/T8_DEDICATED_SERVER.md)'s handoff notes for the full record.
+
+T9's clean-state evidence, 2026-08-19, is the same gate with 740 Vitest tests (the same one
+pre-existing, already-allowlisted high-severity dependency advisory; no new advisories — T9 added
+zero new npm dependencies, since `node:sqlite` is built into the pinned Node runtime) — formatting,
+lint, whole-repo typecheck, `vitest run`, composite build, `verify-repository.mjs`, and the
+dependency audit all pass via one canonical `corepack pnpm check` run — plus its own required
+real-runtime evidence: `pnpm --filter @disco-voador/dedicated-server run smoke` passed, now also
+capturing and redeeming the real one-time bootstrap token over a real socket; `e2e:authorization`
+(new, T9 Section 78) passed three consecutive clean runs (two before the post-review fixes below,
+one more after, against a freshly repackaged build), proving a real Electron client's full
+bootstrap/redeem/ban/reject/unban/reconnect journey with its local identity unchanged throughout;
+all six pre-existing Electron E2E scripts were re-verified passing against T9's default `open`
+access mode. **T9 is marked COMPLETE in [`tasks/STATUS.md`](tasks/STATUS.md)** — its mechanism is
+implemented, reviewed (`security-reviewer` and `qa-engineer` each found and this task fixed one
+real, non-blocking issue: a `deleteGroup`/`revokeGroup` force-disconnect symmetry gap, and a
+misleading fallback WebSocket close code on a force-closed connection — see
+[`tasks/T9_SERVER_AUTHORIZATION.md`](tasks/T9_SERVER_AUTHORIZATION.md)'s handoff notes for the full
+findings), and unit/integration/live-verified through a real SQLite-backed authorization store, real
+sockets, and a real Electron flow, with all Definition of Done items satisfied. See
+[`tasks/T9_SERVER_AUTHORIZATION.md`](tasks/T9_SERVER_AUTHORIZATION.md)'s handoff notes for the full
+record, including the SQLite/synchronous-atomicity storage decision, the bootstrap-on-invite-only
+fix, and the Windows DPAPI relaunch bug found and fixed while building the new E2E script.
+
+T10's clean-state evidence, 2026-08-20, is the same gate with 823 Vitest tests (the same one
+pre-existing, already-allowlisted high-severity dependency advisory; no new advisories — T10 added
+zero new npm dependencies) — formatting, lint, whole-repo typecheck, `vitest run`, composite build,
+`verify-repository.mjs`, and the dependency audit all pass via one canonical `corepack pnpm check`
+run — plus its own required real-runtime evidence: `e2e:text-chat-persistence` (new) passed **five**
+consecutive clean runs across this task (two before the OvniChat naming changes, three more after,
+the last two against the final, review-driven build), proving live cross-client Server Chat
+delivery, a real Dedicated Server process restart against the same data directory, and a genuinely
+fresh client (different profile/local identity) retrieving both Server Chat and Channel Chat
+messages purely through the history API, never as a live event. All eight pre-existing Electron E2E
+scripts were re-verified passing against the new chat surface — no regression. **T10 is marked
+COMPLETE in [`tasks/STATUS.md`](tasks/STATUS.md)** — its mechanism is implemented, reviewed
+(`security-reviewer` found one real, non-blocking issue — an overly absolute "message bodies are
+never logged" doc claim, corrected to precisely scope it to server-side logs and name the one
+documented client-side E2E-diagnostic exception; `qa-engineer` closed several real, pre-existing test
+coverage gaps with new regression tests rather than finding product defects — see
+[`tasks/T10_PERSISTENT_TEXT_CHAT.md`](tasks/T10_PERSISTENT_TEXT_CHAT.md)'s handoff notes for the full
+findings), and unit/integration/live-verified through two real, deliberately separate SQLite stores,
+real sockets, and a real multi-instance Electron flow, with all Definition of Done items satisfied.
+See [`tasks/T10_PERSISTENT_TEXT_CHAT.md`](tasks/T10_PERSISTENT_TEXT_CHAT.md)'s handoff notes for the
+full record, including the storage-topology decision (ADR 0014) and the OvniChat product-naming
+correction.
+
+T11's clean-state evidence, 2026-08-20, is the same gate with 913 Vitest tests (the same one
+pre-existing, already-allowlisted high-severity dependency advisory; no new advisories — T11 added
+zero new npm dependencies) — formatting, lint, whole-repo typecheck, `vitest run`, composite build,
+`verify-repository.mjs`, and the dependency audit all pass via one canonical `corepack pnpm check`
+run — plus its own required real-runtime evidence: `e2e:reconnect-smoke` (new) passed **4** consecutive
+clean runs (3 before the final combined build, 1 more against it), proving a real Dedicated Server
+process killed and restarted on the same port/data directory is automatically recovered from by both
+clients with a fresh T7 handshake (same `identityId`), voice-channel restoration with fresh
+server-issued participant ids and real peer audio, correct Server Chat history reload through the
+history API, and confirmed camera/screen never auto-restarting; `e2e:settings-persistence` (new)
+passed, proving a bookmark and device preference survive a same-profile restart and never leak to a
+different one; the Dedicated Server's own smoke test and all eight pre-existing Electron E2E scripts
+(`e2e:voice-smoke`, `e2e:camera-smoke`, `e2e:screen-smoke`, `e2e:screen-audio-smoke`,
+`e2e:identity-auth`, `e2e:identity-persistence`, `e2e:connection-smoke`, `e2e:authorization`,
+`e2e:text-chat-persistence`) were re-verified passing against the final, combined, repackaged build —
+no regression. One intermittent `e2e:camera-smoke` failure was observed once, matching the
+already-documented pre-existing environmental flakiness class from T6's own handoff notes (not
+root-caused there either); 3 consecutive clean runs followed immediately. **T11 is marked COMPLETE in
+[`tasks/STATUS.md`](tasks/STATUS.md)** — its mechanism is implemented, reviewed (`security-reviewer`
+found no release-blocking issues, independently verifying by direct code reading that camera/screen
+genuinely never auto-restart after a reconnect — the single highest-priority claim in this task;
+`qa-engineer` found no product-code defects and closed three real test-coverage gaps, honestly
+recording two further gaps as not fabricated rather than built ad hoc — see
+[`tasks/T11_DAILY_USE_UX.md`](tasks/T11_DAILY_USE_UX.md)'s handoff notes for the full findings), and
+unit/integration/live-verified through a real Dedicated Server restart, real sockets, and a real
+multi-instance Electron flow, with all Definition of Done items satisfied. See
+[`tasks/T11_DAILY_USE_UX.md`](tasks/T11_DAILY_USE_UX.md)'s handoff notes for the full record, including
+the settings-store and reconnect-controller placement decisions (ADR 0015/0016) and the two
+honestly-documented, not-yet-closed test-coverage gaps.
 
 Then perform the task’s required manual/platform checks. Apply
 [`DEFINITION_OF_DONE.md`](DEFINITION_OF_DONE.md) and update status only when every applicable item

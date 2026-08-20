@@ -148,6 +148,36 @@ even if an override object tries to reintroduce it). After this fix, `pnpm --fil
 evidence (distinct participant UUIDs, distinct ephemeral ports, distinct non-silent RMS audio-level
 readings each run) — see `docs/tasks/T3_VOICE_WEBRTC.md` for the full record.
 
+## T9 finding: `node:sqlite`'s `DatabaseSync` is stable on the pinned Node baseline
+
+T9 needed a local, dependency-free persistence mechanism for the Dedicated Server's new
+server-local authorization storage (groups/memberships/tokens/bans — see
+[`docs/architecture/SERVER_AUTHORIZATION.md`](../architecture/SERVER_AUTHORIZATION.md) and
+[`docs/adr/0013-server-authorization-storage-and-rbac.md`](../adr/0013-server-authorization-storage-and-rbac.md)).
+`node:sqlite`'s synchronous `DatabaseSync` API was chosen over a native-binary dependency like
+`better-sqlite3`, specifically because this code only ever runs inside `services/dedicated-server`
+(a plain Node process, never Electron), so `better-sqlite3`'s native-module/prebuilt-binary
+packaging risk has no offsetting benefit here.
+
+**Verified on this repository's actual pinned baseline** (`engines.node: ">=24 <25"` in the root
+`package.json`; Node `24.19.0` per the table above; Electron `43.4.0` itself embeds Node `24.18.1`,
+per the T1 findings above — `services/dedicated-server` never runs inside Electron, but this
+confirms the whole toolchain sits on the same Node 24 line either way):
+
+- `new DatabaseSync(path)` and every method T9 uses (`.exec`, `.prepare`, `.run`, `.get`, `.all`)
+  work with **zero experimental-API warning** on this Node line — `node:sqlite` stabilized ahead of
+  this baseline, so no `--experimental-sqlite` flag or startup warning is needed.
+- `@types/node` `24.13.3` (pinned above) already ships `sqlite.d.ts` typings out of the box —
+  confirmed present at `node_modules/@types/node/sqlite.d.ts`. No `@types/node`-adjacent package or
+  version bump was needed for T9's typings.
+- **Zero new npm dependencies** were added for the entire T9 authorization feature — `node:sqlite`
+  is a Node builtin, so `services/dedicated-server/package.json` gained no new entries and
+  `pnpm audit`'s dependency-advisory surface is unchanged by T9.
+
+**Decision:** no version-pin change needed — the existing Node 24 baseline already fully supports
+T9's storage choice. Recorded here (per the `software-architect`'s recommendation during T9) so a
+future task considering `node:sqlite` elsewhere in this repository doesn't need to re-verify this.
+
 ## Required T1 validation — result
 
 Both `electron-forge start` (development) and `electron-forge package` (production, `win32`/`x64`)

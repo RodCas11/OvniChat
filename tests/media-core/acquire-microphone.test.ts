@@ -71,6 +71,41 @@ describe('acquireMicrophone — default constraints', () => {
       video: false,
     });
   });
+
+  it('includes an explicit deviceId in the request when provided (T11)', async () => {
+    const track = fakeAudioTrack();
+    let seenConstraints: MediaStreamConstraints | undefined;
+    stubGetUserMedia((constraints) => {
+      seenConstraints = constraints;
+      return Promise.resolve(fakeStream([track]));
+    });
+
+    await acquireMicrophone({ deviceId: 'device-42' });
+
+    expect(seenConstraints).toEqual({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+        deviceId: 'device-42',
+      },
+      video: false,
+    });
+  });
+
+  it('omits deviceId from the request entirely when not provided', async () => {
+    const track = fakeAudioTrack();
+    let seenConstraints: MediaStreamConstraints | undefined;
+    stubGetUserMedia((constraints) => {
+      seenConstraints = constraints;
+      return Promise.resolve(fakeStream([track]));
+    });
+
+    await acquireMicrophone();
+
+    const audioConstraints = seenConstraints?.audio as Record<string, unknown>;
+    expect(audioConstraints).not.toHaveProperty('deviceId');
+  });
 });
 
 describe('acquireMicrophone — the returned Microphone', () => {
@@ -155,6 +190,36 @@ describe('acquireMicrophone — overconstrained fallback', () => {
       { audio: true, video: false },
     ]);
     expect(microphone.track).toBe(track);
+  });
+
+  it('preserves an explicit deviceId across the fallback instead of dropping device selection (T11)', async () => {
+    // Mirrors `camera.ts`'s existing deviceId-preserving fallback test — see `microphone.ts`'s
+    // `acquireMicrophone` doc comment for why this is a deliberate T11 behavior change from
+    // microphone's pre-T11 fallback, which dropped every constraint (there was no deviceId to lose).
+    const track = fakeAudioTrack();
+    const calls: MediaStreamConstraints[] = [];
+    stubGetUserMedia((constraints) => {
+      calls.push(constraints);
+      if (calls.length === 1) {
+        return Promise.reject(new DOMException('constraint not satisfied', 'OverconstrainedError'));
+      }
+      return Promise.resolve(fakeStream([track]));
+    });
+
+    await acquireMicrophone({ deviceId: 'device-42' });
+
+    expect(calls).toEqual([
+      {
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          deviceId: 'device-42',
+        },
+        video: false,
+      },
+      { audio: { deviceId: 'device-42' }, video: false },
+    ]);
   });
 
   it('classifies the failure if the fallback also fails', async () => {

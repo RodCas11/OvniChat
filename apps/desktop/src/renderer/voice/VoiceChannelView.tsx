@@ -9,7 +9,9 @@ import {
 
 import type { ScreenQualityPreset } from '@disco-voador/media-core';
 
-import type { DesktopE2EVoiceConfig, DesktopRealtimeConfig } from '../../shared/ipc-contract.js';
+import type { DesktopE2EVoiceConfig } from '../../shared/ipc-contract.js';
+import { AuthorizationPanel } from './AuthorizationPanel.js';
+import { ChatPanel } from './ChatPanel.js';
 import { probeRemoteAudioLevel } from './e2e-audio-probe.js';
 import { probeRemoteScreenFrames } from './e2e-screen-probe.js';
 import { probeRemoteVideoFrames } from './e2e-video-probe.js';
@@ -19,10 +21,19 @@ import { RemoteAudio } from './RemoteAudio.js';
 import { RemoteCamera } from './RemoteCamera.js';
 import { RemoteScreen } from './RemoteScreen.js';
 import { ScreenSourcePicker } from './ScreenSourcePicker.js';
-import { useVoiceChannel } from './use-voice-channel.js';
+import { SettingsPanel } from './SettingsPanel.js';
+import { useVoiceChannel, type VoiceChannelConnectionConfig } from './use-voice-channel.js';
+
+/** T11 — checked once, at module load: `HTMLMediaElement.prototype.setSinkId` is either present or
+ * it is not, on a given Electron/Chromium build — this can never change at runtime, so there is no
+ * need to re-check it per component instance. See `SettingsPanel.tsx`'s doc comment for the actual
+ * finding (supported on this app's pinned Electron 43.4.0 build) and how it was checked. */
+const OUTPUT_DEVICE_SELECTION_SUPPORTED =
+  typeof HTMLMediaElement !== 'undefined' &&
+  typeof HTMLMediaElement.prototype.setSinkId === 'function';
 
 interface VoiceChannelViewProps {
-  readonly realtimeConfig: DesktopRealtimeConfig | undefined;
+  readonly realtimeConfig: VoiceChannelConnectionConfig | undefined;
   readonly e2eAutoJoin?: DesktopE2EVoiceConfig | undefined;
   /** Pre-fills the join-flow's `displayName` field with the persisted identity nickname (T7,
    * Section 41) — a UX convenience only, never a protocol merge: `displayName` (per-channel-join,
@@ -49,6 +60,31 @@ export function VoiceChannelView({
   const [state, actions] = useVoiceChannel(realtimeConfig);
   const [displayName, setDisplayName] = useState(defaultDisplayName ?? '');
   const [showScreenPicker, setShowScreenPicker] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  // T11 — the user's persisted output-device and screen-share-quality preferences, loaded once on
+  // mount and updated live from `SettingsPanel.tsx`. Kept here (not inside `use-voice-channel.ts`)
+  // because neither is a `MediaTransport`/WebRTC concern: output-device selection is a plain
+  // `<audio>` element property (`RemoteAudio.tsx`'s `setSinkId`), and the screen-quality preference
+  // only ever pre-fills `ScreenSourcePicker`'s own dropdown default, never auto-starts anything.
+  const [outputDeviceId, setOutputDeviceId] = useState<string | null>(null);
+  const [screenQualityPreset, setScreenQualityPreset] = useState<ScreenQualityPreset>('high');
+
+  useEffect(() => {
+    let cancelled = false;
+    window.desktopApp
+      .getClientSettings()
+      .then((settings) => {
+        if (cancelled) return;
+        setOutputDeviceId(settings.audio.outputDeviceId);
+        setScreenQualityPreset(settings.screenShare.qualityPreset);
+      })
+      .catch((error: unknown) => {
+        console.error('voice: failed to load persisted output/screen-quality settings', error);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const canJoin =
     state.connectionStatus === 'connected' && displayName.trim().length > 0 && !state.joining;
@@ -88,6 +124,55 @@ export function VoiceChannelView({
   // (nobody shares a screen before the call itself has connected), and avoiding negotiation for
   // camera/screen landing before the initial voice offer/answer has even settled.
   const voiceReady = state.participants.some((p) => p.connectionState === 'connected');
+
+  // T9 automated authorization E2E test only (`apps/desktop/scripts/e2e-authorization.mjs`): once
+  // connected (voice channel membership not required), automatically redeem a bearer token via the
+  // exact same production `redeemToken` action the "Use Privilege Key" panel drives.
+  const autoRedeemAttempted = useRef(false);
+  useEffect(() => {
+    if (!e2eAutoJoin?.redeemToken || autoRedeemAttempted.current) return;
+    if (state.connectionStatus !== 'connected') return;
+
+    autoRedeemAttempted.current = true;
+    actions.redeemToken(e2eAutoJoin.redeemToken);
+  }, [e2eAutoJoin, state.connectionStatus, actions]);
+
+  // T10 automated persistent-text-chat E2E tests only (`e2e-text-chat-persistence.mjs`): once
+  // connected, automatically send a Server Chat message via the exact same production
+  // `sendChatMessage` action the chat composer drives.
+  const autoChatSendServerAttempted = useRef(false);
+  useEffect(() => {
+    if (!e2eAutoJoin?.autoChatSendServerBody || autoChatSendServerAttempted.current) return;
+    if (state.connectionStatus !== 'connected') return;
+
+    autoChatSendServerAttempted.current = true;
+    actions.sendChatMessage('server', undefined, e2eAutoJoin.autoChatSendServerBody);
+  }, [e2eAutoJoin, state.connectionStatus, actions]);
+
+  // T10 automated channel-chat persistence E2E test only (`e2e-text-chat-channel-persistence.mjs`):
+  // once joined to the auto-join channel, automatically send a message to that channel's chat.
+  const autoChatSendChannelAttempted = useRef(false);
+  useEffect(() => {
+    if (!e2eAutoJoin?.autoChatSendChannelBody || autoChatSendChannelAttempted.current) return;
+    if (!state.currentChannelId) return;
+
+    autoChatSendChannelAttempted.current = true;
+    actions.sendChatMessage('channel', state.currentChannelId, e2eAutoJoin.autoChatSendChannelBody);
+  }, [e2eAutoJoin, state.currentChannelId, actions]);
+
+  // T10 E2E-only automation, any scenario that auto-joins a channel: `ChatPanel`'s own
+  // channel-history load only happens once a human clicks that channel's tab (never auto-selected —
+  // see `ChatPanel.tsx`). This drives the exact same production `loadChatHistory` action directly,
+  // so a channel-persistence E2E script does not need to simulate a DOM click to prove the channel
+  // history API actually returns real, previously-persisted messages.
+  const autoChatLoadChannelHistoryAttempted = useRef(false);
+  useEffect(() => {
+    if (!e2eAutoJoin || autoChatLoadChannelHistoryAttempted.current) return;
+    if (!state.currentChannelId) return;
+
+    autoChatLoadChannelHistoryAttempted.current = true;
+    actions.loadChatHistory('channel', state.currentChannelId);
+  }, [e2eAutoJoin, state.currentChannelId, actions]);
 
   // T4 automated camera smoke test only: once voice is stable, also auto-enable the camera.
   const autoCameraAttempted = useRef(false);
@@ -544,6 +629,51 @@ export function VoiceChannelView({
     <section>
       <h2>Voice</h2>
       <p>Realtime connection: {state.connectionStatus}</p>
+      {state.connectionStatus === 'reconnecting' && (
+        <p role="status">
+          Connection lost. Reconnecting…
+          {state.reconnectAttempt !== undefined &&
+            ` (attempt ${String(state.reconnectAttempt)})`}{' '}
+          <button type="button" onClick={actions.cancelReconnect}>
+            Cancel
+          </button>
+        </p>
+      )}
+      {state.connectionStatus === 'disconnected' && state.connectionError && (
+        <p role="alert">{state.connectionError}</p>
+      )}
+      {state.serverInfo && (
+        <p>
+          Server: {state.serverInfo.serverName} (capabilities:{' '}
+          {state.serverInfo.serverCapabilities.join(', ') || 'none'})
+        </p>
+      )}
+
+      {state.connectionStatus === 'connected' && (
+        <>
+          <ChatPanel state={state} actions={actions} />
+          <AuthorizationPanel state={state} actions={actions} />
+          <button
+            type="button"
+            onClick={() => {
+              setShowSettings((prev) => !prev);
+            }}
+          >
+            {showSettings ? 'Hide settings' : 'Settings'}
+          </button>
+          {showSettings && (
+            <SettingsPanel
+              state={state}
+              actions={actions}
+              outputDeviceId={outputDeviceId}
+              onOutputDeviceChange={setOutputDeviceId}
+              screenQualityPreset={screenQualityPreset}
+              onScreenQualityPresetChange={setScreenQualityPreset}
+              outputDeviceSelectionSupported={OUTPUT_DEVICE_SELECTION_SUPPORTED}
+            />
+          )}
+        </>
+      )}
 
       {!state.currentChannelId && (
         <>
@@ -628,6 +758,7 @@ export function VoiceChannelView({
               onCancel={() => {
                 setShowScreenPicker(false);
               }}
+              defaultQuality={screenQualityPreset}
             />
           )}
 
@@ -635,6 +766,8 @@ export function VoiceChannelView({
             {state.participants.map((participant) => (
               <li key={participant.participantId}>
                 {participant.displayName}
+                {participant.groups.length > 0 &&
+                  ` [${participant.groups.map((g) => g.name).join(', ')}]`}
                 {participant.connectionState ? ` — ${participant.connectionState}` : ''}
               </li>
             ))}
@@ -646,6 +779,7 @@ export function VoiceChannelView({
               participantId={participantId}
               stream={stream}
               muted={state.deafened}
+              outputDeviceId={outputDeviceId}
             />
           ))}
 
@@ -659,6 +793,7 @@ export function VoiceChannelView({
               participantId={participantId}
               stream={stream}
               muted={state.deafened}
+              outputDeviceId={outputDeviceId}
             />
           ))}
 

@@ -13,6 +13,11 @@ import {
 import { describe, expect, it } from 'vitest';
 
 import {
+  createNoopAuthorizationPort,
+  type AuthorizationPort,
+} from '../../services/realtime/src/authorization-port.js';
+import { createNoopChatPort, type ChatPort } from '../../services/realtime/src/chat-port.js';
+import {
   handleClientPing,
   routeClientMessage,
   type HandlerContext,
@@ -32,12 +37,43 @@ function makeContext(overrides: Partial<HandlerContext> = {}): HandlerContext {
     voiceRegistry: new VoiceRegistry(DEFAULT_VOICE_CHANNELS),
     identityChallengeTtlMs: CHALLENGE_TTL_MS,
     pendingChallenge: undefined,
+    serverMetadata: { name: 'Test Server', capabilities: ['voice'] },
+    authorization: createNoopAuthorizationPort(),
+    chat: createNoopChatPort(),
+    // Every ready-state test in this file exercises a handler reachable only after a real identity
+    // proof would already have set this (see `requireIdentityId` in protocol-handlers.ts) — default
+    // it here so tests that don't care about T9 authorization specifically don't each need to set
+    // it, matching this file's own pre-T9 convention of a shared, overridable default context.
+    identityId: 'default-identity',
+    // T10 — mirrors `identityId` above for the same reason (`requireNickname`).
+    nickname: 'default-nickname',
     ...overrides,
   };
 }
 
+/** A `createNoopAuthorizationPort()` with just the methods a given test cares about overridden —
+ * lets T9 handler tests exercise permission-check-then-mutate wiring without a real SQLite store. */
+function mockAuthorization(overrides: Partial<AuthorizationPort> = {}): AuthorizationPort {
+  return { ...createNoopAuthorizationPort(), ...overrides };
+}
+
+/** T10 counterpart to `mockAuthorization` — lets chat handler tests exercise validate/authorize/
+ * persist/broadcast wiring without a real SQLite store. */
+function mockChat(overrides: Partial<ChatPort> = {}): ChatPort {
+  return { ...createNoopChatPort(), ...overrides };
+}
+
 function replies(actions: readonly OutgoingAction[]): ServerMessage[] {
   return actions.filter((a) => a.kind === 'reply').map((a) => a.message);
+}
+
+function broadcasts(actions: readonly OutgoingAction[]): ServerMessage[] {
+  return actions
+    .filter(
+      (a): a is Extract<OutgoingAction, { kind: 'broadcast-ready' }> =>
+        a.kind === 'broadcast-ready',
+    )
+    .map((a) => a.message);
 }
 
 function deliveries(
@@ -143,6 +179,11 @@ describe('routeClientMessage — handshake', () => {
     });
     expect((messages[0] as { identityId: string }).identityId).toMatch(/^dv1_[A-Za-z0-9_-]{43}$/u);
     expect(messages[1]).toMatchObject({
+      type: 'server:authorization-state',
+      groups: [],
+      permissions: [],
+    });
+    expect(messages[2]).toMatchObject({
       type: 'voice:catalog',
       channels: [...DEFAULT_VOICE_CHANNELS],
     });
@@ -428,7 +469,7 @@ describe('routeClientMessage — voice:join / voice:leave', () => {
 
   it('joining a populated channel returns existing participants and notifies them of the newcomer', () => {
     const registry = new VoiceRegistry(DEFAULT_VOICE_CHANNELS);
-    registry.join('conn-a', 'general', 'Rodrigo');
+    registry.join('conn-a', 'general', 'Rodrigo', 'identity-a');
 
     const ctx = makeContext({ connectionId: 'conn-b', voiceRegistry: registry });
     const result = routeClientMessage(
@@ -491,8 +532,8 @@ describe('routeClientMessage — voice:join / voice:leave', () => {
 
   it('switching channels notifies the old channel and the new one, with no duplicate membership', () => {
     const registry = new VoiceRegistry(DEFAULT_VOICE_CHANNELS);
-    registry.join('conn-a', 'general', 'Rodrigo');
-    registry.join('conn-b', 'general', 'Arthur');
+    registry.join('conn-a', 'general', 'Rodrigo', 'identity-a');
+    registry.join('conn-b', 'general', 'Arthur', 'identity-b');
 
     const ctx = makeContext({ connectionId: 'conn-a', voiceRegistry: registry });
     const result = routeClientMessage(
@@ -527,8 +568,8 @@ describe('routeClientMessage — voice:join / voice:leave', () => {
 
   it('leave notifies remaining channel members and confirms to the leaver', () => {
     const registry = new VoiceRegistry(DEFAULT_VOICE_CHANNELS);
-    const a = registry.join('conn-a', 'general', 'Rodrigo');
-    registry.join('conn-b', 'general', 'Arthur');
+    const a = registry.join('conn-a', 'general', 'Rodrigo', 'identity-a');
+    registry.join('conn-b', 'general', 'Arthur', 'identity-b');
     if (!a.ok) throw new Error('setup failed');
 
     const ctx = makeContext({ connectionId: 'conn-b', voiceRegistry: registry });
@@ -560,8 +601,8 @@ describe('routeClientMessage — webrtc signaling', () => {
     participantIdB: string;
   } {
     const registry = new VoiceRegistry(DEFAULT_VOICE_CHANNELS);
-    const a = registry.join('conn-a', 'general', 'A');
-    const b = registry.join('conn-b', 'general', 'B');
+    const a = registry.join('conn-a', 'general', 'A', 'identity-a');
+    const b = registry.join('conn-b', 'general', 'B', 'identity-b');
     if (!a.ok || !b.ok) throw new Error('setup failed');
     return { registry, participantIdA: a.participantId, participantIdB: b.participantId };
   }
@@ -637,8 +678,8 @@ describe('routeClientMessage — webrtc signaling', () => {
 
   it('rejects signaling toward a participant in a different channel (non-fatal)', () => {
     const registry = new VoiceRegistry(DEFAULT_VOICE_CHANNELS);
-    const a = registry.join('conn-a', 'general', 'A');
-    const c = registry.join('conn-c', 'games', 'C');
+    const a = registry.join('conn-a', 'general', 'A', 'identity-a');
+    const c = registry.join('conn-c', 'games', 'C', 'identity-c');
     if (!a.ok || !c.ok) throw new Error('setup failed');
 
     const ctx = makeContext({ connectionId: 'conn-a', voiceRegistry: registry });
@@ -672,8 +713,8 @@ describe('routeClientMessage — media:track-source (T5)', () => {
     participantIdB: string;
   } {
     const registry = new VoiceRegistry(DEFAULT_VOICE_CHANNELS);
-    const a = registry.join('conn-a', 'general', 'A');
-    const b = registry.join('conn-b', 'general', 'B');
+    const a = registry.join('conn-a', 'general', 'A', 'identity-a');
+    const b = registry.join('conn-b', 'general', 'B', 'identity-b');
     if (!a.ok || !b.ok) throw new Error('setup failed');
     return { registry, participantIdA: a.participantId, participantIdB: b.participantId };
   }
@@ -730,8 +771,8 @@ describe('routeClientMessage — media:track-source (T5)', () => {
 
   it('rejects an announcement toward a participant in a different channel (non-fatal)', () => {
     const registry = new VoiceRegistry(DEFAULT_VOICE_CHANNELS);
-    const a = registry.join('conn-a', 'general', 'A');
-    const c = registry.join('conn-c', 'games', 'C');
+    const a = registry.join('conn-a', 'general', 'A', 'identity-a');
+    const c = registry.join('conn-c', 'games', 'C', 'identity-c');
     if (!a.ok || !c.ok) throw new Error('setup failed');
 
     const ctx = makeContext({ connectionId: 'conn-a', voiceRegistry: registry });
@@ -749,5 +790,567 @@ describe('routeClientMessage — media:track-source (T5)', () => {
 
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.code).toBe('SIGNALING_TARGET_INVALID');
+  });
+});
+
+// T9 follow-up (QA review): `kick`, `list-bans`, `list-groups`, `update-group`, `delete-group`, and
+// `grant-group` had no coverage at any layer (wire-level or unit-level) — every other T9 handler was
+// exercised over a real socket in `tests/dedicated-server/integration.test.ts`, but these six were
+// verified only through `AuthorizationStore` unit tests, which never touch `protocol-handlers.ts`'s
+// own permission-check-then-mutate wiring. This describe block closes that gap at the unit layer the
+// module's own doc comment says it's meant to support ("unit-testable without any real socket").
+describe('routeClientMessage — T9 authorization: kick/list-bans/list-groups/update-group/delete-group/grant-group', () => {
+  it("list-groups replies with the port's group list, ungated (definitions are not secret)", () => {
+    const ctx = makeContext({
+      authorization: mockAuthorization({
+        listGroups: () => [
+          { groupId: 'member', name: 'Member', permissions: [], protectedGroup: true },
+        ],
+      }),
+    });
+    const result = routeClientMessage(
+      { type: 'client:authorization-list-groups', id: 'lg1' },
+      'ready',
+      ctx,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(replies(result.actions)).toEqual([
+      {
+        type: 'server:authorization-groups',
+        id: 'lg1',
+        groups: [{ groupId: 'member', name: 'Member', permissions: [], protectedGroup: true }],
+      },
+    ]);
+  });
+
+  it('list-bans is denied without moderation.ban', () => {
+    const ctx = makeContext({ authorization: mockAuthorization({ can: () => false }) });
+    const result = routeClientMessage(
+      { type: 'client:authorization-list-bans', id: 'lb1' },
+      'ready',
+      ctx,
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe('AUTHORIZATION_DENIED');
+  });
+
+  it("list-bans replies with the port's ban list when permitted", () => {
+    const ctx = makeContext({
+      authorization: mockAuthorization({
+        can: () => true,
+        listBans: () => [{ identityId: 'dv1_banned', createdAt: 1000 }],
+      }),
+    });
+    const result = routeClientMessage(
+      { type: 'client:authorization-list-bans', id: 'lb2' },
+      'ready',
+      ctx,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(replies(result.actions)).toEqual([
+      {
+        type: 'server:authorization-bans',
+        id: 'lb2',
+        bans: [{ identityId: 'dv1_banned', createdAt: 1000 }],
+      },
+    ]);
+  });
+
+  it('update-group is denied without authorization.groups.manage', () => {
+    const ctx = makeContext({ authorization: mockAuthorization({ can: () => false }) });
+    const result = routeClientMessage(
+      { type: 'client:authorization-update-group', id: 'ug1', groupId: 'moderator' },
+      'ready',
+      ctx,
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe('AUTHORIZATION_DENIED');
+  });
+
+  it('update-group acks and forwards to the port when permitted', () => {
+    let received: unknown;
+    const ctx = makeContext({
+      authorization: mockAuthorization({
+        can: () => true,
+        updateGroup: (params) => {
+          received = params;
+          return {
+            ok: true,
+            group: { groupId: 'moderator', name: 'Mod', permissions: [], protectedGroup: false },
+          };
+        },
+      }),
+    });
+    const result = routeClientMessage(
+      {
+        type: 'client:authorization-update-group',
+        id: 'ug2',
+        groupId: 'moderator',
+        name: 'Mod',
+      },
+      'ready',
+      ctx,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(replies(result.actions)).toEqual([{ type: 'server:authorization-ack', id: 'ug2' }]);
+    expect(received).toEqual({ groupId: 'moderator', name: 'Mod', permissions: undefined });
+  });
+
+  it('delete-group is denied without authorization.groups.manage', () => {
+    const ctx = makeContext({ authorization: mockAuthorization({ can: () => false }) });
+    const result = routeClientMessage(
+      { type: 'client:authorization-delete-group', id: 'dg1', groupId: 'moderator' },
+      'ready',
+      ctx,
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe('AUTHORIZATION_DENIED');
+  });
+
+  it('delete-group force-closes every online connection left with no admission basis', () => {
+    const registry = new VoiceRegistry(DEFAULT_VOICE_CHANNELS);
+    registry.join('conn-victim', 'general', 'Victim', 'dv1_victim');
+    const ctx = makeContext({
+      voiceRegistry: registry,
+      authorization: mockAuthorization({
+        can: () => true,
+        deleteGroup: () => ({ ok: true, noLongerAdmitted: ['dv1_victim'] }),
+      }),
+    });
+    const result = routeClientMessage(
+      { type: 'client:authorization-delete-group', id: 'dg2', groupId: 'temp' },
+      'ready',
+      ctx,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(replies(result.actions)).toEqual([{ type: 'server:authorization-ack', id: 'dg2' }]);
+    const closeActions = result.actions.filter((a) => a.kind === 'close');
+    expect(closeActions).toEqual([
+      {
+        kind: 'close',
+        connectionId: 'conn-victim',
+        code: 'INVITE_REQUIRED',
+        message: 'Server-local authorization was revoked',
+      },
+    ]);
+  });
+
+  it('delete-group closes nothing when the port reports no one left unadmitted', () => {
+    const ctx = makeContext({
+      authorization: mockAuthorization({
+        can: () => true,
+        deleteGroup: () => ({ ok: true, noLongerAdmitted: [] }),
+      }),
+    });
+    const result = routeClientMessage(
+      { type: 'client:authorization-delete-group', id: 'dg3', groupId: 'temp' },
+      'ready',
+      ctx,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.actions.some((a) => a.kind === 'close')).toBe(false);
+  });
+
+  it('grant-group is denied without authorization.memberships.manage', () => {
+    const ctx = makeContext({ authorization: mockAuthorization({ can: () => false }) });
+    const result = routeClientMessage(
+      {
+        type: 'client:authorization-grant-group',
+        id: 'gg1',
+        targetParticipantId: 'p1',
+        groupId: 'member',
+      },
+      'ready',
+      ctx,
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe('AUTHORIZATION_DENIED');
+  });
+
+  it('grant-group rejects a target participant that is not currently online', () => {
+    const ctx = makeContext({ authorization: mockAuthorization({ can: () => true }) });
+    const result = routeClientMessage(
+      {
+        type: 'client:authorization-grant-group',
+        id: 'gg2',
+        targetParticipantId: 'not-online',
+        groupId: 'member',
+      },
+      'ready',
+      ctx,
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe('PARTICIPANT_NOT_FOUND');
+  });
+
+  it('grant-group resolves the target via VoiceRegistry, never a client-supplied identityId', () => {
+    const registry = new VoiceRegistry(DEFAULT_VOICE_CHANNELS);
+    const joined = registry.join('conn-target', 'general', 'Target', 'dv1_target');
+    if (!joined.ok) throw new Error('setup failed');
+    let grantedIdentityId: string | undefined;
+    const ctx = makeContext({
+      connectionId: 'conn-admin',
+      voiceRegistry: registry,
+      authorization: mockAuthorization({
+        can: () => true,
+        grantGroup: (identityId) => {
+          grantedIdentityId = identityId;
+          return { ok: true, snapshot: { groups: [], permissions: [] } };
+        },
+      }),
+    });
+    const result = routeClientMessage(
+      {
+        type: 'client:authorization-grant-group',
+        id: 'gg3',
+        targetParticipantId: joined.participantId,
+        groupId: 'member',
+      },
+      'ready',
+      ctx,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(grantedIdentityId).toBe('dv1_target');
+    expect(replies(result.actions)).toEqual([{ type: 'server:authorization-ack', id: 'gg3' }]);
+    const notified = deliveries(result.actions);
+    expect(notified).toHaveLength(1);
+    expect(notified[0]?.connectionId).toBe('conn-target');
+    expect(notified[0]?.message).toMatchObject({ type: 'server:authorization-state' });
+  });
+
+  it('kick is denied without moderation.kick', () => {
+    const ctx = makeContext({ authorization: mockAuthorization({ can: () => false }) });
+    const result = routeClientMessage(
+      { type: 'client:authorization-kick', id: 'k1', targetParticipantId: 'p1' },
+      'ready',
+      ctx,
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe('AUTHORIZATION_DENIED');
+  });
+
+  it('kick rejects a target participant that is not currently online', () => {
+    const ctx = makeContext({ authorization: mockAuthorization({ can: () => true }) });
+    const result = routeClientMessage(
+      { type: 'client:authorization-kick', id: 'k2', targetParticipantId: 'not-online' },
+      'ready',
+      ctx,
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe('PARTICIPANT_NOT_FOUND');
+  });
+
+  it('kick closes the target connection with KICKED and creates no persistent ban', () => {
+    const registry = new VoiceRegistry(DEFAULT_VOICE_CHANNELS);
+    const joined = registry.join('conn-target', 'general', 'Target', 'dv1_target');
+    if (!joined.ok) throw new Error('setup failed');
+    let banCalled = false;
+    const ctx = makeContext({
+      connectionId: 'conn-admin',
+      voiceRegistry: registry,
+      authorization: mockAuthorization({
+        can: () => true,
+        ban: () => {
+          banCalled = true;
+          return { ok: true };
+        },
+      }),
+    });
+    const result = routeClientMessage(
+      {
+        type: 'client:authorization-kick',
+        id: 'k3',
+        targetParticipantId: joined.participantId,
+      },
+      'ready',
+      ctx,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(replies(result.actions)).toEqual([{ type: 'server:authorization-ack', id: 'k3' }]);
+    expect(result.actions).toContainEqual({
+      kind: 'close',
+      connectionId: 'conn-target',
+      code: 'KICKED',
+      message: 'Kicked by an administrator',
+    });
+    expect(banCalled).toBe(false);
+  });
+});
+
+// T10 — persistent server-side text chat handler tests. `ctx.chat` is always a mock (never a real
+// SQLite store) so these stay unit-level and socket-free, matching this file's own stated intent.
+describe('routeClientMessage — T10 chat: send/history', () => {
+  it('server-scope send is denied without chat.server.send', () => {
+    const ctx = makeContext({ authorization: mockAuthorization({ can: () => false }) });
+    const result = routeClientMessage(
+      { type: 'client:chat-send', id: 'cs1', scope: 'server', body: 'hello' },
+      'ready',
+      ctx,
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe('AUTHORIZATION_DENIED');
+  });
+
+  it('server-scope send persists then broadcasts to every ready connection, sender included', () => {
+    let sentParams: unknown;
+    const ctx = makeContext({
+      identityId: 'dv1_rodrigo',
+      nickname: 'Rodrigo',
+      authorization: mockAuthorization({ can: () => true }),
+      chat: mockChat({
+        sendMessage: (params) => {
+          sentParams = params;
+          return {
+            ok: true,
+            message: {
+              messageId: 1,
+              scope: 'server',
+              senderNickname: 'Rodrigo',
+              body: 'bora?',
+              createdAt: 1000,
+            },
+          };
+        },
+      }),
+    });
+    const result = routeClientMessage(
+      { type: 'client:chat-send', id: 'cs2', scope: 'server', body: 'bora?' },
+      'ready',
+      ctx,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(sentParams).toEqual({
+      scope: 'server',
+      channelId: undefined,
+      senderIdentityId: 'dv1_rodrigo',
+      senderNickname: 'Rodrigo',
+      body: 'bora?',
+    });
+    // Server-derived sender: never anything a raw client message could have supplied — there is no
+    // such field on `client:chat-send` at all (T10 Section 29/30/74).
+    const [broadcast] = broadcasts(result.actions);
+    expect(broadcast).toMatchObject({
+      type: 'server:chat-message',
+      message: { messageId: 1, senderNickname: 'Rodrigo', body: 'bora?' },
+    });
+    expect(replies(result.actions)).toEqual([]);
+  });
+
+  it('does not broadcast anything when persistence fails', () => {
+    const ctx = makeContext({
+      authorization: mockAuthorization({ can: () => true }),
+      chat: mockChat({
+        sendMessage: () => ({ ok: false, code: 'INTERNAL_ERROR', message: 'db unavailable' }),
+      }),
+    });
+    const result = routeClientMessage(
+      { type: 'client:chat-send', id: 'cs3', scope: 'server', body: 'hello' },
+      'ready',
+      ctx,
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe('INTERNAL_ERROR');
+  });
+
+  it('channel-scope send rejects an unknown channel', () => {
+    const ctx = makeContext({ authorization: mockAuthorization({ can: () => true }) });
+    const result = routeClientMessage(
+      {
+        type: 'client:chat-send',
+        id: 'cs4',
+        scope: 'channel',
+        channelId: 'nonexistent',
+        body: 'hi',
+      },
+      'ready',
+      ctx,
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe('CHANNEL_NOT_FOUND');
+  });
+
+  it('channel-scope send requires current membership in that exact channel', () => {
+    const registry = new VoiceRegistry(DEFAULT_VOICE_CHANNELS);
+    // Sender is in "games", tries to send to "general".
+    registry.join('conn-1', 'games', 'X', 'identity-x');
+    const ctx = makeContext({
+      voiceRegistry: registry,
+      authorization: mockAuthorization({ can: () => true }),
+    });
+    const result = routeClientMessage(
+      { type: 'client:chat-send', id: 'cs5', scope: 'channel', channelId: 'general', body: 'hi' },
+      'ready',
+      ctx,
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe('NOT_IN_VOICE_CHANNEL');
+  });
+
+  it('channel-scope send is denied without chat.channel.send even when a member of the channel', () => {
+    const registry = new VoiceRegistry(DEFAULT_VOICE_CHANNELS);
+    registry.join('conn-1', 'general', 'X', 'identity-x');
+    const ctx = makeContext({
+      voiceRegistry: registry,
+      authorization: mockAuthorization({ can: () => false }),
+    });
+    const result = routeClientMessage(
+      { type: 'client:chat-send', id: 'cs6', scope: 'channel', channelId: 'general', body: 'hi' },
+      'ready',
+      ctx,
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe('AUTHORIZATION_DENIED');
+  });
+
+  it('channel-scope send broadcasts only to current members of that channel, attaching senderParticipantId', () => {
+    const registry = new VoiceRegistry(DEFAULT_VOICE_CHANNELS);
+    const sender = registry.join('conn-a', 'general', 'Sender', 'identity-a');
+    registry.join('conn-b', 'general', 'Other', 'identity-b');
+    registry.join('conn-c', 'games', 'Elsewhere', 'identity-c');
+    if (!sender.ok) throw new Error('setup failed');
+    const ctx = makeContext({
+      connectionId: 'conn-a',
+      voiceRegistry: registry,
+      authorization: mockAuthorization({ can: () => true }),
+      chat: mockChat({
+        sendMessage: () => ({
+          ok: true,
+          message: {
+            messageId: 1,
+            scope: 'channel',
+            channelId: 'general',
+            senderNickname: 'Sender',
+            body: 'gg',
+            createdAt: 1000,
+          },
+        }),
+      }),
+    });
+    const result = routeClientMessage(
+      { type: 'client:chat-send', id: 'cs7', scope: 'channel', channelId: 'general', body: 'gg' },
+      'ready',
+      ctx,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const delivered = deliveries(result.actions);
+    expect(delivered.map((d) => d.connectionId).sort()).toEqual(['conn-a', 'conn-b']);
+    for (const { message } of delivered) {
+      expect(message).toMatchObject({
+        type: 'server:chat-message',
+        message: { senderParticipantId: sender.participantId },
+      });
+    }
+  });
+
+  it('history-request is available without any chat permission (reading is ungated)', () => {
+    const ctx = makeContext({
+      authorization: mockAuthorization({ can: () => false }),
+      chat: mockChat({
+        getHistory: () => ({
+          messages: [
+            { messageId: 1, scope: 'server', senderNickname: 'X', body: 'hi', createdAt: 1000 },
+          ],
+          hasMore: false,
+          nextCursor: undefined,
+        }),
+      }),
+    });
+    const result = routeClientMessage(
+      { type: 'client:chat-history-request', id: 'ch1', scope: 'server' },
+      'ready',
+      ctx,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(replies(result.actions)).toEqual([
+      {
+        type: 'server:chat-history-page',
+        id: 'ch1',
+        messages: [
+          { messageId: 1, scope: 'server', senderNickname: 'X', body: 'hi', createdAt: 1000 },
+        ],
+        hasMore: false,
+      },
+    ]);
+  });
+
+  it('history-request for an unknown channel is rejected without touching the store', () => {
+    let called = false;
+    const ctx = makeContext({
+      chat: mockChat({
+        getHistory: () => {
+          called = true;
+          return { messages: [], hasMore: false, nextCursor: undefined };
+        },
+      }),
+    });
+    const result = routeClientMessage(
+      {
+        type: 'client:chat-history-request',
+        id: 'ch2',
+        scope: 'channel',
+        channelId: 'nonexistent',
+      },
+      'ready',
+      ctx,
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe('CHANNEL_NOT_FOUND');
+    expect(called).toBe(false);
+  });
+
+  it('history-request for a channel does not require current membership in it', () => {
+    const registry = new VoiceRegistry(DEFAULT_VOICE_CHANNELS);
+    // Sender is not in "general" at all, but the channel exists on this server.
+    let requestedScope: unknown;
+    const ctx = makeContext({
+      voiceRegistry: registry,
+      chat: mockChat({
+        getHistory: (params) => {
+          requestedScope = params;
+          return { messages: [], hasMore: false, nextCursor: undefined };
+        },
+      }),
+    });
+    const result = routeClientMessage(
+      { type: 'client:chat-history-request', id: 'ch3', scope: 'channel', channelId: 'general' },
+      'ready',
+      ctx,
+    );
+    expect(result.ok).toBe(true);
+    expect(requestedScope).toMatchObject({ scope: 'channel', channelId: 'general' });
+  });
+
+  it('forwards an explicit limit/beforeMessageId cursor through to the store unchanged', () => {
+    let requested: unknown;
+    const ctx = makeContext({
+      chat: mockChat({
+        getHistory: (params) => {
+          requested = params;
+          return { messages: [], hasMore: false, nextCursor: undefined };
+        },
+      }),
+    });
+    routeClientMessage(
+      {
+        type: 'client:chat-history-request',
+        id: 'ch4',
+        scope: 'server',
+        beforeMessageId: 42,
+        limit: 7,
+      },
+      'ready',
+      ctx,
+    );
+    expect(requested).toMatchObject({ beforeMessageId: 42, limit: 7 });
   });
 });

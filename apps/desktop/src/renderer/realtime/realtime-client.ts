@@ -1,7 +1,18 @@
 import {
   CURRENT_PROTOCOL_VERSION,
   parseServerMessage,
+  type ChatScope,
   type ClientMessage,
+  type PermissionKey,
+  type ServerAuthorizationAckMessage,
+  type ServerAuthorizationBansMessage,
+  type ServerAuthorizationGroupsMessage,
+  type ServerAuthorizationStateMessage,
+  type ServerAuthorizationTokenCreatedMessage,
+  type ServerAuthorizationTokenRedeemedMessage,
+  type ServerCapability,
+  type ServerChatHistoryPageMessage,
+  type ServerChatMessageMessage,
   type ServerErrorMessage,
   type ServerIdentityChallengeMessage,
   type ServerMediaTrackSourceMessage,
@@ -14,16 +25,49 @@ import {
   type ServerWebrtcAnswerMessage,
   type ServerWebrtcIceCandidateMessage,
   type ServerWebrtcOfferMessage,
+  type TokenKind,
   type TrackSource,
 } from '@disco-voador/protocol';
 import type { ParticipantId, SignalingPort } from '@disco-voador/rtc-core';
 
 import type { IdentitySigner } from './identity-signer.js';
 
-export type RealtimeConnectionState = 'connecting' | 'open' | 'closed';
+/**
+ * `'connecting'`: socket opening, not yet sent `client:hello`. `'authenticating'` (T8): hello
+ * sent, waiting on the identity-challenge/proof exchange — distinct from `'connecting'` so the UI
+ * can show a real intermediate state (Section 17) instead of one generic spinner covering both a
+ * cold TCP/WS handshake and a cryptographic proof exchange. `'open'`: `server:hello` verified,
+ * `ready` — never reached before authentication completes, structurally, since nothing before
+ * `handleIdentityProof`'s success path can produce it.
+ */
+export type RealtimeConnectionState = 'connecting' | 'authenticating' | 'open' | 'closed';
+
+export interface ServerInfo {
+  readonly serverName: string;
+  readonly serverCapabilities: readonly ServerCapability[];
+}
+
+/** The raw WebSocket close code/reason for the most recent close — see `reconnect-policy.ts` for
+ * how T11's reconnect controller turns `code` into a retry/no-retry decision. `code` is always one
+ * of the standard RFC 6455 codes or one of `@disco-voador/protocol`'s `CLOSE_CODES` (the server
+ * closes every fatal error with the specific code matching its `ErrorCode`, so the raw numeric code
+ * alone is enough to classify the failure — no need to also inspect a preceding `server:error`). */
+export interface ClosedInfo {
+  readonly code: number;
+  readonly reason: string;
+}
 
 interface RealtimeClientEvents {
   stateChange: (state: RealtimeConnectionState) => void;
+  /** Fires immediately before `stateChange('closed')`, for every close regardless of cause
+   * (explicit `disconnect()`, a server-initiated fatal close, or an abnormal network drop) — purely
+   * additive, T11: existing listeners that only ever cared about `stateChange` are unaffected. This
+   * is the only place the actual close code/reason is observable; `stateChange('closed')` alone
+   * cannot distinguish "you disconnected" from "the server banned you" from "the network dropped." */
+  closed: (info: ClosedInfo) => void;
+  /** Fires once, alongside the `'open'` state change, with the Dedicated Server's own display
+   * metadata (T8) — see `docs/architecture/DEDICATED_SERVER.md`. */
+  serverInfo: (info: ServerInfo) => void;
   catalog: (message: ServerVoiceCatalogMessage) => void;
   joined: (message: ServerVoiceJoinedMessage) => void;
   left: (message: ServerVoiceLeftMessage) => void;
@@ -34,6 +78,20 @@ interface RealtimeClientEvents {
   webrtcIceCandidate: (message: ServerWebrtcIceCandidateMessage) => void;
   mediaTrackSource: (message: ServerMediaTrackSourceMessage) => void;
   serverError: (message: ServerErrorMessage) => void;
+  /** T9 — this connection's own groups/permissions on the connected server; sent once at `ready`
+   * and re-sent whenever an admin action changes them live. See
+   * `docs/architecture/SERVER_AUTHORIZATION.md`. */
+  authorizationState: (message: ServerAuthorizationStateMessage) => void;
+  authorizationGroups: (message: ServerAuthorizationGroupsMessage) => void;
+  authorizationAck: (message: ServerAuthorizationAckMessage) => void;
+  authorizationTokenCreated: (message: ServerAuthorizationTokenCreatedMessage) => void;
+  authorizationTokenRedeemed: (message: ServerAuthorizationTokenRedeemedMessage) => void;
+  authorizationBans: (message: ServerAuthorizationBansMessage) => void;
+  /** T10 — a live, just-persisted chat message (server or channel scope). See
+   * `docs/architecture/PERSISTENT_TEXT_CHAT.md`. */
+  chatMessage: (message: ServerChatMessageMessage) => void;
+  /** T10 — a bounded, paginated history page, in reply to `requestChatHistory`. */
+  chatHistoryPage: (message: ServerChatHistoryPageMessage) => void;
 }
 
 function generateMessageId(): string {
@@ -66,6 +124,8 @@ export class RealtimeClient implements SignalingPort {
   private readonly listeners: { [K in keyof RealtimeClientEvents]: Set<RealtimeClientEvents[K]> } =
     {
       stateChange: new Set(),
+      closed: new Set(),
+      serverInfo: new Set(),
       catalog: new Set(),
       joined: new Set(),
       left: new Set(),
@@ -76,11 +136,23 @@ export class RealtimeClient implements SignalingPort {
       webrtcIceCandidate: new Set(),
       mediaTrackSource: new Set(),
       serverError: new Set(),
+      authorizationState: new Set(),
+      authorizationGroups: new Set(),
+      authorizationAck: new Set(),
+      authorizationTokenCreated: new Set(),
+      authorizationTokenRedeemed: new Set(),
+      authorizationBans: new Set(),
+      chatMessage: new Set(),
+      chatHistoryPage: new Set(),
     };
 
   constructor(
     private readonly url: string,
     private readonly signer: IdentitySigner,
+    /** T9 — an optional bearer token presented at admission time (invite-only servers only; see
+     * `docs/architecture/SERVER_AUTHORIZATION.md`). Read once, at `connect()` time, exactly like
+     * `IdentitySigner` — never re-read mid-connection. */
+    private readonly serverToken?: string,
   ) {}
 
   on<K extends keyof RealtimeClientEvents>(event: K, listener: RealtimeClientEvents[K]): void {
@@ -106,8 +178,9 @@ export class RealtimeClient implements SignalingPort {
       this.handleRawMessage(event.data);
     });
 
-    socket.addEventListener('close', () => {
+    socket.addEventListener('close', (event: CloseEvent) => {
       this.socket = undefined;
+      this.emit('closed', { code: event.code, reason: event.reason });
       this.emit('stateChange', 'closed');
     });
   }
@@ -143,7 +216,9 @@ export class RealtimeClient implements SignalingPort {
       client: { name: 'disco-voador-desktop', version: '0.0.0' },
       nickname,
       publicKey,
+      ...(this.serverToken ? { serverToken: this.serverToken } : {}),
     });
+    this.emit('stateChange', 'authenticating');
   }
 
   /** Answers `server:identity-challenge` by asking the signer to sign it, then sends
@@ -239,6 +314,132 @@ export class RealtimeClient implements SignalingPort {
     });
   }
 
+  // --- T9 server-local authorization ------------------------------------------------------------
+  // Every server-authoritative permission check happens on the Dedicated Server, never here — these
+  // methods only send the request; the UI reacts to the resulting `server:authorization-*` reply
+  // or `server:error` (see `docs/architecture/SERVER_AUTHORIZATION.md` Section 35).
+
+  redeemAuthorizationToken(token: string): void {
+    this.send({ type: 'client:authorization-redeem-token', id: generateMessageId(), token });
+  }
+
+  createAuthorizationToken(tokenKind: TokenKind, groupId: string, expiresInMs?: number): void {
+    this.send({
+      type: 'client:authorization-create-token',
+      id: generateMessageId(),
+      tokenKind,
+      groupId,
+      ...(expiresInMs !== undefined ? { expiresInMs } : {}),
+    });
+  }
+
+  listAuthorizationGroups(): void {
+    this.send({ type: 'client:authorization-list-groups', id: generateMessageId() });
+  }
+
+  createAuthorizationGroup(name: string, permissions: readonly PermissionKey[]): void {
+    this.send({
+      type: 'client:authorization-create-group',
+      id: generateMessageId(),
+      name,
+      permissions: [...permissions],
+    });
+  }
+
+  updateAuthorizationGroup(
+    groupId: string,
+    name: string | undefined,
+    permissions: readonly PermissionKey[] | undefined,
+  ): void {
+    this.send({
+      type: 'client:authorization-update-group',
+      id: generateMessageId(),
+      groupId,
+      ...(name !== undefined ? { name } : {}),
+      ...(permissions !== undefined ? { permissions: [...permissions] } : {}),
+    });
+  }
+
+  deleteAuthorizationGroup(groupId: string): void {
+    this.send({ type: 'client:authorization-delete-group', id: generateMessageId(), groupId });
+  }
+
+  grantAuthorizationGroup(targetParticipantId: ParticipantId, groupId: string): void {
+    this.send({
+      type: 'client:authorization-grant-group',
+      id: generateMessageId(),
+      targetParticipantId,
+      groupId,
+    });
+  }
+
+  revokeAuthorizationGroup(targetParticipantId: ParticipantId, groupId: string): void {
+    this.send({
+      type: 'client:authorization-revoke-group',
+      id: generateMessageId(),
+      targetParticipantId,
+      groupId,
+    });
+  }
+
+  kickParticipant(targetParticipantId: ParticipantId): void {
+    this.send({ type: 'client:authorization-kick', id: generateMessageId(), targetParticipantId });
+  }
+
+  banParticipant(targetParticipantId: ParticipantId, durationMs?: number, reason?: string): void {
+    this.send({
+      type: 'client:authorization-ban',
+      id: generateMessageId(),
+      targetParticipantId,
+      ...(durationMs !== undefined ? { durationMs } : {}),
+      ...(reason !== undefined ? { reason } : {}),
+    });
+  }
+
+  unbanIdentity(identityId: string): void {
+    this.send({ type: 'client:authorization-unban', id: generateMessageId(), identityId });
+  }
+
+  listAuthorizationBans(): void {
+    this.send({ type: 'client:authorization-list-bans', id: generateMessageId() });
+  }
+
+  // --- T10 persistent server-side text chat -------------------------------------------------
+  // Server derives the sender itself (identity + current nickname) — there is no sender field to
+  // set here at all (see `docs/architecture/PERSISTENT_TEXT_CHAT.md` Section 29/30/74).
+
+  sendChatMessage(scope: ChatScope, channelId: string | undefined, body: string): void {
+    this.send({
+      type: 'client:chat-send',
+      id: generateMessageId(),
+      scope,
+      ...(channelId !== undefined ? { channelId } : {}),
+      body,
+    });
+  }
+
+  /** Returns the generated request `id` — `server:chat-history-page` carries no scope/channelId of
+   * its own (see `packages/protocol/src/messages/chat.ts`), so a caller tracking more than one
+   * thread must correlate the eventual reply back to this exact id itself (see
+   * `use-voice-channel.ts`'s `pendingChatHistoryRequestsRef`). */
+  requestChatHistory(
+    scope: ChatScope,
+    channelId: string | undefined,
+    beforeMessageId?: number,
+    limit?: number,
+  ): string {
+    const id = generateMessageId();
+    this.send({
+      type: 'client:chat-history-request',
+      id,
+      scope,
+      ...(channelId !== undefined ? { channelId } : {}),
+      ...(beforeMessageId !== undefined ? { beforeMessageId } : {}),
+      ...(limit !== undefined ? { limit } : {}),
+    });
+    return id;
+  }
+
   private send(message: ClientMessage): void {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
       console.error('realtime-client: dropped a message because the socket is not open', {
@@ -279,6 +480,10 @@ export class RealtimeClient implements SignalingPort {
         // connection's server-verified identityId matches the local one logged by
         // `use-identity.ts`. See `apps/desktop/scripts/e2e-identity-auth.mjs`.
         console.info(`disco-voador:server-authenticated-identity:${message.identityId}`);
+        this.emit('serverInfo', {
+          serverName: message.serverName,
+          serverCapabilities: message.serverCapabilities,
+        });
         this.emit('stateChange', 'open');
         return;
       case 'server:identity-challenge':
@@ -315,6 +520,30 @@ export class RealtimeClient implements SignalingPort {
         return;
       case 'media:track-source':
         this.emit('mediaTrackSource', message);
+        return;
+      case 'server:authorization-state':
+        this.emit('authorizationState', message);
+        return;
+      case 'server:authorization-groups':
+        this.emit('authorizationGroups', message);
+        return;
+      case 'server:authorization-ack':
+        this.emit('authorizationAck', message);
+        return;
+      case 'server:authorization-token-created':
+        this.emit('authorizationTokenCreated', message);
+        return;
+      case 'server:authorization-token-redeemed':
+        this.emit('authorizationTokenRedeemed', message);
+        return;
+      case 'server:authorization-bans':
+        this.emit('authorizationBans', message);
+        return;
+      case 'server:chat-message':
+        this.emit('chatMessage', message);
+        return;
+      case 'server:chat-history-page':
+        this.emit('chatHistoryPage', message);
         return;
     }
   }

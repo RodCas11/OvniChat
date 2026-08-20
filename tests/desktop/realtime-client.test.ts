@@ -1,3 +1,4 @@
+import { CURRENT_PROTOCOL_VERSION } from '@disco-voador/protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
@@ -37,7 +38,7 @@ class FakeWebSocket {
   close(code: number, reason: string): void {
     this.closedWith = { code, reason };
     this.readyState = FakeWebSocket.CLOSED;
-    this.dispatch('close', {});
+    this.dispatch('close', { code, reason });
   }
 
   simulateOpen(): void {
@@ -84,9 +85,11 @@ function helloMessage(id: string): Record<string, unknown> {
   return {
     type: 'server:hello',
     id,
-    protocolVersion: 1,
+    protocolVersion: CURRENT_PROTOCOL_VERSION,
     connectionId: 'conn-1',
     identityId: `dv1_${'A'.repeat(43)}`,
+    serverName: 'Test Server',
+    serverCapabilities: ['voice'],
     serverTime: new Date().toISOString(),
     heartbeat: { intervalMs: 15_000, timeoutMs: 10_000 },
   };
@@ -149,7 +152,7 @@ describe('RealtimeClient', () => {
     const hello = socket.lastSentMessage();
     expect(hello).toMatchObject({
       type: 'client:hello',
-      protocolVersion: 2,
+      protocolVersion: CURRENT_PROTOCOL_VERSION,
       nickname: 'Ana',
       publicKey: 'fake-public-key',
     });
@@ -165,7 +168,7 @@ describe('RealtimeClient', () => {
     });
 
     expect(signChallenge).toHaveBeenCalledWith({
-      protocolVersion: 2,
+      protocolVersion: CURRENT_PROTOCOL_VERSION,
       connectionId: 'conn-1',
       nonce: 'A'.repeat(43),
       expiresAt: expect.any(Number) as unknown as number,
@@ -191,6 +194,38 @@ describe('RealtimeClient', () => {
 
     socket.simulateMessage(JSON.stringify(helloMessage('h1')));
     expect(states).toEqual(['open']);
+  });
+
+  it('emits "authenticating" once client:hello is sent, before any server reply arrives', async () => {
+    const client = new RealtimeClient('ws://127.0.0.1:8090', fakeSigner());
+    const states: string[] = [];
+    client.on('stateChange', (state) => states.push(state));
+
+    client.connect();
+    const created = FakeWebSocket.lastInstance;
+    if (!created) throw new Error('RealtimeClient did not construct a WebSocket');
+    socket = created;
+    socket.simulateOpen();
+
+    expect(states).toEqual(['connecting']);
+    await vi.waitFor(() => {
+      if (socket.sent.length === 0) throw new Error('client:hello not sent yet');
+    });
+    expect(states).toEqual(['connecting', 'authenticating']);
+  });
+
+  it('emits serverInfo with the server name/capabilities alongside the "open" transition', async () => {
+    const client = await connectAndOpen();
+    const infos: unknown[] = [];
+    client.on('serverInfo', (info) => infos.push(info));
+
+    socket.simulateMessage(JSON.stringify(identityChallengeMessage('c1')));
+    await vi.waitFor(() => {
+      if (socket.sent.length < 2) throw new Error('client:identity-proof not sent yet');
+    });
+    socket.simulateMessage(JSON.stringify(helloMessage('h1')));
+
+    expect(infos).toEqual([{ serverName: 'Test Server', serverCapabilities: ['voice'] }]);
   });
 
   it('closes the socket instead of throwing when the signer fails to load an identity', async () => {
@@ -434,6 +469,24 @@ describe('RealtimeClient', () => {
     expect(states).toEqual(['closed']);
   });
 
+  it('emits "closed" with the code/reason before "stateChange closed", on an explicit disconnect', async () => {
+    const client = await connectAndHandshake();
+    const events: string[] = [];
+    let closedInfo: unknown;
+    client.on('closed', (info) => {
+      closedInfo = info;
+      events.push('closed');
+    });
+    client.on('stateChange', (state) => {
+      if (state === 'closed') events.push('stateChange:closed');
+    });
+
+    client.disconnect();
+
+    expect(closedInfo).toEqual({ code: 1000, reason: 'client disconnect' });
+    expect(events).toEqual(['closed', 'stateChange:closed']);
+  });
+
   it('reports state as closed when the server closes the connection', async () => {
     const client = await connectAndHandshake();
     const states: string[] = [];
@@ -443,6 +496,18 @@ describe('RealtimeClient', () => {
     socket.close(4402, 'handshake timeout');
 
     expect(states).toEqual(['closed']);
+  });
+
+  it('emits "closed" with the server-chosen code/reason for a server-initiated close', async () => {
+    const client = await connectAndHandshake();
+    let closedInfo: unknown;
+    client.on('closed', (info) => {
+      closedInfo = info;
+    });
+
+    socket.close(4421, 'you are banned');
+
+    expect(closedInfo).toEqual({ code: 4421, reason: 'you are banned' });
   });
 
   it('stops emitting to a listener after off() removes it', async () => {

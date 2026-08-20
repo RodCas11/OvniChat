@@ -30,6 +30,14 @@ export default defineConfig({
         find: '@disco-voador/media-core',
         replacement: path.resolve(__dirname, 'packages/media-core/src/index.ts'),
       },
+      {
+        // Unlike other services/* workspaces (imported by relative path in tests, per convention),
+        // @disco-voador/realtime is now also imported as a real package dependency by
+        // services/dedicated-server (T8) — aliased for the same reason the packages/* entries
+        // above are: so a test doesn't need a prior `pnpm build` of it to run.
+        find: '@disco-voador/realtime',
+        replacement: path.resolve(__dirname, 'services/realtime/src/index.ts'),
+      },
     ],
   },
   test: {

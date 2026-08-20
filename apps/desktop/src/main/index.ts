@@ -43,6 +43,16 @@ const isE2EScreenAudioSmoke =
   process.env['DISCO_VOADOR_E2E_SCREEN_AUDIO_SMOKE'] === '1' && !app.isPackaged;
 const isE2EIdentityPersistence =
   process.env['DISCO_VOADOR_E2E_IDENTITY_PERSISTENCE'] === '1' && !app.isPackaged;
+const isE2EConnectionSmoke =
+  process.env['DISCO_VOADOR_E2E_CONNECTION_SMOKE'] === '1' && !app.isPackaged;
+const isE2EAuthorization = process.env['DISCO_VOADOR_E2E_AUTHORIZATION'] === '1' && !app.isPackaged;
+const e2eAuthorizationExitMarker = isE2EAuthorization
+  ? process.env['DISCO_VOADOR_E2E_EXIT_ON_MARKER']
+  : undefined;
+const isE2ETextChat = process.env['DISCO_VOADOR_E2E_TEXT_CHAT'] === '1' && !app.isPackaged;
+const isE2ESettingsPersistence = config.e2eSettingsPersistence !== undefined && !app.isPackaged;
+const isE2EReconnectSmoke =
+  process.env['DISCO_VOADOR_E2E_RECONNECT_SMOKE'] === '1' && !app.isPackaged;
 
 function rendererDirectory(): string {
   return path.join(__dirname, '../renderer', MAIN_WINDOW_VITE_NAME);
@@ -93,6 +103,143 @@ function armE2EIdentityPersistenceExit(window: BrowserWindow): void {
     clearTimeout(timeout);
     const identityId = message.slice(marker.length);
     console.info(`E2E_IDENTITY_PERSISTENCE_OK:${identityId}`);
+    setTimeout(() => app.exit(0), 250);
+  });
+}
+
+/**
+ * Drives `apps/desktop/scripts/e2e-connection-smoke.mjs` (T8 Section 58): a single Electron
+ * instance proves the real connection UX — start disconnected, connect (via the E2E auto-connect
+ * path since no human is present, see `App.tsx`'s `AutoConnect`), authenticate, and receive the
+ * Dedicated Server's own display name — by relaying the unconditional
+ * `disco-voador:server-name:<name>` console line `use-voice-channel.ts` already logs once
+ * `server:hello` arrives. Exits as soon as that happens; never waits for voice:join to actually
+ * complete, since this script cares only about the connection/authentication/metadata path, not
+ * media.
+ */
+function armE2EConnectionSmokeExit(window: BrowserWindow): void {
+  if (!isE2EConnectionSmoke) return;
+
+  const marker = 'disco-voador:server-name:';
+
+  const timeout = setTimeout(() => {
+    console.error('E2E_CONNECTION_SMOKE_TIMEOUT: server name never received');
+    app.exit(1);
+  }, 30_000);
+
+  window.webContents.on('console-message', (_event, _level, message) => {
+    console.info(`[renderer] ${message}`);
+    if (!message.startsWith(marker)) return;
+    clearTimeout(timeout);
+    const serverName = message.slice(marker.length);
+    console.info(`E2E_CONNECTION_SMOKE_OK:${serverName}`);
+    setTimeout(() => app.exit(0), 250);
+  });
+}
+
+/**
+ * Drives `apps/desktop/scripts/e2e-authorization.mjs` (T9 Section 78). Unlike every other
+ * `armE2E*Exit` watcher, this one's exit condition is not fixed at build time — the orchestrating
+ * script relaunches this *same* profile multiple times across a scripted ban/unban cycle, and each
+ * launch needs to wait for a *different* marker before exiting (join vs. rejection vs. successful
+ * reconnection), so the marker string itself comes from `DISCO_VOADOR_E2E_EXIT_ON_MARKER`.
+ *
+ * Exits via `app.exit()` — Electron's own orderly shutdown — deliberately, never left to the
+ * orchestrating script's external `kill()`: relaunching the same `--user-data-dir` shortly after an
+ * externally-killed (not self-exited) instance produced a real, reproducible `safeStorage`/DPAPI
+ * `decryptString` failure reading the *same, never-corrupted* `identity.json`, found live while
+ * building this script. `e2e-identity-persistence.mjs`'s own relaunch-same-profile pattern was
+ * never affected by this because each of its instances already calls `app.exit()` itself.
+ */
+function armE2EAuthorizationExit(window: BrowserWindow): void {
+  if (!isE2EAuthorization) return;
+
+  const timeout = e2eAuthorizationExitMarker
+    ? setTimeout(() => {
+        console.error('E2E_AUTHORIZATION_TIMEOUT: configured marker never appeared');
+        app.exit(1);
+      }, 30_000)
+    : undefined;
+
+  window.webContents.on('console-message', (_event, _level, message) => {
+    console.info(`[renderer] ${message}`);
+    if (!e2eAuthorizationExitMarker || !message.includes(e2eAuthorizationExitMarker)) return;
+    if (timeout) clearTimeout(timeout);
+    setTimeout(() => app.exit(0), 250);
+  });
+}
+
+/**
+ * Drives `apps/desktop/scripts/e2e-text-chat-persistence.mjs`: relay-only, deliberately without any
+ * exit-forcing logic. Unlike `armE2EAuthorizationExit`, that script never relaunches the same
+ * `--user-data-dir` (every instance it spawns uses a fresh profile, exactly once), so there is no
+ * same-profile-relaunch `safeStorage`/DPAPI risk to guard against (see that function's own doc
+ * comment and `docs/architecture/PERSISTENT_TEXT_CHAT.md`'s E2E notes) — the orchestrating script
+ * simply kills each instance externally once it has observed what it needs, which is safe here.
+ * This relays the app's own `disco-voador:chat-message:*`/`disco-voador:chat-history:*` console
+ * lines (see `use-voice-channel.ts`) to this process's stdout so the orchestrating script can see
+ * them.
+ */
+function armE2ETextChatRelay(window: BrowserWindow): void {
+  if (!isE2ETextChat) return;
+
+  window.webContents.on('console-message', (_event, _level, message) => {
+    console.info(`[renderer] ${message}`);
+  });
+}
+
+/**
+ * Drives `apps/desktop/scripts/e2e-reconnect-smoke.mjs` (T11): relay-only, exactly like
+ * `armE2ETextChatRelay` above and for the identical reason — that script never relaunches the same
+ * `--user-data-dir` (one fresh profile per instance, externally `stop()`-ed once the orchestrating
+ * script is done with it), so there is no same-profile-relaunch `safeStorage`/DPAPI risk to guard
+ * against, and no exit-forcing is needed or wanted: this instance must stay alive and keep relaying
+ * console output through an entire unexpected-disconnect -> reconnecting -> reconnected cycle,
+ * which the orchestrating script observes via `use-voice-channel.ts`'s
+ * `disco-voador:connection-status:*`/`disco-voador:voice-joined:*` markers (plus the existing
+ * `E2E_PEER_CONNECTED:*`/`E2E_AUDIO_LEVEL_OK:*` markers, which naturally re-fire with fresh
+ * participant ids after a real reconnect+rejoin, since the server mints a new `participantId` per
+ * join).
+ */
+function armE2EReconnectSmokeRelay(window: BrowserWindow): void {
+  if (!isE2EReconnectSmoke) return;
+
+  window.webContents.on('console-message', (_event, _level, message) => {
+    console.info(`[renderer] ${message}`);
+  });
+}
+
+/**
+ * Drives `apps/desktop/scripts/e2e-settings-persistence.mjs` (T11): relays console output and,
+ * once the settings snapshot marker (`App.tsx`'s `disco-voador:e2e-settings-snapshot:<json>` line)
+ * has been observed, exits via Electron's own orderly `app.exit()` — deliberately, never left to
+ * the orchestrating script's external `kill()`. This scenario relaunches the *same*
+ * `--user-data-dir` across several instances to prove persistence; an earlier version of this
+ * function was relay-only (reasoning: the settings store itself is plain JSON, unlike T9's
+ * `safeStorage`/DPAPI-encrypted identity file, so it seemed to have no equivalent relaunch risk).
+ * That reasoning was found to be **wrong** during this task's own live E2E run: killing the process
+ * externally right after this marker appears still reproduced T9's exact `safeStorage`/DPAPI
+ * `decryptString` failure on the *next* launch of the same profile — evidently a property of
+ * externally `kill()`-ing *any* Electron instance shortly after startup on this platform/profile
+ * combination (this app always creates a local identity on first run, independent of what a given
+ * E2E scenario is actually testing), not something specific to which file T9's script happened to
+ * be exercising. Self-exiting here, exactly like `armE2EIdentityPersistenceExit`/
+ * `armE2EAuthorizationExit` already do, avoids it.
+ */
+function armE2ESettingsPersistenceExit(window: BrowserWindow): void {
+  if (!isE2ESettingsPersistence) return;
+
+  const marker = 'disco-voador:e2e-settings-snapshot:';
+
+  const timeout = setTimeout(() => {
+    console.error('E2E_SETTINGS_PERSISTENCE_TIMEOUT: settings snapshot never reported');
+    app.exit(1);
+  }, 20_000);
+
+  window.webContents.on('console-message', (_event, _level, message) => {
+    console.info(`[renderer] ${message}`);
+    if (!message.includes(marker)) return;
+    clearTimeout(timeout);
     setTimeout(() => app.exit(0), 250);
   });
 }
@@ -488,24 +635,28 @@ async function bootstrap(): Promise<void> {
   // would still reveal Electron's default menu (including reload/DevTools items) without this.
   Menu.setApplicationMenu(null);
 
-  const realtimeOrigin = new URL(config.realtimeUrl).origin;
   const allowedOrigins = allowedRendererOrigins(devServerUrl());
 
-  registerAppProtocolHandler(rendererDirectory(), realtimeOrigin);
+  registerAppProtocolHandler(rendererDirectory());
   installPermissionHandlers(session.defaultSession, allowedOrigins);
   installScreenShareHandlers(session.defaultSession, allowedOrigins);
 
-  const window = createMainWindow(config, realtimeOrigin, allowedOrigins);
+  const window = createMainWindow(config, allowedOrigins);
   armSmokeTestExit(window);
   armE2EVoiceSmokeExit(window);
   armE2ECameraSmokeExit(window);
   armE2EScreenSmokeExit(window);
   armE2EScreenAudioSmokeExit(window);
   armE2EIdentityPersistenceExit(window);
+  armE2EConnectionSmokeExit(window);
+  armE2EAuthorizationExit(window);
+  armE2ETextChatRelay(window);
+  armE2EReconnectSmokeRelay(window);
+  armE2ESettingsPersistenceExit(window);
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      createMainWindow(config, realtimeOrigin, allowedOrigins);
+      createMainWindow(config, allowedOrigins);
     }
   });
 }
@@ -517,6 +668,6 @@ app.on('window-all-closed', () => {
 });
 
 bootstrap().catch((error: unknown) => {
-  console.error('Disco Voador desktop shell failed to start', error);
+  console.error('OvniChat desktop shell failed to start', error);
   app.exit(1);
 });

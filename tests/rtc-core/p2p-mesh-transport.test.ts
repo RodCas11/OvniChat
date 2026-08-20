@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { P2PMeshTransport } from '../../packages/rtc-core/src/p2p-mesh-transport.js';
+import { Peer } from '../../packages/rtc-core/src/peer.js';
 import type { SignalingPort } from '../../packages/rtc-core/src/types.js';
 import { FakePeerConnection, fakeAudioTrack } from './fake-peer-connection.js';
 
@@ -596,6 +597,137 @@ describe('P2PMeshTransport — error containment (never an unhandled rejection)'
     expect(consoleErrorSpy).toHaveBeenCalled();
     // The transport is still usable afterward.
     expect(() => transport.removeParticipant('peer-1')).not.toThrow();
+  });
+});
+
+describe('P2PMeshTransport — replaceTrack (T11)', () => {
+  it('swaps the actual sender track on every current peer without triggering renegotiation', () => {
+    const { transport, connections, signalingPort } = createTransport();
+    const oldTrack = fakeAudioTrack('mic-old');
+    const newTrack = fakeAudioTrack('mic-new');
+    transport.addParticipant('peer-1', 'responder');
+    transport.addParticipant('peer-2', 'responder');
+    transport.publishTrack(oldTrack);
+
+    transport.replaceTrack(oldTrack, newTrack);
+
+    for (const pc of connections.values()) {
+      const sender = pc.senderFor(oldTrack);
+      expect(pc.replaceTrackCalls).toEqual([{ sender, newTrack }]);
+      // No renegotiation triggered by replaceTrack itself.
+      expect(pc.addTrackCalls).toEqual([oldTrack]);
+      expect(pc.removeTrackCalls).toEqual([]);
+      expect(pc.setLocalDescriptionCalls).toEqual([]);
+    }
+    expect(signalingPort.offers).toEqual([]);
+  });
+
+  it('updates publishedTracks so a peer added after replaceTrack is seeded with the new track, not the old one', () => {
+    const { transport, connections } = createTransport();
+    const oldTrack = fakeAudioTrack('mic-old');
+    const newTrack = fakeAudioTrack('mic-new');
+    transport.publishTrack(oldTrack);
+
+    transport.replaceTrack(oldTrack, newTrack);
+    transport.addParticipant('peer-late', 'responder');
+
+    const pc = [...connections.values()][0];
+    expect(pc?.addTrackCalls).toEqual([newTrack]);
+  });
+
+  it('throws a clear error for a track that was never published', () => {
+    const { transport } = createTransport();
+    transport.addParticipant('peer-1', 'responder');
+
+    expect(() =>
+      transport.replaceTrack(fakeAudioTrack('never-published'), fakeAudioTrack('new')),
+    ).toThrow(/never published/);
+  });
+
+  it('unpublishing then attempting replaceTrack on the same track throws — it is no longer published', () => {
+    const { transport } = createTransport();
+    const track = fakeAudioTrack('mic-track');
+    transport.publishTrack(track);
+    transport.unpublishTrack(track);
+
+    expect(() => transport.replaceTrack(track, fakeAudioTrack('new'))).toThrow(/never published/);
+  });
+
+  it('one peer throwing from replaceTrack (a per-peer bookkeeping gap) is caught and logged; replacement still reaches every other peer', () => {
+    // A real per-peer gap (this specific peer's own `senders` map never picked up `oldTrack`, even
+    // though the transport's `publishedTracks` has it) is not reachable through this package's own
+    // public API — every current peer is always seeded identically by `publishTrack`/
+    // `addParticipant`. Reproduced instead by spying on `Peer.prototype.replaceTrack` to throw for
+    // exactly one peer, the same "caller bug" error `Peer.replaceTrack` itself throws for an unknown
+    // track — this is the transport-level contract this test actually protects: one peer's thrown
+    // error must not abort the loop for the rest.
+    const { transport, connections } = createTransport();
+    const oldTrack = fakeAudioTrack('mic-old');
+    const newTrack = fakeAudioTrack('mic-new');
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    transport.addParticipant('peer-gap', 'responder');
+    transport.addParticipant('peer-healthy', 'responder');
+    transport.publishTrack(oldTrack);
+
+    const originalReplaceTrack = Peer.prototype.replaceTrack;
+    let callCount = 0;
+    const replaceTrackSpy = vi.spyOn(Peer.prototype, 'replaceTrack').mockImplementation(function (
+      this: Peer,
+      old: MediaStreamTrack,
+      next: MediaStreamTrack,
+    ) {
+      callCount += 1;
+      if (callCount === 1) throw new Error('simulated per-peer sender gap');
+      return originalReplaceTrack.call(this, old, next);
+    });
+
+    expect(() => transport.replaceTrack(oldTrack, newTrack)).not.toThrow();
+
+    expect(consoleErrorSpy).toHaveBeenCalled();
+    expect(replaceTrackSpy).toHaveBeenCalledTimes(2); // both peers attempted despite the first throwing
+
+    const healthyPc = [...connections.values()][1];
+    expect(healthyPc?.replaceTrackCalls).toEqual([
+      { sender: healthyPc?.senderFor(oldTrack), newTrack },
+    ]);
+
+    replaceTrackSpy.mockRestore();
+    consoleErrorSpy.mockRestore();
+  });
+
+  it('a full multi-peer scenario: replaceTrack alongside published camera/screen leaves every peer connected and healthy', () => {
+    const { transport, connections } = createTransport();
+    const micTrack = fakeAudioTrack('mic-old');
+    const newMicTrack = fakeAudioTrack('mic-new');
+    const cameraTrack = fakeAudioTrack('camera-track');
+    const screenTrack = fakeAudioTrack('screen-track');
+    const stateEvents: unknown[] = [];
+    const closedEvents: string[] = [];
+    transport.on('peerStateChanged', (event) => stateEvents.push(event));
+    transport.on('peerClosed', (participantId) => closedEvents.push(participantId));
+
+    transport.addParticipant('peer-1', 'responder');
+    transport.addParticipant('peer-2', 'responder');
+    transport.publishTrack(micTrack);
+    transport.publishTrack(cameraTrack);
+    transport.publishTrack(screenTrack);
+
+    transport.replaceTrack(micTrack, newMicTrack);
+
+    for (const pc of connections.values()) {
+      expect(pc.replaceTrackCalls).toEqual([
+        { sender: pc.senderFor(micTrack), newTrack: newMicTrack },
+      ]);
+      // Camera and screen were never touched by the microphone's replaceTrack call.
+      expect(pc.removeTrackCalls).toEqual([]);
+      expect(pc.addTrackCalls).toEqual(
+        expect.arrayContaining([micTrack, cameraTrack, screenTrack]),
+      );
+    }
+    // No peer connection was closed or reported a state change as a side effect of replaceTrack.
+    expect(stateEvents).toEqual([]);
+    expect(closedEvents).toEqual([]);
   });
 });
 

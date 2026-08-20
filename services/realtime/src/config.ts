@@ -36,6 +36,16 @@ const realtimeConfigSchema = z.object({
   REALTIME_HEARTBEAT_TIMEOUT_MS: envPositiveInt().default(10_000),
   REALTIME_RATE_LIMIT_MAX_MESSAGES: envPositiveInt().default(30),
   REALTIME_RATE_LIMIT_WINDOW_MS: envPositiveInt().default(10_000),
+  // T10 — separate, smaller buckets for chat specifically (Section 60/61, mandatory): persistent
+  // storage makes spam more expensive than T2's original in-memory-only threat model assumed, so
+  // chat sends/history requests get their own limiter on top of (never instead of) the generic
+  // transport-level one above. Deliberately non-fatal when exceeded (see `errors.ts`'s
+  // `CHAT_RATE_LIMITED`) — a chatty-but-legitimate client is throttled, not disconnected, unlike
+  // the fatal generic `RATE_LIMITED` above.
+  REALTIME_CHAT_SEND_RATE_LIMIT_MAX_MESSAGES: envPositiveInt().default(10),
+  REALTIME_CHAT_SEND_RATE_LIMIT_WINDOW_MS: envPositiveInt().default(10_000),
+  REALTIME_CHAT_HISTORY_RATE_LIMIT_MAX_MESSAGES: envPositiveInt().default(20),
+  REALTIME_CHAT_HISTORY_RATE_LIMIT_WINDOW_MS: envPositiveInt().default(10_000),
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
 });
 
@@ -49,6 +59,16 @@ export interface RealtimeConfig {
   readonly heartbeatIntervalMs: number;
   readonly heartbeatTimeoutMs: number;
   readonly rateLimit: {
+    readonly maxMessages: number;
+    readonly windowMs: number;
+  };
+  /** T10 — separate, smaller rate-limit buckets for `client:chat-send`/`client:chat-history-request`
+   * specifically (see the schema's own doc comment above). */
+  readonly chatSendRateLimit: {
+    readonly maxMessages: number;
+    readonly windowMs: number;
+  };
+  readonly chatHistoryRateLimit: {
     readonly maxMessages: number;
     readonly windowMs: number;
   };
@@ -72,6 +92,14 @@ export function loadRealtimeConfig(
     rateLimit: {
       maxMessages: parsed.REALTIME_RATE_LIMIT_MAX_MESSAGES,
       windowMs: parsed.REALTIME_RATE_LIMIT_WINDOW_MS,
+    },
+    chatSendRateLimit: {
+      maxMessages: parsed.REALTIME_CHAT_SEND_RATE_LIMIT_MAX_MESSAGES,
+      windowMs: parsed.REALTIME_CHAT_SEND_RATE_LIMIT_WINDOW_MS,
+    },
+    chatHistoryRateLimit: {
+      maxMessages: parsed.REALTIME_CHAT_HISTORY_RATE_LIMIT_MAX_MESSAGES,
+      windowMs: parsed.REALTIME_CHAT_HISTORY_RATE_LIMIT_WINDOW_MS,
     },
     logLevel: parsed.LOG_LEVEL,
   };

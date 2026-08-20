@@ -176,6 +176,17 @@ renegotiation cost, and matches ordinary voice-chat UX. Deafening is purely a lo
 (`<audio>` element `.muted`, see `RemoteAudio.tsx`) — the peer connections and remote tracks are
 untouched, so un-deafening is instant and the remote side is never told anything changed.
 
+**T11 device switching**: `acquireMicrophone`/`acquireCamera` both accept an optional `deviceId` (see
+`packages/media-core/src/microphone.ts`/`camera.ts`), and `rtc-core`'s `MediaTransport` gained a
+`replaceTrack(oldTrack, newTrack)` primitive (`Peer`/`P2PMeshTransport`) so a caller can switch the
+active microphone or camera device mid-session — acquire the new device's track first, call
+`transport.replaceTrack(oldTrack, newTrack)`, then stop the old track only after that call succeeds —
+without a full renegotiation cycle or disrupting other published sources (screen-video,
+screen-audio). `replaceTrack` is a transceiver-level `RTCRtpSender.replaceTrack()` swap: no
+`negotiationneeded` fires, no new offer/answer round-trip. This is a `rtc-core`/`media-core`
+primitive only; the device-picker UI and `use-voice-channel.ts` wiring that calls it are separate T11
+work.
+
 ## Permissions
 
 `apps/desktop/src/main/permissions.ts` grants exactly one permission beyond T1's default-deny-all:
@@ -186,12 +197,14 @@ identically; Electron only fully enforces a policy when both are installed.
 
 ## Content-Security-Policy and the realtime origin
 
-The realtime server URL (`DISCO_VOADOR_REALTIME_URL`, default `ws://127.0.0.1:8090`) is
-operator/deployment configuration — parsed once in `main/desktop-config.ts` — never a
-Renderer-editable text field. This is specifically so the CSP's `connect-src` can allowlist one exact
-origin (`new URL(url).origin`, computed in `main/index.ts`) instead of a wildcard scheme/host; an
-arbitrary runtime-user-typed endpoint could never be safely pre-declared in a CSP set before the page
-loads.
+The realtime server URL (`DISCO_VOADOR_REALTIME_URL`, default `ws://127.0.0.1:8090`) was, through T7,
+operator/deployment configuration only — parsed once in `main/desktop-config.ts` — never a
+Renderer-editable text field, specifically so the CSP's `connect-src` could allowlist one exact
+origin instead of a wildcard scheme/host. **T8 changed this**: the server address is now a real,
+user-typed field (`ConnectionScreen`), which an exact pre-declared CSP origin cannot accommodate —
+`content-security-policy.ts`'s `connect-src` now scopes to the `ws:`/`wss:` schemes generically
+instead. See `docs/architecture/DEDICATED_SERVER.md`'s "Client connection UX" section for the full
+T8 design and the CSP trade-off this required.
 
 ## ICE servers
 
@@ -230,10 +243,19 @@ note).
 
 ## Known gaps / deliberately deferred
 
-- No ICE-restart or reconnection recovery for a peer connection that reaches `'disconnected'` (only
-  `'failed'`/`'closed'` are treated as terminal — see `rtc-core/src/connection-state.ts`); a flaky
-  network can leave a pair "disconnected" with no automatic recovery attempt. Candidate for T8
-  (connection recovery/diagnostics).
+- Still no ICE-restart for an individual peer connection that reaches `'disconnected'` while the
+  underlying realtime WebSocket stays up (only `'failed'`/`'closed'` are treated as terminal — see
+  `rtc-core/src/connection-state.ts`); a flaky _media_ path alone (the signaling connection itself
+  stays healthy) can leave one pair "disconnected" with no automatic recovery attempt. This remains
+  open — it is a narrower, still-unaddressed gap than the one T11 closed: T11's automatic reconnect
+  (`docs/architecture/CLIENT_SETTINGS_AND_RECONNECT.md`, ADR 0016) recovers from the _realtime
+  connection itself_ being lost (the WebSocket closes — server restart, network drop, etc.), which
+  necessarily rebuilds every peer connection from scratch as part of rejoining the voice channel, but
+  does nothing for a peer connection that alone goes `'disconnected'` while the WebSocket is still
+  open. A future task could add real ICE-restart for that narrower case.
 - No SFU — see ADR 0006; the mesh does not scale past a small room.
 - No TURN credential minting — see [ICE servers](#ice-servers) above.
-- No speaking indicators, device selection, or per-participant volume — explicitly out of T3's scope.
+- No speaking indicators or per-participant volume — explicitly out of T3's scope. Device selection
+  is no longer entirely absent: T11 added the `deviceId`/`replaceTrack` primitives described in
+  [Microphone lifecycle](#microphone-lifecycle) above, but the device-picker UI and its
+  `use-voice-channel.ts` wiring are tracked separately, outside `rtc-core`/`media-core`.

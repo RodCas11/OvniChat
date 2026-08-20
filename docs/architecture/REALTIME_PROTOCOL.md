@@ -1,4 +1,4 @@
-# Realtime protocol (T2, extended by T7)
+# Realtime protocol (T2, extended by T7, T8, T9, T10)
 
 Canonical contracts live in code at [`packages/protocol/src/`](../../packages/protocol/src/); this
 document explains the design and is not itself authoritative — the schemas are. See
@@ -6,18 +6,28 @@ document explains the design and is not itself authoritative — the schemas are
 [`docs/tasks/T2_REALTIME_PROTOCOL.md`](../tasks/T2_REALTIME_PROTOCOL.md) for the task that
 implemented the connection foundation this document covers,
 [`WEBRTC_VOICE.md`](WEBRTC_VOICE.md) / [`docs/tasks/T3_VOICE_WEBRTC.md`](../tasks/T3_VOICE_WEBRTC.md)
-for the voice/WebRTC signaling this foundation now also carries, and
+for the voice/WebRTC signaling this foundation now also carries,
 [`CLIENT_IDENTITY.md`](CLIENT_IDENTITY.md) / [`docs/tasks/T7_LOCAL_IDENTITY.md`](../tasks/T7_LOCAL_IDENTITY.md)
-for the local-cryptographic-identity handshake this document now also covers.
+for the local-cryptographic-identity handshake this document now also covers,
+[`DEDICATED_SERVER.md`](DEDICATED_SERVER.md) / [`docs/tasks/T8_DEDICATED_SERVER.md`](../tasks/T8_DEDICATED_SERVER.md)
+for T8's server-metadata/channel-discovery additions to this same handshake,
+[`SERVER_AUTHORIZATION.md`](SERVER_AUTHORIZATION.md) / [`docs/tasks/T9_SERVER_AUTHORIZATION.md`](../tasks/T9_SERVER_AUTHORIZATION.md)
+for T9's server-local admission/groups/tokens/bans message surface, and
+[`PERSISTENT_TEXT_CHAT.md`](PERSISTENT_TEXT_CHAT.md) / [`docs/tasks/T10_PERSISTENT_TEXT_CHAT.md`](../tasks/T10_PERSISTENT_TEXT_CHAT.md)
+for T10's persistent chat message surface — both T9 and T10 are covered here only at the
+envelope/handshake-placement level; the design itself lives in those documents.
 
 ## Scope
 
 This document covers the connection/handshake/liveness envelope T2 defined (`client:hello`,
-`client:ping`, `server:hello`, `server:pong`, `server:error`) and T7's identity-proof step inserted
-into that same handshake (`server:identity-challenge`, `client:identity-proof`). Voice signaling
-(`voice:*`, `webrtc:*`) was added in T3 on top of this same envelope and versioning strategy without
-changing it — see [`WEBRTC_VOICE.md`](WEBRTC_VOICE.md) for that message surface's own design. Text
-chat remains a later task (T10, see [Future extension](#future-extension)).
+`client:ping`, `server:hello`, `server:pong`, `server:error`), T7's identity-proof step inserted
+into that same handshake (`server:identity-challenge`, `client:identity-proof`), T8's server-
+identity fields added to `server:hello` (`serverName`, `serverCapabilities`), T9's admission step
+and `client:authorization-*`/`server:authorization-*` message family, and T10's
+`client:chat-*`/`server:chat-*` message family — all layered on top of the same handshake and
+envelope. Voice signaling (`voice:*`, `webrtc:*`) was added in T3 on top of this same envelope and
+versioning strategy without changing it — see [`WEBRTC_VOICE.md`](WEBRTC_VOICE.md) for that message
+surface's own design.
 
 ## Transport
 
@@ -70,8 +80,8 @@ an optional `replyTo` when the offending message's `id` could be recovered.
 ## Versioning
 
 ```ts
-CURRENT_PROTOCOL_VERSION = 2;
-SUPPORTED_PROTOCOL_VERSIONS = [2];
+CURRENT_PROTOCOL_VERSION = 3;
+SUPPORTED_PROTOCOL_VERSIONS = [3];
 ```
 
 Bumped 1 → 2 for T7: `client:hello` gained required `nickname`/`publicKey` fields and the
@@ -80,6 +90,30 @@ breaking change (a v1 hello is no longer sufficient to reach `ready`), so v1 sup
 rather than kept as a parallel unauthenticated codepath — maintaining it would have meant either
 bypassing identity verification for v1 clients or having v1 always fail, neither worth keeping as
 "support."
+
+Bumped 2 → 3 for T8: `server:hello` gained required `serverName`/`serverCapabilities` fields so a
+client learns which Dedicated Server it just authenticated to and what product capabilities it
+offers, without a second, parallel HTTP API — see [`DEDICATED_SERVER.md`](DEDICATED_SERVER.md)'s
+"Server metadata handshake" section. Adding a required field to an existing `.strict()`-validated
+message is a breaking change under this document's own evolution policy (below) even though no
+existing field's meaning changed, so v2 support was dropped rather than kept as a parallel
+codepath — the same reasoning T7's own bump already applied.
+
+**Not bumped for T9** — the first task to actually exercise the "additive, no bump" half of the
+evolution policy below, rather than the "required field, bump" half T7 and T8 both needed. Every
+T9 wire change is genuinely additive: `client:hello` gained only an _optional_ `serverToken` field
+(a server in `accessMode: open`, the default, never requires it), `voiceParticipantSchema` gained
+only an _optional_ `groups` badge array, and every other T9 concept (admission, groups, tokens,
+bans) is a brand-new message type added to the existing discriminated unions, never a change to an
+existing message's required shape. A pre-T9 client omitting `serverToken` still completes the
+handshake exactly as before against an `open` server; it only fails admission (`INVITE_REQUIRED`)
+against an operator-configured `invite-only` server, which is a product/configuration outcome, not
+a protocol-version mismatch.
+
+**Not bumped for T10 either** — the entire persistent-chat message family
+(`client:chat-send`/`client:chat-history-request`, `server:chat-message`/`server:chat-history-page`)
+is a set of brand-new message types, and `serverCapabilitySchema` gained an additive `'text-chat'`
+enum member. No existing message's required shape changed.
 
 A WebSocket connection's protocol version cannot change mid-connection, so it is negotiated exactly
 once during the handshake rather than repeated on every message. `client:hello.protocolVersion` is
@@ -134,9 +168,25 @@ that never completes _either_ step (hello, or the identity proof after it) withi
 unauthenticated sockets are never left open indefinitely, regardless of which half of the
 now-two-step handshake they stalled in.
 
+**T9 — admission is checked inside the same identity-proof step, strictly before `ready`.** Once
+the signature verifies (authentication succeeds), the server evaluates server-local authorization
+(`AuthorizationPort.admit`, see [`SERVER_AUTHORIZATION.md`](SERVER_AUTHORIZATION.md)) before
+building `server:hello` at all. A banned identity or an identity that cannot satisfy an
+`invite-only` server's admission rules never receives `server:hello` and never reaches `ready` —
+`server:error` (`BANNED` / `INVITE_REQUIRED`) then close, the same error-then-close policy as any
+other handshake rejection. This is deliberate: authentication (who you are) and authorization
+(whether this server currently admits you) are distinct checks, but the wire never exposes a state
+between them — a connection is either still proving its identity, or it is `ready` _and_ admitted,
+never "authenticated but not yet authorized." On success, `server:hello` is followed by a
+`server:authorization-state` reply (the connecting identity's own groups/permissions on _this_
+server) and then `voice:catalog`, in that order.
+
 `server:hello` carries only what proves negotiation succeeded and lets the client behave correctly:
 its own `connectionId`, the server-verified `identityId`, the negotiated `protocolVersion`,
-`serverTime`, and the heartbeat cadence. No speculative product/presence state.
+`serverTime`, the heartbeat cadence, and (T8) the server's own display `serverName` and bounded
+`serverCapabilities` list — still no speculative product/presence state beyond that: no channel
+membership, no participant list (that remains `voice:catalog`'s job), and no group/permission data
+(that is `server:authorization-state`'s job, sent right after).
 
 ## Connection identity
 
@@ -206,6 +256,23 @@ Two independent mechanisms, used deliberately for different purposes:
 | `IDENTITY_PROTOCOL_ERROR`     | An identity message arrived with no outstanding challenge for the connection                                             |       4413 |
 | `INTERNAL_ERROR`              | Unexpected server-side failure handling an otherwise-valid message                                                       |       4500 |
 | `SERVER_AT_CAPACITY`          | `REALTIME_MAX_CONNECTIONS` already reached; rejected before any handshake work                                           |       4503 |
+| `BANNED` (T9)                 | The identity is banned from this server (checked during the identity-proof step, before `ready`)                         |       4421 |
+| `INVITE_REQUIRED` (T9)        | Admission-time rejection on an `invite-only` server: missing/unusable token, or (moderation) no admission basis left     |       4420 |
+| `KICKED` (T9)                 | An administrator closed this connection via `client:authorization-kick`; creates no ban                                  |       4422 |
+
+T9 also added eight **non-fatal** authorization error codes with no entry in `CLOSE_CODE_BY_ERROR`
+(`AUTHORIZATION_DENIED`, `GROUP_NOT_FOUND`, `PROTECTED_GROUP`, `LAST_ADMIN`, `TOKEN_INVALID`,
+`TOKEN_EXPIRED`, `TOKEN_ALREADY_USED`, `PARTICIPANT_NOT_FOUND`) — these follow T3's existing
+non-fatal precedent (see [Future extension](#future-extension)): a Guest denied an admin action, or
+a wrong privilege-key guess after `ready`, gets `server:error` but stays connected. See
+[`SERVER_AUTHORIZATION.md`](SERVER_AUTHORIZATION.md) for the full authorization message surface,
+per-code semantics, and why `INVITE_REQUIRED` (not `AUTHORIZATION_DENIED`) is the fatal code used
+when a live connection is force-closed for no longer having an admission basis (T9 Section 63).
+
+T10 added one more **non-fatal** code, `CHAT_RATE_LIMITED` — a connection exceeding its
+chat-specific send/history-request rate-limit buckets (separate from the generic transport-level
+`RATE_LIMITED` above) stays connected, matching every other rate-limit-shaped non-fatal condition.
+See [`PERSISTENT_TEXT_CHAT.md`](PERSISTENT_TEXT_CHAT.md) for the full chat message surface.
 
 The four `IDENTITY_*` codes are deliberately coarse (see [`CLIENT_IDENTITY.md`](CLIENT_IDENTITY.md)
 for the reasoning): a replayed challenge and a signature from the wrong key both surface as
@@ -291,7 +358,16 @@ T3   voice:join, voice:leave, voice:joined, voice:left, voice:participant-joined
      webrtc:ice-candidate   — implemented, see architecture/WEBRTC_VOICE.md
 T7   server:identity-challenge, client:identity-proof; client:hello/server:hello extended
      with nickname/publicKey/identityId   — implemented, see architecture/CLIENT_IDENTITY.md
-T10  text:join, text:message-send, text:message-created   — not yet implemented
+T8   server:hello extended with serverName/serverCapabilities; voiceChannels became
+     server-owned configuration instead of a hardcoded catalog   — implemented, see
+     architecture/DEDICATED_SERVER.md
+T9   client:hello gained optional serverToken; voiceParticipant gained optional groups;
+     12 new client:authorization-* messages, 6 new server:authorization-* messages;
+     admission (BANNED/INVITE_REQUIRED) checked before ready   — implemented, see
+     architecture/SERVER_AUTHORIZATION.md
+T10  client:chat-send, client:chat-history-request, server:chat-message,
+     server:chat-history-page; serverCapabilities gained 'text-chat'   — implemented,
+     see architecture/PERSISTENT_TEXT_CHAT.md
 ```
 
 T3 needed no envelope or versioning change — every new message is its own schema added to the
@@ -314,4 +390,14 @@ Authentication now exists (T7's identity proof), but deliberately without an acc
 central user database, no password, no email — see [`CLIENT_IDENTITY.md`](CLIENT_IDENTITY.md) and
 [`adr/0011-local-cryptographic-identity-without-central-accounts.md`](../adr/0011-local-cryptographic-identity-without-central-accounts.md).
 Server-local authorization (permissions, groups, invite/privilege tokens, bans keyed by
-`identityId`) remains a later task (T9).
+`identityId`) is implemented as of T9 — layered strictly on top of T7's identity proof, never
+replacing or weakening it: `identityId` is still the sole authentication signal, and T9 only adds
+"what this identity may do _on this server_" on top of "who this identity is" — see
+[`SERVER_AUTHORIZATION.md`](SERVER_AUTHORIZATION.md) and
+[`adr/0013-server-authorization-storage-and-rbac.md`](../adr/0013-server-authorization-storage-and-rbac.md).
+T8 made the realtime service an explicitly independently-operable product
+(`services/dedicated-server`, composing this same protocol/session library unchanged) rather than
+an internal-only service every test bypassed into directly — see
+[`DEDICATED_SERVER.md`](DEDICATED_SERVER.md). T10 layered persistent server-side text chat on top
+of this same connection/session library the identical way T9 layered authorization on top of it —
+see [`PERSISTENT_TEXT_CHAT.md`](PERSISTENT_TEXT_CHAT.md).

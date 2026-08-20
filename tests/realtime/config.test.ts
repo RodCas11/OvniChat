@@ -16,6 +16,8 @@ describe('loadRealtimeConfig', () => {
       heartbeatIntervalMs: 15000,
       heartbeatTimeoutMs: 10000,
       rateLimit: { maxMessages: 30, windowMs: 10000 },
+      chatSendRateLimit: { maxMessages: 10, windowMs: 10000 },
+      chatHistoryRateLimit: { maxMessages: 20, windowMs: 10000 },
       logLevel: 'info',
     });
   });
@@ -32,6 +34,10 @@ describe('loadRealtimeConfig', () => {
       REALTIME_HEARTBEAT_TIMEOUT_MS: '3000',
       REALTIME_RATE_LIMIT_MAX_MESSAGES: '10',
       REALTIME_RATE_LIMIT_WINDOW_MS: '1000',
+      REALTIME_CHAT_SEND_RATE_LIMIT_MAX_MESSAGES: '7',
+      REALTIME_CHAT_SEND_RATE_LIMIT_WINDOW_MS: '2000',
+      REALTIME_CHAT_HISTORY_RATE_LIMIT_MAX_MESSAGES: '8',
+      REALTIME_CHAT_HISTORY_RATE_LIMIT_WINDOW_MS: '3000',
       LOG_LEVEL: 'debug',
     });
 
@@ -45,6 +51,8 @@ describe('loadRealtimeConfig', () => {
       heartbeatIntervalMs: 5000,
       heartbeatTimeoutMs: 3000,
       rateLimit: { maxMessages: 10, windowMs: 1000 },
+      chatSendRateLimit: { maxMessages: 7, windowMs: 2000 },
+      chatHistoryRateLimit: { maxMessages: 8, windowMs: 3000 },
       logLevel: 'debug',
     });
   });

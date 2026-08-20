@@ -9,6 +9,7 @@ export const IPC_CHANNELS = {
   getVersionInfo: 'app:get-version-info',
   getRealtimeConfig: 'app:get-realtime-config',
   getE2EVoiceConfig: 'app:get-e2e-voice-config',
+  getE2ESettingsPersistenceConfig: 'app:get-e2e-settings-persistence-config',
   listScreenShareSources: 'app:list-screen-share-sources',
   selectScreenShareSource: 'app:select-screen-share-source',
   getIdentity: 'app:get-identity',
@@ -16,6 +17,11 @@ export const IPC_CHANNELS = {
   regenerateIdentity: 'app:regenerate-identity',
   getNickname: 'app:get-nickname',
   setNickname: 'app:set-nickname',
+  getClientSettings: 'app:get-client-settings',
+  updateClientSettings: 'app:update-client-settings',
+  addBookmark: 'app:add-bookmark',
+  updateBookmark: 'app:update-bookmark',
+  removeBookmark: 'app:remove-bookmark',
 } as const;
 
 export interface DesktopVersionInfo {
@@ -72,6 +78,47 @@ export interface DesktopE2EVoiceConfig {
    * Meaningless unless `autoScreenShare` is also `true`.
    */
   readonly autoScreenShareAudio: boolean;
+  /**
+   * T8: overrides which server `AutoConnect` connects to, independent of `DesktopRealtimeConfig.url`
+   * (the CSP-relevant deployment default). Only `e2e-connection-smoke.mjs` sets this, deliberately to
+   * a *different* address than `DISCO_VOADOR_REALTIME_URL` — proving the Renderer can actually reach
+   * a server address that was not known at launch, the real product capability T8 added (and the gap
+   * a security review found: CSP `connect-src` must permit this, not just the one baked-in origin).
+   * `undefined` means "connect to the deployment-default address", the pre-T8 behavior.
+   */
+  readonly connectUrl: string | undefined;
+  /**
+   * T9: once connected, automatically redeems this bearer token via
+   * `client:authorization-redeem-token` — the same production action the "Use Privilege Key"
+   * panel drives, with no human interaction. See `apps/desktop/scripts/e2e-authorization.mjs`.
+   */
+  readonly redeemToken: string | undefined;
+  /**
+   * T10: once connected, automatically sends this body to Server Chat via `client:chat-send` — the
+   * same production `sendChatMessage` action the chat composer drives, with no human interaction.
+   * See `apps/desktop/scripts/e2e-text-chat-persistence.mjs`.
+   */
+  readonly autoChatSendServerBody: string | undefined;
+  /**
+   * T10: once joined to `channelId` above, automatically sends this body to that channel's chat.
+   * See `apps/desktop/scripts/e2e-text-chat-channel-persistence.mjs`.
+   */
+  readonly autoChatSendChannelBody: string | undefined;
+}
+
+/**
+ * T11 — present only for `apps/desktop/scripts/e2e-settings-persistence.mjs`, and only when
+ * `!app.isPackaged` (see `main/window.ts`), the same double gate every other `DesktopE2E*Config`
+ * field in this file already uses. `undefined` for every real user, always. Deliberately its own
+ * small config/channel, independent of `DesktopE2EVoiceConfig` — that one's very presence forces
+ * `App.tsx`'s E2E `AutoFirstRun`/`AutoConnect` path (auto-connecting to a real realtime service),
+ * which this settings-only scenario must not require (mirrors `e2e-identity-persistence.mjs`'s own
+ * zero-server design).
+ */
+export interface DesktopE2ESettingsPersistenceConfig {
+  /** `true` only on the orchestrating script's first launch of a given `--user-data-dir` — see
+   * `App.tsx`'s settings-persistence-automation effect for the full read/write scenario. */
+  readonly write: boolean;
 }
 
 /**
@@ -126,10 +173,81 @@ export interface DesktopIdentityChallenge {
   readonly nickname: string;
 }
 
+/**
+ * T11 local client settings — device/UI preferences the Client owns for itself, entirely separate
+ * from server-local authorization/chat data (T9/T10) and from identity/nickname (T7). Never sent to
+ * any Dedicated Server. See `main/settings/settings-file.ts` and
+ * `docs/architecture/CLIENT_SETTINGS_AND_RECONNECT.md`. `null` for a device id means "use the
+ * platform's current system default," distinct from "no preference recorded yet" (which also
+ * resolves to `null` — there is no third state, since the UX is identical either way).
+ */
+export interface DesktopClientSettings {
+  readonly audio: {
+    readonly inputDeviceId: string | null;
+    readonly outputDeviceId: string | null;
+  };
+  readonly video: {
+    readonly cameraDeviceId: string | null;
+  };
+  readonly screenShare: {
+    readonly qualityPreset: 'standard' | 'high' | 'smooth' | 'smooth720';
+  };
+  readonly voice: {
+    readonly startMuted: boolean;
+    readonly startDeafened: boolean;
+  };
+  readonly bookmarks: readonly DesktopServerBookmark[];
+  /** The last address a user actually connected to (manually or via a bookmark) — pre-fills
+   * `ConnectionScreen`, never auto-connects by itself unless `connectOnStartup` is also `true`. */
+  readonly lastServerAddress: string | null;
+  /** Explicit opt-in only (T11 Section 15) — never enabled by default. */
+  readonly connectOnStartup: boolean;
+}
+
+/** A narrow, explicitly-named patch — never a whole-object replacement — mirroring this file's
+ * existing "one capability, one purpose" IPC discipline. Bookmarks are mutated through their own
+ * dedicated `addBookmark`/`updateBookmark`/`removeBookmark` operations, never through this patch. */
+export interface DesktopClientSettingsPatch {
+  readonly audio?:
+    | {
+        readonly inputDeviceId?: string | null | undefined;
+        readonly outputDeviceId?: string | null | undefined;
+      }
+    | undefined;
+  readonly video?: { readonly cameraDeviceId?: string | null | undefined } | undefined;
+  readonly screenShare?:
+    | { readonly qualityPreset?: DesktopClientSettings['screenShare']['qualityPreset'] | undefined }
+    | undefined;
+  readonly voice?:
+    | { readonly startMuted?: boolean | undefined; readonly startDeafened?: boolean | undefined }
+    | undefined;
+  readonly lastServerAddress?: string | null | undefined;
+  readonly connectOnStartup?: boolean | undefined;
+}
+
+/**
+ * A local, client-only server bookmark (T11 Section 9-11) — `displayName`/`serverAddress` only.
+ * **Never** carries an invite/privilege token or any other bearer credential; a
+ * `ConnectionScreen`-entered token is used for one connection attempt and discarded, exactly as it
+ * is for a manually-typed address, never persisted here or anywhere else.
+ */
+export interface DesktopServerBookmark {
+  readonly bookmarkId: string;
+  readonly displayName: string;
+  readonly serverAddress: string;
+}
+
+export interface DesktopBookmarkInput {
+  readonly displayName: string;
+  readonly serverAddress: string;
+}
+
 export interface DesktopApi {
   getVersionInfo: () => Promise<DesktopVersionInfo>;
   getRealtimeConfig: () => Promise<DesktopRealtimeConfig>;
   getE2EVoiceConfig: () => Promise<DesktopE2EVoiceConfig | undefined>;
+  /** See {@link DesktopE2ESettingsPersistenceConfig}. */
+  getE2ESettingsPersistenceConfig: () => Promise<DesktopE2ESettingsPersistenceConfig | undefined>;
   /**
    * Enumerates current screen/window capture candidates as sanitized plain data. Calling this
    * again replaces the set of ids `selectScreenShareSource` will accept — an id from a previous
@@ -173,4 +291,14 @@ export interface DesktopApi {
   getNickname: () => Promise<string>;
   /** Returns `false` (never throws) for an invalid nickname. */
   setNickname: (nickname: string) => Promise<boolean>;
+  /** Loads (creating defaults on first run, salvaging what it can from a corrupted file) the local
+   * client settings. See {@link DesktopClientSettings}. */
+  getClientSettings: () => Promise<DesktopClientSettings>;
+  /** Merges a narrow patch into the current settings and persists the result. */
+  updateClientSettings: (patch: DesktopClientSettingsPatch) => Promise<DesktopClientSettings>;
+  addBookmark: (input: DesktopBookmarkInput) => Promise<DesktopServerBookmark>;
+  /** Returns `false` (never throws) if `bookmark.bookmarkId` does not match an existing bookmark. */
+  updateBookmark: (bookmark: DesktopServerBookmark) => Promise<boolean>;
+  /** Returns `false` (never throws) if `bookmarkId` does not match an existing bookmark. */
+  removeBookmark: (bookmarkId: string) => Promise<boolean>;
 }

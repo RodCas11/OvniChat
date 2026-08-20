@@ -8,6 +8,9 @@ import {
   identityIdSchema,
   identityNonceSchema,
 } from '../identity.js';
+import { serverCapabilitiesSchema, serverNameSchema } from '../server-metadata.js';
+import { serverAuthorizationMessageSchema } from './authorization.js';
+import { serverChatMessageSchema } from './chat.js';
 import { serverMediaTrackSourceMessageSchema } from './media.js';
 import {
   serverWebrtcAnswerMessageSchema,
@@ -26,9 +29,12 @@ import {
  * `server:hello` answers a successful handshake — now only reachable after the T7
  * identity-challenge/proof exchange verifies. It carries only what proves negotiation succeeded
  * and lets the client behave correctly (its own connection identity, its server-authenticated
- * `identityId`, the server's heartbeat cadence) — no speculative product/presence state.
+ * `identityId`, the server's heartbeat cadence, and — since T8 — minimal Dedicated Server display
+ * metadata) — no speculative presence state, no admin/discovery surface.
  * `identityId` is always the server's own derivation from the verified public key (see
  * `@disco-voador/identity`'s `deriveIdentityId`), never a value the client supplied.
+ * `serverName`/`serverCapabilities` are operator-facing display data (see
+ * `docs/architecture/DEDICATED_SERVER.md`) — never treated as a trust or authorization signal.
  */
 export const serverHelloMessageSchema = z
   .object({
@@ -37,6 +43,8 @@ export const serverHelloMessageSchema = z
     protocolVersion: z.number().int().positive(),
     connectionId: z.string().min(1),
     identityId: identityIdSchema,
+    serverName: serverNameSchema,
+    serverCapabilities: serverCapabilitiesSchema,
     serverTime: z.string().min(1),
     heartbeat: z
       .object({
@@ -105,6 +113,8 @@ export const serverMessageSchema = z.discriminatedUnion('type', [
   serverWebrtcAnswerMessageSchema,
   serverWebrtcIceCandidateMessageSchema,
   serverMediaTrackSourceMessageSchema,
+  ...serverAuthorizationMessageSchema.options,
+  ...serverChatMessageSchema.options,
 ]);
 
 export type ServerMessage = z.infer<typeof serverMessageSchema>;

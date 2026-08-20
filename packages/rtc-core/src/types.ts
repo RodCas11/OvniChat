@@ -98,6 +98,35 @@ export interface MediaTransport {
   publishTrack(track: MediaStreamTrack): void;
   unpublishTrack(track: MediaStreamTrack): void;
 
+  /**
+   * Swaps the media content of an already-published track in place — a transceiver-level
+   * `RTCRtpSender.replaceTrack()` operation, not `unpublishTrack` followed by `publishTrack`. Per
+   * the WebRTC specification, `replaceTrack()` deliberately does not fire `negotiationneeded` (the
+   * transceiver's direction and already-negotiated m-line stay exactly as they were) — no fresh
+   * offer/answer round-trip, no signaling traffic, and every other currently-published track (e.g.
+   * screen-video, screen-audio) is completely untouched. This is the primitive T11's mid-session
+   * microphone/camera device switching is built on: it lets a caller change *which physical device*
+   * is feeding an already-negotiated sender without leaving the channel or disrupting anything else.
+   *
+   * `oldTrack` must already have been published (via `publishTrack`, directly or as part of
+   * `addParticipant` seeding an already-published track to a newly joined peer) — implementations
+   * should treat an unknown `oldTrack` as a caller-bug signal (a clear thrown error), not a race to
+   * swallow silently, since this method has no legitimate "the track just hasn't arrived yet" case
+   * the way the async `handleRemote*` methods do.
+   *
+   * This method does no acquire/stop work of its own and is a plain, synchronous-from-the-caller's-
+   * perspective swap. Atomicity is entirely the *caller's* responsibility: acquire `newTrack`
+   * successfully first, call `replaceTrack(oldTrack, newTrack)`, and only stop `oldTrack` after this
+   * call succeeds — never the reverse order, which would leave nothing (or a dead track) published
+   * in the gap.
+   *
+   * A future SFU-backed transport must implement this too, even though its underlying mechanism
+   * might differ (e.g. renegotiating a simulcast layer instead of swapping one `RTCRtpSender`'s
+   * track) — from the caller's point of view the contract stays "replace this track's content in
+   * place, no rejoin," matching every other `MediaTransport` method's environment-neutral shape.
+   */
+  replaceTrack(oldTrack: MediaStreamTrack, newTrack: MediaStreamTrack): void;
+
   getStats(participantId: ParticipantId): Promise<RTCStatsReport | undefined>;
 
   on<K extends keyof MediaTransportEvents>(event: K, listener: MediaTransportEvents[K]): void;

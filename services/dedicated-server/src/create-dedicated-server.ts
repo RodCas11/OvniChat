@@ -1,0 +1,118 @@
+import { mkdir } from 'node:fs/promises';
+import path from 'node:path';
+
+import {
+  createNoopLogger,
+  createRealtimeServer,
+  type Logger,
+  type RealtimeServerAddress,
+} from '@disco-voador/realtime';
+import type { ServerCapability } from '@disco-voador/protocol';
+
+import { AuthorizationStore } from './authorization/store.js';
+import { ChatStore } from './chat/store.js';
+import type { DedicatedServerConfig } from './config.js';
+
+/**
+ * The product-facing capability set this Dedicated Server offers — matches the media sources
+ * (T3-T6) plus persistent text chat (T10). Not derived from anything dynamic; a future optional
+ * capability extends this list, not a negotiation protocol (see
+ * `packages/protocol/src/server-metadata.ts`).
+ */
+const DEDICATED_SERVER_CAPABILITIES: readonly ServerCapability[] = [
+  'voice',
+  'camera',
+  'screen-video',
+  'screen-audio',
+  'text-chat',
+];
+
+export interface DedicatedServerHandle {
+  readonly connectionCount: number;
+  readonly config: DedicatedServerConfig;
+  /** T9 — set only when this call created a brand-new authorization store (see
+   * `AuthorizationStore.bootstrapToken`'s own doc comment) — the one-time Server Admin bootstrap
+   * token, in raw form. `cli.ts` prints this once and only once. */
+  readonly bootstrapToken: string | undefined;
+  start(): Promise<RealtimeServerAddress>;
+  stop(): Promise<void>;
+}
+
+export interface DedicatedServerDependencies {
+  readonly logger?: Logger;
+  /** T9 — injectable for tests that want a deterministic clock or an in-memory (`:memory:`) store
+   * instead of a real data-directory file. Defaults to a real `AuthorizationStore` at
+   * `<dataDir>/authorization.sqlite`. */
+  readonly authorization?: AuthorizationStore;
+  /** T10 — injectable for the same reasons `authorization` is. Defaults to a real `ChatStore` at
+   * `<dataDir>/chat.sqlite` — its own physical file, entirely separate from the authorization store
+   * (see `docs/adr/0014-persistent-server-owned-chat-history.md`). */
+  readonly chat?: ChatStore;
+}
+
+/**
+ * Composition root (T8 Section 40): the one place that turns a validated
+ * {@link DedicatedServerConfig} plus its dependencies into a runnable Dedicated Server, by
+ * composing `@disco-voador/realtime`'s reusable `createRealtimeServer` — no protocol/session logic
+ * is duplicated here, only product-identity wiring (server name, capabilities, the configured
+ * voice-channel catalog, and — T9 — the SQLite-backed authorization store). `cli.ts` is the only
+ * caller that also touches `process.env`/`process.exit`; this function itself is
+ * Node-process-lifecycle-free and directly integration-testable.
+ *
+ * T9's authorization store is created here, synchronously with the rest of composition (opening/
+ * migrating a SQLite file is itself synchronous, per `node:sqlite`'s `DatabaseSync` — see
+ * `docs/architecture/SERVER_AUTHORIZATION.md`), *before* `start()` is ever called, so a corrupt or
+ * unreadable store fails the whole composition immediately rather than after the server has
+ * already started accepting connections.
+ */
+export function createDedicatedServer(
+  config: DedicatedServerConfig,
+  deps: DedicatedServerDependencies = {},
+): DedicatedServerHandle {
+  const logger = deps.logger ?? createNoopLogger();
+  // `dataDir: ':memory:'` is a deliberate, documented escape hatch (tests, and any operator who
+  // genuinely wants a fully ephemeral server with no authorization state surviving a restart) —
+  // SQLite's own `:memory:` identifier must be the *entire* path, never joined with a filename.
+  const authorizationPath =
+    config.dataDir === ':memory:' ? ':memory:' : path.join(config.dataDir, 'authorization.sqlite');
+  const authorization =
+    deps.authorization ??
+    new AuthorizationStore(authorizationPath, { accessMode: config.accessMode });
+  // T10 — its own physical file, never shared with `authorizationPath` (see the module doc comment
+  // above and ADR 0014): a chat-store problem can never jeopardize authorization state, and the two
+  // stores can be backed up/retained on independent schedules.
+  const chatPath =
+    config.dataDir === ':memory:' ? ':memory:' : path.join(config.dataDir, 'chat.sqlite');
+  const chat = deps.chat ?? new ChatStore(chatPath);
+
+  const realtimeServer = createRealtimeServer(config.realtime, {
+    logger,
+    voiceChannels: config.voiceChannels,
+    serverMetadata: { name: config.name, capabilities: DEDICATED_SERVER_CAPABILITIES },
+    authorization,
+    chat,
+  });
+
+  return {
+    get connectionCount() {
+      return realtimeServer.connectionCount;
+    },
+    config,
+    bootstrapToken: authorization.bootstrapToken,
+    start: () => realtimeServer.start(),
+    stop: async () => {
+      await realtimeServer.stop();
+      authorization.close();
+      chat.close();
+    },
+  };
+}
+
+/** Ensures `config.dataDir` exists before {@link createDedicatedServer} opens the SQLite file
+ * inside it — split out so `cli.ts` can await it before composition (a real file path needs the
+ * directory to exist first; `:memory:`/test callers that inject their own `authorization` never
+ * need this). */
+export async function ensureDataDirExists(dataDir: string): Promise<void> {
+  if (dataDir === ':memory:') return;
+  await mkdir(dataDir, { recursive: true });
+}

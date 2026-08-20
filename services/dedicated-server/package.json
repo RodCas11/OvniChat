@@ -1,0 +1,30 @@
+{
+  "name": "@disco-voador/dedicated-server",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Disco Voador Dedicated Server: the independently-operated product an operator self-hosts, composing @disco-voador/realtime with server-name/channel configuration and product-facing startup UX.",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -b --pretty false",
+    "dev": "tsx watch src/cli.ts",
+    "start": "node dist/cli.js",
+    "smoke": "node scripts/smoke.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json --pretty false"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "dependencies": {
+    "@disco-voador/config": "workspace:*",
+    "@disco-voador/protocol": "workspace:*",
+    "@disco-voador/realtime": "workspace:*",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@disco-voador/identity": "workspace:*",
+    "tsx": "4.23.12",
+    "ws": "8.21.3"
+  }
+}

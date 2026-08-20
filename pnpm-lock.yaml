@@ -120,6 +120,31 @@ importers:
 
   packages/windows-media: {}
 
+  services/dedicated-server:
+    dependencies:
+      '@disco-voador/config':
+        specifier: workspace:*
+        version: link:../../packages/config
+      '@disco-voador/protocol':
+        specifier: workspace:*
+        version: link:../../packages/protocol
+      '@disco-voador/realtime':
+        specifier: workspace:*
+        version: link:../realtime
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
+    devDependencies:
+      '@disco-voador/identity':
+        specifier: workspace:*
+        version: link:../../packages/identity
+      tsx:
+        specifier: 4.23.12
+        version: 4.23.12
+      ws:
+        specifier: 8.21.3
+        version: 8.21.3
+
   services/realtime:
     dependencies:
       '@disco-voador/config':
