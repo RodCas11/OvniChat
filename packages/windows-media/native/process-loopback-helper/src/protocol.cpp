@@ -84,6 +84,7 @@ StartPayload DecodeStart(const uint8_t* payload, size_t len) {
   StartPayload out;
   out.targetProcessId = r.U32();
   out.includeProcessTree = r.U8() != 0;
+  out.expectedExeNameUtf8 = r.String16();
   r.AssertExhausted();
   return out;
 }

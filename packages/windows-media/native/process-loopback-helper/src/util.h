@@ -25,6 +25,12 @@ std::optional<std::vector<uint8_t>> HexDecode(const std::string& hex);
 std::wstring Utf8ToWide(const std::string& s);
 std::string WideToUtf8(const std::wstring& w);
 
+// Ordinal (non-locale-sensitive), case-insensitive UTF-8 string comparison - used to cross-check an
+// expected exe basename against a resolved one (see audio_capture.cpp's Start-time PID-reuse guard).
+// Deliberately ordinal rather than locale-aware: exe basenames are filesystem names, and Windows
+// filename case-insensitivity is itself ordinal, not locale-dependent.
+bool EqualsIgnoreCaseUtf8(const std::string& a, const std::string& b);
+
 // Reads an environment variable from this process's own block. Returns std::nullopt if unset.
 std::optional<std::wstring> GetEnvVar(const wchar_t* name);
 

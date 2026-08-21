@@ -388,9 +388,17 @@ export class ProcessLoopbackSupervisor {
 
   /** Starts capture of one target. `includeProcessTree` defaults to `true` — sharing "this
    * application's audio" means the whole process tree by default (T12 Section 17, mandatory); no
-   * public API here currently offers a way to pass `false`. */
-  startCapture(targetProcessId: number): void {
-    this.writeToHelper(encodeStart({ targetProcessId, includeProcessTree: true }));
+   * public API here currently offers a way to pass `false`.
+   *
+   * `expectedExeName` must be the exe basename from the very same `enumerateResponse` candidate the
+   * caller resolved `targetProcessId` from (e.g. `candidate.exeName`) — never a value the caller
+   * derives independently. This closes the PID-reuse TOCTOU window between an `EnumerateResponse`
+   * the user saw and clicked on and the helper actually processing this `Start` command (which can
+   * be seconds later): the helper cross-checks this name against the resolved PID's actual exe
+   * basename immediately after opening it and before activation, rejecting with `TargetNotFound` on
+   * any mismatch rather than silently capturing whatever process now holds that PID. */
+  startCapture(targetProcessId: number, expectedExeName: string): void {
+    this.writeToHelper(encodeStart({ targetProcessId, includeProcessTree: true, expectedExeName }));
   }
 
   /** Requests a clean stop; the helper is expected to send `Stopped` and then exit on its own. Does

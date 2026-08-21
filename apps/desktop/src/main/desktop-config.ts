@@ -109,6 +109,42 @@ const desktopConfigSchema = z.object({
   // `DISCO_VOADOR_E2E_VOICE_AUTO_SCREEN_SHARE=1` also set on the publisher instance. Same
   // `!app.isPackaged` gating as everything else here.
   DISCO_VOADOR_E2E_VOICE_AUTO_SCREEN_SHARE_AUDIO: z.enum(['1', '0']).optional(),
+  // T12: automated process-loopback isolation smoke test only (see
+  // `apps/desktop/scripts/e2e-process-audio-smoke.mjs`), publisher role — when set alongside
+  // `DISCO_VOADOR_E2E_VOICE_AUTO_SCREEN_SHARE=1`, the auto-share sequence picks "Application audio"
+  // instead of "System audio", targeting a specific enumerated `listProcessAudioCandidates()`
+  // candidate. Meaningless without `DISCO_VOADOR_E2E_VOICE_AUTO_SCREEN_SHARE=1` also set. Same
+  // `!app.isPackaged` gating as everything else here. Never present on a real user's machine — this
+  // is the one thing that steers the automated test toward the real `startProcessAudioCapture` IPC
+  // path instead of the real `selectScreenShareSource`(`audio: 'loopback'`) path; everything
+  // downstream of the pick (enumeration, validation, native capture, WebRTC publication) is the
+  // unmodified production path.
+  //
+  // Two matching strategies, `_TARGET_PID` taking priority when both are set:
+  //   `_TARGET_PID` — exact PID match. The E2E harness's two "tone process" candidates (see
+  //   `scripts/lib/tone-process/main.mjs`) are themselves plain `electron.exe` processes, same as
+  //   every other Electron instance this same test topology runs (the publisher/viewer themselves,
+  //   plus each Electron app's own child renderer processes) — `exeName` alone cannot distinguish
+  //   between them, so the harness reads each tone process's real PID back from its own
+  //   `TONE_PROCESS_READY:pid=<pid>` stdout marker and passes it here directly.
+  //   `_TARGET_EXE` — substring match against `exeName`, kept for a real distinctly-named
+  //   application/game a human might use to exercise this same env-var-driven path manually.
+  DISCO_VOADOR_E2E_PROCESS_AUDIO_TARGET_PID: z.coerce.number().int().positive().optional(),
+  DISCO_VOADOR_E2E_PROCESS_AUDIO_TARGET_EXE: z.string().min(1).optional(),
+  // T12: viewer role — arms `e2e-frequency-probe.ts` (in *addition* to, never instead of, the
+  // plain RMS `e2e-audio-probe.ts` general screen-audio check every scenario already gets) on the
+  // remote screen-audio track, expecting `..._EXPECTED_HZ` strongly present and `..._REJECTED_HZ`
+  // excluded by a wide margin. Both must be set together; independent of `autoScreenShareAudio`
+  // (unlike T6's own RMS-only check, this one doesn't need it — see `VoiceChannelView.tsx`'s
+  // `probedProcessAudioFrequencies` effect).
+  DISCO_VOADOR_E2E_PROCESS_AUDIO_EXPECTED_HZ: z.coerce.number().positive().optional(),
+  DISCO_VOADOR_E2E_PROCESS_AUDIO_REJECTED_HZ: z.coerce.number().positive().optional(),
+  // T12: publisher role — arms a scripted post-share lifecycle sequence (mute mic -> wait -> unmute
+  // -> wait -> stop sharing) proving mic-mute independence and clean-stop behavior, mirroring T6's
+  // own scripted sequence but for process audio. See `e2e-process-audio-smoke.mjs`'s "mid-share
+  // lifecycle" scenario and `VoiceChannelView.tsx`'s `processAudioLifecycleScenarioStarted` effect.
+  // Meaningless unless a process-audio target is also set.
+  DISCO_VOADOR_E2E_PROCESS_AUDIO_LIFECYCLE_SCENARIO: z.enum(['1', '0']).optional(),
   // T8: overrides AutoConnect's target address, independent of DISCO_VOADOR_REALTIME_URL — see
   // `DesktopE2EVoiceConfig.connectUrl`'s doc comment in `shared/ipc-contract.ts` for why this exists
   // as its own field rather than reusing DISCO_VOADOR_REALTIME_URL. Same `!app.isPackaged` gating as
@@ -157,6 +193,11 @@ export interface DesktopConfig {
         readonly autoScreenShareOffAfterMs: number | undefined;
         readonly autoScreenShareReshareAfterMs: number | undefined;
         readonly autoScreenShareAudio: boolean;
+        readonly processAudioTargetPid: number | undefined;
+        readonly processAudioTargetExe: string | undefined;
+        readonly processAudioExpectedHz: number | undefined;
+        readonly processAudioRejectedHz: number | undefined;
+        readonly processAudioLifecycleScenario: boolean;
         readonly connectUrl: string | undefined;
         readonly redeemToken: string | undefined;
         readonly autoChatSendServerBody: string | undefined;
@@ -190,6 +231,12 @@ export function loadDesktopConfig(
           autoScreenShareReshareAfterMs:
             parsed.DISCO_VOADOR_E2E_VOICE_AUTO_SCREEN_SHARE_RESHARE_AFTER_MS,
           autoScreenShareAudio: parsed.DISCO_VOADOR_E2E_VOICE_AUTO_SCREEN_SHARE_AUDIO === '1',
+          processAudioTargetPid: parsed.DISCO_VOADOR_E2E_PROCESS_AUDIO_TARGET_PID,
+          processAudioTargetExe: parsed.DISCO_VOADOR_E2E_PROCESS_AUDIO_TARGET_EXE,
+          processAudioExpectedHz: parsed.DISCO_VOADOR_E2E_PROCESS_AUDIO_EXPECTED_HZ,
+          processAudioRejectedHz: parsed.DISCO_VOADOR_E2E_PROCESS_AUDIO_REJECTED_HZ,
+          processAudioLifecycleScenario:
+            parsed.DISCO_VOADOR_E2E_PROCESS_AUDIO_LIFECYCLE_SCENARIO === '1',
           connectUrl: parsed.DISCO_VOADOR_E2E_CONNECT_URL,
           redeemToken: parsed.DISCO_VOADOR_E2E_REDEEM_TOKEN,
           autoChatSendServerBody: parsed.DISCO_VOADOR_E2E_CHAT_SEND_SERVER,

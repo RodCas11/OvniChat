@@ -14,7 +14,7 @@
 | [T9](T9_SERVER_AUTHORIZATION.md)    | COMPLETE    | Server-local groups, permissions, invite/privilege tokens, bans    |
 | [T10](T10_PERSISTENT_TEXT_CHAT.md)  | COMPLETE    | Persistent server-side text chat (server + per-channel)            |
 | [T11](T11_DAILY_USE_UX.md)          | COMPLETE    | Devices, bookmarks, reconnect, and product UX                      |
-| [T12](T12_WINDOWS_PROCESS_AUDIO.md) | IN PROGRESS | Windows per-process/game audio                                     |
+| [T12](T12_WINDOWS_PROCESS_AUDIO.md) | COMPLETE    | Windows per-process/game audio                                     |
 | T13                                 | NOT STARTED | Self-hosting production package (TURN, TLS, Docker, configuration) |
 | T14                                 | NOT STARTED | Windows client installer and dedicated-server releases             |
 | T15                                 | NOT STARTED | UX polish / private beta                                           |
@@ -65,4 +65,18 @@ T7 re-authentication, and a mandatory rule that camera/screen never auto-restart
 [`../adr/0016-automatic-reconnect-and-media-restoration-policy.md`](../adr/0016-automatic-reconnect-and-media-restoration-policy.md)).
 See [`T11_DAILY_USE_UX.md`](T11_DAILY_USE_UX.md) and
 [`../architecture/CLIENT_SETTINGS_AND_RECONNECT.md`](../architecture/CLIENT_SETTINGS_AND_RECONNECT.md).
-Do not treat T12+ as started until their own task documents and STATUS.md rows say so.
+
+T12 gave the Client real per-application ("game") audio capture — this repository's first native/
+compiled code, an out-of-process Win32/WASAPI C++ helper in `packages/windows-media/native/`
+(chosen over an in-process addon for crash isolation, see
+[`../adr/0017-windows-process-loopback-native-boundary.md`](../adr/0017-windows-process-loopback-native-boundary.md)),
+speaking a framed local-pipe protocol to a TypeScript supervisor, bridged to a real `MediaStreamTrack`
+via `MediaStreamTrackGenerator`, and published through the exact same `screen-audio` semantic source
+T6 already established — no new remote signaling. Met with real evidence, not simulation: a mandatory
+frequency-domain isolation proof between two genuinely independent Windows processes passed 3
+consecutive clean runs on the final, security-reviewed code (68-78 dB margin against a 20 dB
+threshold), and a security review found and this task closed a real PID-reuse TOCTOU gap (the native
+helper now cross-checks the enumerated exe name against the resolved PID's real exe name before ever
+activating capture). See [`T12_WINDOWS_PROCESS_AUDIO.md`](T12_WINDOWS_PROCESS_AUDIO.md) for the full
+record.
+Do not treat T13+ as started until their own task documents and STATUS.md rows say so.

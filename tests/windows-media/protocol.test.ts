@@ -83,11 +83,22 @@ describe('round-trip encode/decode for every message type', () => {
   });
 
   it('Start', () => {
-    const message = decodeOne(encodeStart({ targetProcessId: 4242, includeProcessTree: true }));
+    const message = decodeOne(
+      encodeStart({ targetProcessId: 4242, includeProcessTree: true, expectedExeName: 'game.exe' }),
+    );
     expect(message).toEqual({
       type: MessageType.Start,
-      payload: { targetProcessId: 4242, includeProcessTree: true },
+      payload: { targetProcessId: 4242, includeProcessTree: true, expectedExeName: 'game.exe' },
     });
+  });
+
+  it('Start truncates an oversized expectedExeName rather than throwing', () => {
+    const longName = 'a'.repeat(1000);
+    const message = decodeOne(
+      encodeStart({ targetProcessId: 1, includeProcessTree: true, expectedExeName: longName }),
+    );
+    if (message.type !== MessageType.Start) throw new Error('unexpected type');
+    expect(message.payload.expectedExeName.length).toBeLessThanOrEqual(260);
   });
 
   it('Format', () => {

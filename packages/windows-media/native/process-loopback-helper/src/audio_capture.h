@@ -10,12 +10,19 @@
 
 #include <windows.h>
 
+#include <string>
+
 namespace ovnichat {
 
 struct CaptureThreadContext {
   HANDLE pipe = nullptr;
   DWORD targetProcessId = 0;
   bool includeProcessTree = true;
+  // Exe basename the caller expects targetProcessId to still resolve to at Start-time (see
+  // protocol.h's StartPayload.expectedExeNameUtf8) - cross-checked against the actual resolved exe
+  // basename immediately after OpenProcess succeeds, closing the PID-reuse TOCTOU window between
+  // enumeration and Start. Compared case-insensitively.
+  std::string expectedExeNameUtf8;
   // Set by the control thread when it receives Stop; the capture thread polls this at every wait
   // point and, if set, returns quietly without writing anything further (the control thread owns
   // writing Stopped once it has joined this thread) - see main.cpp's top-of-file comment.

@@ -11,6 +11,7 @@
     "e2e:connection-smoke": "node scripts/e2e-connection-smoke.mjs",
     "e2e:identity-auth": "node scripts/e2e-identity-auth.mjs",
     "e2e:identity-persistence": "node scripts/e2e-identity-persistence.mjs",
+    "e2e:process-audio-smoke": "node scripts/e2e-process-audio-smoke.mjs",
     "e2e:reconnect-smoke": "node scripts/e2e-reconnect-smoke.mjs",
     "e2e:screen-audio-smoke": "node scripts/e2e-screen-audio-smoke.mjs",
     "e2e:screen-smoke": "node scripts/e2e-screen-smoke.mjs",

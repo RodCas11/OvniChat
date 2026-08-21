@@ -65,7 +65,7 @@ describe('ProcessLoopbackSupervisor', () => {
       });
     });
 
-    supervisor.startCapture(111);
+    supervisor.startCapture(111, 'game.exe');
 
     await expect(format).resolves.toEqual({
       sampleRateHz: 48000,
@@ -115,6 +115,29 @@ describe('ProcessLoopbackSupervisor', () => {
 
   it('throws when a command is sent before start() has completed', () => {
     const supervisor = track(makeSupervisor('normal'));
-    expect(() => supervisor.startCapture(1)).toThrow();
+    expect(() => supervisor.startCapture(1, 'game.exe')).toThrow();
+  });
+
+  it('actually serializes and transmits the expectedExeName argument onto the wire, not just triggers a response', async () => {
+    // T12 QA gap fix: every other test above sends *some* Start frame and only checks that Format/
+    // AudioFrame follow — the stub never inspects Start's payload, so none of them would catch a
+    // regression where `startCapture` forgot to pass `expectedExeName` through to `encodeStart` (or
+    // passed the wrong value). This is the load-bearing security-review property (the PID-reuse
+    // TOCTOU fix): the native helper's own cross-check is only as good as the TS side actually
+    // putting the real, enumerated exe name on the wire. `echo-start-exe` mode decodes the real
+    // Start payload and echoes the exact string back via a synthetic EnumerateResponse candidate.
+    const supervisor = track(makeSupervisor('echo-start-exe'));
+    await supervisor.start();
+
+    const echoed = new Promise<string>((resolve) => {
+      supervisor.on('enumerateResponse', (candidates) => {
+        const first = candidates[0];
+        if (first) resolve(first.displayTitle);
+      });
+    });
+
+    supervisor.startCapture(4242, 'PathOfExileSteam.exe');
+
+    await expect(echoed).resolves.toBe('PathOfExileSteam.exe');
   });
 });

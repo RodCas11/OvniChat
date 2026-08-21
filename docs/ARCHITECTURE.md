@@ -318,12 +318,27 @@ Electron/Chromium build, replaced with one anchored to `RTCRtpTransceiver.mid`),
    exactly the premature abstraction this repository's workflow guidance warns against. ADR 0007's
    principle (native/process-level Windows capture belongs in `packages/windows-media`) still governs
    stage 2 below, which genuinely needs it.
-2. **ProcessLoopbackAudioCapture:** later process-tree capture using supported Windows APIs or a
-   justified helper. The Microsoft API requires build 20348+, which means practical client support
-   is Windows 11; runtime capability detection is mandatory. This stage belongs in
-   `packages/windows-media` per ADR 0007. T9 decides native addon versus isolated helper after a
-   Windows spike. UI receives opaque targets/capabilities, never raw PIDs or generic command
-   execution. See [`references/WINDOWS_MEDIA.md`](references/WINDOWS_MEDIA.md).
+2. **ProcessLoopbackAudioCapture — implemented (T12).** Real per-application audio capture via
+   `ActivateAudioInterfaceAsync`/`AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK`, requiring Windows
+   build 20348+ (practically Windows 11) — `packages/windows-media/src/capability.ts` performs
+   mandatory runtime capability detection by parsing the real numeric build out of `os.release()`,
+   never a product-name string (see that module's own doc comment for a real, firsthand case where
+   this machine's registry `ProductName` and actual build disagreed). This stage lives in
+   `packages/windows-media` per ADR 0007, split into native C++ (`native/process-loopback-helper/` —
+   this repository's first native/compiled code) and a TypeScript supervisor/protocol (`src/`).
+   **Native addon versus isolated helper was decided in T12, not the T9 spike ADR 0007 originally
+   anticipated** (T9 became Dedicated Server authorization instead) — an out-of-process helper won,
+   primarily for crash isolation (a helper crash degrades to "this one capture ended," never taking
+   down Electron Main); see
+   [`adr/0017-windows-process-loopback-native-boundary.md`](adr/0017-windows-process-loopback-native-boundary.md)
+   for the full decision and [`tasks/T12_WINDOWS_PROCESS_AUDIO.md`](tasks/T12_WINDOWS_PROCESS_AUDIO.md)
+   for the real evidence (a frequency-domain isolation proof against two genuinely independent
+   Windows processes, run to 3 consecutive clean passes). The Renderer receives only opaque PIDs
+   paired with an executable basename and a best-effort display title — never a full path, command
+   line, or environment — and the result publishes through the same `screen-audio` semantic source
+   stage 1 already established, with no new remote signaling. See
+   [`references/WINDOWS_MEDIA.md`](references/WINDOWS_MEDIA.md) for the primary-source platform
+   research this stage was built against.
 
 ## Deployment shape
 

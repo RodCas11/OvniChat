@@ -117,6 +117,116 @@ describe('loadDesktopConfig — T5 screen-share env vars', () => {
   });
 });
 
+describe('loadDesktopConfig — T12 process-audio env vars', () => {
+  const baseEnv = {
+    DISCO_VOADOR_E2E_VOICE_AUTO_JOIN_CHANNEL: 'general',
+  };
+
+  it('defaults every process-audio field to undefined/false when unset', () => {
+    const config = loadDesktopConfig(baseEnv);
+
+    expect(config.e2eVoiceAutoJoin).toMatchObject({
+      processAudioTargetPid: undefined,
+      processAudioTargetExe: undefined,
+      processAudioExpectedHz: undefined,
+      processAudioRejectedHz: undefined,
+      processAudioLifecycleScenario: false,
+    });
+  });
+
+  it('parses DISCO_VOADOR_E2E_PROCESS_AUDIO_TARGET_PID as a positive integer', () => {
+    const config = loadDesktopConfig({
+      ...baseEnv,
+      DISCO_VOADOR_E2E_PROCESS_AUDIO_TARGET_PID: '4242',
+    });
+
+    expect(config.e2eVoiceAutoJoin?.processAudioTargetPid).toBe(4242);
+  });
+
+  it('rejects a non-positive DISCO_VOADOR_E2E_PROCESS_AUDIO_TARGET_PID', () => {
+    expect(() =>
+      loadDesktopConfig({ ...baseEnv, DISCO_VOADOR_E2E_PROCESS_AUDIO_TARGET_PID: '0' }),
+    ).toThrow();
+    expect(() =>
+      loadDesktopConfig({ ...baseEnv, DISCO_VOADOR_E2E_PROCESS_AUDIO_TARGET_PID: '-1' }),
+    ).toThrow();
+  });
+
+  it('rejects a non-integer DISCO_VOADOR_E2E_PROCESS_AUDIO_TARGET_PID', () => {
+    expect(() =>
+      loadDesktopConfig({ ...baseEnv, DISCO_VOADOR_E2E_PROCESS_AUDIO_TARGET_PID: '1.5' }),
+    ).toThrow();
+  });
+
+  it('parses DISCO_VOADOR_E2E_PROCESS_AUDIO_TARGET_EXE through unchanged', () => {
+    const config = loadDesktopConfig({
+      ...baseEnv,
+      DISCO_VOADOR_E2E_PROCESS_AUDIO_TARGET_EXE: 'game.exe',
+    });
+
+    expect(config.e2eVoiceAutoJoin?.processAudioTargetExe).toBe('game.exe');
+  });
+
+  it('rejects an empty DISCO_VOADOR_E2E_PROCESS_AUDIO_TARGET_EXE', () => {
+    expect(() =>
+      loadDesktopConfig({ ...baseEnv, DISCO_VOADOR_E2E_PROCESS_AUDIO_TARGET_EXE: '' }),
+    ).toThrow();
+  });
+
+  it('parses DISCO_VOADOR_E2E_PROCESS_AUDIO_EXPECTED_HZ/REJECTED_HZ as positive numbers', () => {
+    const config = loadDesktopConfig({
+      ...baseEnv,
+      DISCO_VOADOR_E2E_PROCESS_AUDIO_EXPECTED_HZ: '500',
+      DISCO_VOADOR_E2E_PROCESS_AUDIO_REJECTED_HZ: '750',
+    });
+
+    expect(config.e2eVoiceAutoJoin?.processAudioExpectedHz).toBe(500);
+    expect(config.e2eVoiceAutoJoin?.processAudioRejectedHz).toBe(750);
+  });
+
+  it('rejects a non-positive DISCO_VOADOR_E2E_PROCESS_AUDIO_EXPECTED_HZ', () => {
+    expect(() =>
+      loadDesktopConfig({ ...baseEnv, DISCO_VOADOR_E2E_PROCESS_AUDIO_EXPECTED_HZ: '0' }),
+    ).toThrow();
+  });
+
+  it('rejects a non-positive DISCO_VOADOR_E2E_PROCESS_AUDIO_REJECTED_HZ', () => {
+    expect(() =>
+      loadDesktopConfig({ ...baseEnv, DISCO_VOADOR_E2E_PROCESS_AUDIO_REJECTED_HZ: '-750' }),
+    ).toThrow();
+  });
+
+  it('parses DISCO_VOADOR_E2E_PROCESS_AUDIO_LIFECYCLE_SCENARIO=1 as true and =0 as false', () => {
+    expect(
+      loadDesktopConfig({
+        ...baseEnv,
+        DISCO_VOADOR_E2E_PROCESS_AUDIO_LIFECYCLE_SCENARIO: '1',
+      }).e2eVoiceAutoJoin?.processAudioLifecycleScenario,
+    ).toBe(true);
+    expect(
+      loadDesktopConfig({
+        ...baseEnv,
+        DISCO_VOADOR_E2E_PROCESS_AUDIO_LIFECYCLE_SCENARIO: '0',
+      }).e2eVoiceAutoJoin?.processAudioLifecycleScenario,
+    ).toBe(false);
+  });
+
+  it('rejects an invalid DISCO_VOADOR_E2E_PROCESS_AUDIO_LIFECYCLE_SCENARIO value', () => {
+    expect(() =>
+      loadDesktopConfig({
+        ...baseEnv,
+        DISCO_VOADOR_E2E_PROCESS_AUDIO_LIFECYCLE_SCENARIO: 'yes',
+      }),
+    ).toThrow();
+  });
+
+  it('leaves e2eVoiceAutoJoin undefined (and the new fields unreachable) with no auto-join channel configured', () => {
+    const config = loadDesktopConfig({ DISCO_VOADOR_E2E_PROCESS_AUDIO_TARGET_PID: '4242' });
+
+    expect(config.e2eVoiceAutoJoin).toBeUndefined();
+  });
+});
+
 describe('loadDesktopConfig — T10 persistent text chat env vars', () => {
   const baseEnv = {
     DISCO_VOADOR_E2E_VOICE_AUTO_JOIN_CHANNEL: 'general',

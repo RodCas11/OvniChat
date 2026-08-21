@@ -196,6 +196,23 @@ void RunCaptureThread(CaptureThreadContext* ctx) {
     ExitProcess(1);
   }
 
+  // PID-reuse TOCTOU guard: OpenProcess succeeding above only proves *some* process is currently
+  // running as ctx->targetProcessId - it does not by itself prove it is still the same process the
+  // caller enumerated and the user selected, which may have exited and had its PID recycled in the
+  // (human-decision-time-plus-one-IPC-round-trip) window between EnumerateResponse and this Start
+  // being processed. Re-resolve the exe basename for this exact PID now, while the process is
+  // provably still alive (this handle is open), and cross-check it against what the caller expects
+  // before ever touching activation. A mismatch is treated identically to "the PID did not resolve
+  // to a running process" - from the caller's perspective the process it selected is simply gone.
+  std::string actualExeName = GetExeBasenameForPid(ctx->targetProcessId);
+  if (actualExeName.empty() || !EqualsIgnoreCaseUtf8(actualExeName, ctx->expectedExeNameUtf8)) {
+    CloseHandle(targetProcess);
+    SendError(ctx->pipe, ProcessAudioErrorCode::TargetNotFound, 0,
+              "The target process id no longer matches the process that was selected");
+    if (needCoUninit) CoUninitialize();
+    ExitProcess(1);
+  }
+
   AUDIOCLIENT_ACTIVATION_PARAMS activationParams = {};
   activationParams.ActivationType = AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK;
   activationParams.ProcessLoopbackParams.TargetProcessId = ctx->targetProcessId;

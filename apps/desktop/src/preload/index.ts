@@ -30,6 +30,10 @@ import {
  * `MessagePort`, unlike the plain JSON-shaped/function values every other bridged call here uses).
  * Registered exactly once, for exactly this one fixed channel — never a generic `ipcRenderer.on`
  * passthrough the Renderer could use to listen on an arbitrary channel of its own choosing.
+ * Targets `window.location.origin` explicitly (never `'*'`) — a security review noted `'*'` is a
+ * caution flag for `postMessage` in general; this app has no iframe/cross-origin content today so
+ * the practical risk was already low, but naming the real origin is free defense-in-depth against a
+ * future page ever embedding untrusted content.
  */
 ipcRenderer.on(IPC_CHANNELS.processAudioPort, (event: IpcRendererEvent, data: unknown) => {
   const port = event.ports[0];
@@ -40,7 +44,11 @@ ipcRenderer.on(IPC_CHANNELS.processAudioPort, (event: IpcRendererEvent, data: un
     typeof (data as { sessionId?: unknown }).sessionId === 'number'
       ? (data as { sessionId: number }).sessionId
       : undefined;
-  window.postMessage({ channel: PROCESS_AUDIO_PORT_WINDOW_MESSAGE_TYPE, sessionId }, '*', [port]);
+  window.postMessage(
+    { channel: PROCESS_AUDIO_PORT_WINDOW_MESSAGE_TYPE, sessionId },
+    window.location.origin,
+    [port],
+  );
 });
 
 const desktopApi: DesktopApi = {

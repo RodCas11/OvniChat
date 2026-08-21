@@ -73,3 +73,12 @@ Primary sources:
 - Defer native addon versus isolated signed helper to T9. The helper offers ABI and crash isolation; an addon may reduce media copies but couples native code to Electron's ABI.
 - Preserve an explicit user gesture, visible capture indicator, and stop control for native capture.
 - Test Windows 10 build 19045 rejection; current Windows 11 include/exclude modes; silence; child spawn and process exit; PID reuse; output-device changes; protected content; mic plus loopback; teardown; own-audio echo; and the local-mute behavior of `'loopbackWithMute'`.
+
+_Resolved (T12, not T9 as originally guessed — T9 became Dedicated Server authorization instead):_
+an out-of-process helper won over an in-process addon, primarily for crash isolation — see
+[`../adr/0017-windows-process-loopback-native-boundary.md`](../adr/0017-windows-process-loopback-native-boundary.md).
+Every test scenario listed above (PID reuse included — closed via an exe-name cross-check the
+helper performs at activation time, not merely the held-handle window) was implemented and proven
+against real Windows audio hardware, including a mandatory frequency-domain isolation proof between
+two genuinely independent Windows processes — see
+[`../tasks/T12_WINDOWS_PROCESS_AUDIO.md`](../tasks/T12_WINDOWS_PROCESS_AUDIO.md).

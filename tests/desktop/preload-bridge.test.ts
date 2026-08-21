@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const exposed = new Map<string, unknown>();
 const invoke = vi.fn(async (channel: string) => {
@@ -150,5 +150,54 @@ describe('preload bridge', () => {
 
     unsubscribe();
     expect(removeListener).toHaveBeenCalledWith(IPC_CHANNELS.processAudioEnded, wrapped);
+  });
+
+  describe('processAudioPort relay (T12 postMessage targetOrigin security fix)', () => {
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    /** `preload/index.ts` registers this listener once, unconditionally, at module top level (it
+     * is the one bridged channel that cannot go through `contextBridge.exposeInMainWorld` — see
+     * that file's own doc comment) — this repo's `on` mock records every registered channel, so
+     * the same `import` at the top of this file already captured it. */
+    function findProcessAudioPortListener(): (event: unknown, data: unknown) => void {
+      const call = on.mock.calls.find((c) => c[0] === IPC_CHANNELS.processAudioPort);
+      const listener = call?.[1] as ((event: unknown, data: unknown) => void) | undefined;
+      if (!listener) throw new Error('processAudioPort listener was never registered');
+      return listener;
+    }
+
+    it('relays the transferred port via window.postMessage targeting the real origin, never "*"', () => {
+      const postMessage = vi.fn();
+      vi.stubGlobal('window', { location: { origin: 'app://renderer' }, postMessage });
+
+      const listener = findProcessAudioPortListener();
+      const fakePort = { fake: 'port' };
+      listener({ ports: [fakePort] }, { sessionId: 7 });
+
+      expect(postMessage).toHaveBeenCalledTimes(1);
+      const [message, targetOrigin, transfer] = postMessage.mock.calls[0] as [
+        unknown,
+        unknown,
+        unknown,
+      ];
+      // The load-bearing security-review assertion: this must be the real page origin, never the
+      // `'*'` wildcard a compromised/embedded future context could otherwise be relayed to.
+      expect(targetOrigin).toBe('app://renderer');
+      expect(targetOrigin).not.toBe('*');
+      expect(transfer).toEqual([fakePort]);
+      expect(message).toMatchObject({ sessionId: 7 });
+    });
+
+    it('drops the event silently when Main sends no transferred port', () => {
+      const postMessage = vi.fn();
+      vi.stubGlobal('window', { location: { origin: 'app://renderer' }, postMessage });
+
+      const listener = findProcessAudioPortListener();
+      listener({ ports: [] }, { sessionId: 7 });
+
+      expect(postMessage).not.toHaveBeenCalled();
+    });
   });
 });

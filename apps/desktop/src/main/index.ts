@@ -54,6 +54,15 @@ const isE2ETextChat = process.env['DISCO_VOADOR_E2E_TEXT_CHAT'] === '1' && !app.
 const isE2ESettingsPersistence = config.e2eSettingsPersistence !== undefined && !app.isPackaged;
 const isE2EReconnectSmoke =
   process.env['DISCO_VOADOR_E2E_RECONNECT_SMOKE'] === '1' && !app.isPackaged;
+// T12: derived from `config.e2eVoiceAutoJoin` (like `isE2ESettingsPersistence`) rather than its own
+// single flag — any of the three process-audio E2E fields being present means
+// `e2e-process-audio-smoke.mjs` is driving this instance (publisher, viewer, or both, depending on
+// which fields that particular launch set).
+const isE2EProcessAudioSmoke =
+  (config.e2eVoiceAutoJoin?.processAudioTargetPid !== undefined ||
+    config.e2eVoiceAutoJoin?.processAudioTargetExe !== undefined ||
+    config.e2eVoiceAutoJoin?.processAudioExpectedHz !== undefined) &&
+  !app.isPackaged;
 
 function rendererDirectory(): string {
   return path.join(__dirname, '../renderer', MAIN_WINDOW_VITE_NAME);
@@ -204,6 +213,26 @@ function armE2ETextChatRelay(window: BrowserWindow): void {
  */
 function armE2EReconnectSmokeRelay(window: BrowserWindow): void {
   if (!isE2EReconnectSmoke) return;
+
+  window.webContents.on('console-message', (_event, _level, message) => {
+    console.info(`[renderer] ${message}`);
+  });
+}
+
+/**
+ * Drives `apps/desktop/scripts/e2e-process-audio-smoke.mjs` (T12): relay-only, exactly like
+ * `armE2ETextChatRelay`/`armE2EReconnectSmokeRelay` above and for the identical reason — that
+ * script spawns a fresh `--user-data-dir` per instance and owns its own per-scenario timeouts/
+ * kills externally, so there is nothing for this process to force-exit on and no same-profile-
+ * relaunch risk to guard against. Without this relay, every `console.info` the Renderer emits
+ * (including `E2E_PROCESS_AUDIO_SELECTED:*`, the frequency-probe evidence markers from
+ * `e2e-frequency-probe.ts`, `E2E_LOCAL_MIC_MUTED`/`_UNMUTED`, and the generic
+ * `E2E_SCREEN_AUDIO_*`/`disco-voador:*` markers every scenario already gets) never reaches this
+ * process's own stdout at all — the orchestrating script would see nothing but Main-process-level
+ * lines, no matter how correct the Renderer-side logic is.
+ */
+function armE2EProcessAudioSmokeRelay(window: BrowserWindow): void {
+  if (!isE2EProcessAudioSmoke) return;
 
   window.webContents.on('console-message', (_event, _level, message) => {
     console.info(`[renderer] ${message}`);
@@ -653,6 +682,7 @@ async function bootstrap(): Promise<void> {
   armE2EAuthorizationExit(window);
   armE2ETextChatRelay(window);
   armE2EReconnectSmokeRelay(window);
+  armE2EProcessAudioSmokeRelay(window);
   armE2ESettingsPersistenceExit(window);
 
   app.on('activate', () => {

@@ -54,6 +54,16 @@ std::string WideToUtf8(const std::wstring& w) {
   return out;
 }
 
+bool EqualsIgnoreCaseUtf8(const std::string& a, const std::string& b) {
+  std::wstring wa = Utf8ToWide(a);
+  std::wstring wb = Utf8ToWide(b);
+  // CompareStringOrdinal ignoring case - avoids CharUpper/locale-table lookups entirely, matching
+  // how Windows itself treats filename case-insensitivity.
+  int result = CompareStringOrdinal(wa.c_str(), static_cast<int>(wa.size()), wb.c_str(),
+                                     static_cast<int>(wb.size()), TRUE);
+  return result == CSTR_EQUAL;
+}
+
 std::optional<std::wstring> GetEnvVar(const wchar_t* name) {
   DWORD needed = GetEnvironmentVariableW(name, nullptr, 0);
   if (needed == 0) return std::nullopt; // unset (GetLastError() would be ERROR_ENVVAR_NOT_FOUND)

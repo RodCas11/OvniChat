@@ -242,10 +242,6 @@ export function cancelProcessAudioEnumeration(): void {
 
 // --- Start/stop capture --------------------------------------------------------------------------
 
-function validateCandidatePid(pid: number): boolean {
-  return lastEnumeratedCandidates.some((candidate) => candidate.pid === pid);
-}
-
 /**
  * Copies a decoded PCM frame view into its own freshly-allocated `ArrayBuffer` before it is handed
  * to `port1.postMessage`. This is load-bearing, not defensive styling: `@disco-voador/windows-media`'s
@@ -366,7 +362,13 @@ export async function startProcessAudioCapture(
   const capability = detectProcessAudioCapability();
   if (!capability.supported) return { accepted: false };
   if (currentSupervisorMode === 'capturing') return { accepted: false };
-  if (!validateCandidatePid(pid)) return { accepted: false };
+
+  // Also carries the enumerated exeName through to `startCapture` — the native helper cross-checks
+  // it against the resolved PID's *actual* exe basename at `Start`-time (a security-review finding:
+  // trusting a bare PID alone leaves a TOCTOU window between enumeration and `Start` where the OS
+  // could have recycled that PID to an unrelated process).
+  const candidate = lastEnumeratedCandidates.find((c) => c.pid === pid);
+  if (!candidate) return { accepted: false };
 
   const supervisor = currentSupervisor;
   if (!supervisor || currentSupervisorMode !== 'enumeration') return { accepted: false };
@@ -380,7 +382,7 @@ export async function startProcessAudioCapture(
   activeSession = { sessionId, pid, port1, detach };
 
   mainWebContents.postMessage(IPC_CHANNELS.processAudioPort, { sessionId }, [port2]);
-  supervisor.startCapture(pid);
+  supervisor.startCapture(pid, candidate.exeName);
 
   return { accepted: true, sessionId };
 }

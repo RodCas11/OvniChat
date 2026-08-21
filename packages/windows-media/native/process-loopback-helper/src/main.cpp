@@ -165,6 +165,7 @@ int main() {
         captureCtx.pipe = pipe;
         captureCtx.targetProcessId = start.targetProcessId;
         captureCtx.includeProcessTree = start.includeProcessTree;
+        captureCtx.expectedExeNameUtf8 = start.expectedExeNameUtf8;
         captureCtx.stopEvent = stopEvent;
         ResetEvent(stopEvent);
 

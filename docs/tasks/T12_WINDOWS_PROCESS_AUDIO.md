@@ -184,14 +184,58 @@ QA review findings are addressed, and documentation reflects actual behavior. Ot
   and as a separate `processAudioEnded` push notification correlated by session id. The same
   capability/enumeration round-trip was independently re-verified against the actual packaged `.exe`
   (helper spawned from `resources/process-loopback-helper.exe` via `process.resourcesPath`, not the
-  dev-tree path). **Not yet built:** the mandatory frequency-isolation E2E proof (two independent
-  processes, known different tones, remote-side/two-machine proof of correct selection) — explicitly
-  the next, separate step per this task's own scope division with the Electron integration pass.
+  dev-tree path).
+- **`apps/desktop/scripts/e2e-process-audio-smoke.mjs`** (new) — the mandatory frequency-isolation
+  proof harness: two standalone real Windows processes (`scripts/lib/tone-process/main.mjs`, each a
+  genuinely separate Electron process rendering one continuous, deterministic sine tone — 500 Hz and
+  750 Hz, deliberately non-harmonically related so a codec artifact of one tone can never be mistaken
+  for the other's fundamental) plus a real publisher/viewer pair exercising the actual production
+  path (`ScreenSourcePicker`'s "Application audio" pick, real native capture, real WebRTC, a new
+  FFT-based `e2e-frequency-probe.ts` on the remote side — see that file's own doc comment for the
+  threshold/margin design closing T6's own RMS-only evidence gap). Building and running this
+  surfaced and fixed two real bugs before the mandatory proof could even be attempted: (1) T12 had no
+  dedicated Main-process `console-message` relay (every other E2E scenario has its own
+  `armE2E<Scenario>Relay`; without `armE2EProcessAudioSmokeRelay`, no Renderer marker ever reached
+  the orchestrator's stdout at all); (2) a tone process's own `process.pid` is not the PID that ends
+  up owning its real WASAPI audio session — live enumeration proved it belongs to a _child_ Electron
+  process (Chromium's multi-process model) — fixed by having the orchestrator discover each tone
+  process's real audio-session PID via enumeration diffing through a `ProcessLoopbackSupervisor`
+  instance driven directly from the orchestration script. **A third, deeper real bug was then found
+  and fixed**: once a real PID was correctly selected (`E2E_PROCESS_AUDIO_SELECTED` confirmed), the
+  resulting process-audio track never reached the viewer as a remote `screen-audio` stream in a
+  genuine two-instance WebRTC topology, while screen _video_ for the same share arrived normally
+  every time. The eventual root cause was **not** the renegotiation-timing hypothesis originally
+  suspected (recorded in an earlier draft of this note): live tracing found `VoiceChannelView.tsx`'s
+  pre-existing T5 generic auto-screen-share effect and this task's own new process-audio auto-select
+  effect both fire from the same `voiceReady` transition and both call `enableScreenShare` — the
+  generic T5 effect needs one fewer awaited IPC round trip (no `listProcessAudioCandidates` step), so
+  it always won `enableScreenShare`'s single-share acquisition guard first, silently turning the
+  process-audio effect's own later call into a permanent no-op with no error anywhere (screen video
+  published normally from the T5 effect's video-only share; the intentionally-selected
+  application-audio track was simply never acquired). Fixed by excluding the generic T5 effect
+  whenever a process-audio target is configured (see `VoiceChannelView.tsx`'s own doc comment on that
+  exclusion for the full detail) — `e2e:screen-audio-smoke` (T6) does not hit the same race in
+  practice, since its own scripted phase 1 also shares audio-off, so either effect "winning" produces
+  an identical result. With this fix in place, `e2e:process-audio-smoke` passed **3 consecutive clean
+  runs** on the final, security-fixed code (see "Security and QA review" below), each run measuring
+  68-78 dB of frequency-isolation margin (against a 20 dB minimum threshold) in both selection
+  directions, across all four scenarios (dual-direction frequency isolation, mid-share mic-mute/
+  clean-stop lifecycle, and target-process-exit cleanup with an orphan-helper check).
+- **Regression sweep, now complete against the final code**: `e2e:identity-persistence`,
+  `e2e:settings-persistence`, `e2e:authorization`, `e2e:text-chat-persistence`,
+  `e2e:connection-smoke`, `e2e:reconnect-smoke`, `e2e:voice-smoke`, `e2e:camera-smoke`,
+  `e2e:screen-smoke`, and `e2e:screen-audio-smoke` all pass — the last four (all real-WASAPI-
+  hardware-dependent) were deferred earlier in this task specifically to avoid resource contention
+  with the isolation E2E's own real-hardware debugging, and were re-run once that debugging
+  concluded; `e2e:screen-audio-smoke` passing confirms T6's system-wide loopback path remains
+  unaffected by T12's new process-scoped path sharing the same `screen-audio` semantic source.
 - **Known gap flagged for the mandatory security review**: the pipe's SDDL/DACL construction
   (`pipe_security.cpp`) and the constant-time Hello-token compare (`util.cpp`) were built correctly
   per the documented threat model but could only be functionally verified for the current user — this
   machine has no second Windows user account to empirically confirm the ACL actually denies a
-  different user's connection attempt. Flag this explicitly for `security-reviewer`.
+  different user's connection attempt. Flagged explicitly for `security-reviewer`; still an accepted,
+  documented residual limitation after review (see "Security and QA review" below) — not something a
+  single-user development machine can close without additional test infrastructure.
 
 ### Native toolchain
 
@@ -209,7 +253,111 @@ genuine Windows audio rendering/capture, not a headless/simulated environment.
 
 ### Security and QA review
 
-_Filled in after both reviews complete._
+**Security review** found and this task fixed two issues, both verified against real Windows audio
+hardware and the full `e2e:process-audio-smoke` re-run above:
+
+- **PID-reuse TOCTOU gap**: the original design trusted a bare `pid` at `startCapture`-time with no
+  check that the PID enumerated moments earlier still belongs to the same process the user actually
+  selected — a real window given the OS is free to recycle a PID once its original process exits.
+  Closed by threading the enumerated `exeName` through as a new `expectedExeName` field on the
+  `Start` wire message (`packages/windows-media/src/protocol.ts`); the native helper now cross-checks
+  it against the resolved PID's actual exe basename immediately after `OpenProcess` succeeds and
+  before any `ActivateAudioInterfaceAsync` call, rejecting with `TargetNotFound` on any mismatch
+  rather than silently capturing whatever process now holds that PID. `apps/desktop/src/main/
+process-audio.ts`'s `startProcessAudioCapture` always sources this value from its own
+  `lastEnumeratedCandidates` set, never from the Renderer. Regression-tested at three independent
+  layers this QA pass confirmed: `tests/windows-media/protocol.test.ts`'s `Start` round-trip,
+  `tests/windows-media/process-loopback-supervisor.test.ts`'s new
+  `echo-start-exe`-mode test (proves `ProcessLoopbackSupervisor.startCapture(pid, exeName)` actually
+  serializes and transmits the caller's `exeName` onto the wire, not merely that some `Start` frame
+  triggers a response), and `tests/desktop/process-audio.test.ts`'s new
+  `startProcessAudioCapture` test asserting the exact enumerated `exeName` (never an empty string,
+  never anything Renderer-suppliable) reaches `supervisor.startCapture`.
+- **`postMessage` targetOrigin hardening**: the Main-to-Renderer `MessagePort` relay
+  (`preload/index.ts`) originally targeted `'*'`. Practical risk was already low (this app has no
+  iframe/cross-origin content), but a security review flags `'*'` as a caution flag for
+  `postMessage` in general — fixed to `window.location.origin`, free defense-in-depth against any
+  future page ever embedding untrusted content. This QA pass found this specific relay listener had
+  no test coverage at all (`tests/desktop/preload-bridge.test.ts` covered every other bridged
+  channel but not this one, since it is the one channel that cannot go through
+  `contextBridge.exposeInMainWorld`) and added a dedicated regression test asserting the real
+  origin is used and `'*'` never is, plus a no-port no-op case.
+- **Residual, accepted limitation**: the pipe's SDDL/DACL construction and the constant-time
+  Hello-token compare could only be functionally verified for the current user — this development
+  machine has no second Windows user account to empirically confirm the ACL denies a different
+  user's connection attempt. Accepted as a documented residual risk (the design and code are correct
+  per the documented threat model; only the empirical cross-user proof is unavailable on this single-
+  user machine), not a release blocker.
+
+**QA review** (this pass) found the following, all addressed except where noted:
+
+- **Fixed — zero direct test coverage of `apps/desktop/src/main/process-audio.ts`.** Every other
+  piece of the T12 stack had direct unit tests (`protocol.ts`, `capability.ts`,
+  `process-loopback-supervisor.ts`, `process-audio-track.ts`), but this module — the Main-process
+  integration point that actually enforces `capability.ts`'s fail-narrow contract, the
+  single-supervisor exclusivity invariant, and the TOCTOU-fix exeName wiring — had none;
+  `tests/desktop/ipc.test.ts` mocks it away entirely and only proves `main/ipc.ts` calls into it
+  correctly for a trusted sender with a bounds-checked `pid`. Added
+  `tests/desktop/process-audio.test.ts` (26 tests) covering: capability fail-narrow actually
+  reaching this layer (an unsupported platform returns `supported:false` honestly and never spawns
+  the native helper at all, not merely "spawns and then fails"); single-supervisor reuse/exclusivity
+  across enumeration and capture; the TOCTOU-fix exeName cross-check assembly; port wiring for
+  format/audioFrame/targetEnded/error/helperExit; `processAudioEnded` push semantics (sent on
+  target-ended/error/unexpected-helper-exit, never on a caller-initiated `stop()`); and idempotent
+  cleanup on `stop()`/`dispose()`/forced app-quit teardown, including that a late event from an
+  already-detached supervisor cannot resurrect a stale session's notification.
+- **Checked, no gap found — the IPC-layer `pid` bounds validation (`main/ipc.ts`) was already
+  correctly implemented and already had a dedicated test** (`tests/desktop/ipc.test.ts`, covering
+  `-1`, `0`, `1.5`, a non-number, and `Number.MAX_SAFE_INTEGER`) — confirmed sufficient on
+  inspection; the real gap in this area was the module-level integration gap above, not this
+  boundary layer.
+- **Fixed — the mandatory E2E harness had no `package.json` script entry.** Unlike every other E2E
+  scenario in this repository (`e2e:voice-smoke`, `e2e:screen-audio-smoke`, etc.),
+  `apps/desktop/scripts/e2e-process-audio-smoke.mjs` was never wired into
+  `apps/desktop/package.json`'s `scripts` block — `pnpm --filter @disco-voador/desktop run
+e2e:process-audio-smoke`, the standard invocation pattern this repo's own `HANDOFF.md` documents
+  for every prior task, would have failed with "missing script." Added `"e2e:process-audio-smoke"`.
+- **Fixed — stale handoff notes.** This file's own "What is real and verified" section still
+  described the WebRTC late-track delivery bug as unresolved and under active investigation, and this
+  section was still the original unfilled placeholder, even though the bug had since been root-caused
+  and fixed (see above) and both reviews had completed. Reconciled both.
+- **Fixed — no unit coverage for T12's new `desktop-config.ts` E2E env vars.** Every other E2E-only
+  env var this module parses (T5/T6/T10/T11) has dedicated parsing tests in
+  `tests/desktop/desktop-config.test.ts`; T12's five new ones (`..._TARGET_PID`, `..._TARGET_EXE`,
+  `..._EXPECTED_HZ`, `..._REJECTED_HZ`, `..._LIFECYCLE_SCENARIO`) had none. Added a matching
+  `describe` block (11 tests).
+- **Flagged, not fixed (would require a live-hardware E2E re-run, deliberately out of this pass's
+  scope per its own instructions)**: `e2e-process-audio-smoke.mjs`'s four scenarios never assert
+  "Application Audio never silently falls back to System Audio" as its own direct, explicit check —
+  today it is only strong indirect evidence (`e2e-frequency-probe.ts`'s own doc comment explains why:
+  a silent fallback would expose both simultaneously-playing tones at comparable levels, collapsing
+  the isolation margin toward 0 dB instead of staying wide, so the existing proof would fail loudly if
+  this ever regressed) rather than a scenario built specifically to prove it. A future strengthening
+  could add a fifth scenario that forces `detectProcessAudioCapability()` to report unsupported (e.g.
+  via a dedicated E2E-only override, mirroring how other scenarios already gate on `!app.isPackaged`)
+  and asserts the picker never offers — and `enableScreenShare` never silently substitutes — System
+  audio in that state. Recorded here rather than implemented, since it would require its own
+  hardware-dependent E2E re-run this pass was explicitly told to avoid unless already touching that
+  surface.
+- **Flagged, not fixed (a product-behavior question, out of this pass's scope)**:
+  `listProcessAudioCandidates()` converts a genuine enumeration-time helper failure (spawn error,
+  crash, protocol violation, or a `start()`/enumerate timeout) into `{ supported: true, candidates:
+[] }` — indistinguishable, from the Renderer's perspective, from "the platform supports process
+  audio but no audio-producing process happens to be running right now." This is a different case
+  from (and does not contradict) the documented "an unsupported system reports honestly empty, never
+  fabricated" contract in `shared/ipc-contract.ts` (that one is about the capability check itself,
+  which is correctly honest and now directly tested at this layer — see above). Whether a genuine
+  runtime helper failure should instead surface as its own distinguishable error/reason is a product
+  decision, not a test gap; pinned with a regression test
+  (`tests/desktop/process-audio.test.ts`, "surfaces an enumeration helper error...") documenting the
+  current contract precisely so a future change to it is deliberate rather than accidental.
+- Test suite grew from 978 to 1019 Vitest tests (new tests added this pass: 26 in the new
+  `tests/desktop/process-audio.test.ts`, 11 in `desktop-config.test.ts`'s new T12 `describe` block, 2
+  in `preload-bridge.test.ts`'s new `processAudioPort` describe block, and 1 in
+  `process-loopback-supervisor.test.ts`); `pnpm typecheck`, `pnpm lint`, and `pnpm exec vitest run`
+  all pass clean on the result — never shrunk. The native C++ helper, wire protocol, and WebRTC
+  integration themselves were not re-reviewed in this pass — they were implementation-complete and
+  already proven by the E2E harness re-run above; this pass's scope was coverage/process gaps only.
 
 ### Privacy statement
 

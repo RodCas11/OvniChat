@@ -126,6 +126,17 @@ export interface StartPayload {
    * one-way decision, but the supervisor's public API does not currently expose a way to set it to
    * `false`. */
   readonly includeProcessTree: boolean;
+  /** Executable basename (e.g. `"PathOfExileSteam.exe"`) of the process the caller actually
+   * enumerated and the user actually selected — carried here (rather than trusting `targetProcessId`
+   * alone) so the helper can cross-check it against the resolved PID's *actual* exe basename at
+   * `Start`-time, immediately after `OpenProcess` succeeds and before any activation call. This is
+   * the fix for the PID-reuse TOCTOU window between an `EnumerateResponse` the user saw and clicked
+   * on and the helper actually processing `Start` some time later: if the PID has been recycled to a
+   * different process in the meantime, this name will not match and the helper rejects with
+   * `TargetNotFound` rather than silently capturing the wrong process (see
+   * `docs/SECURITY.md`'s "never imply that a PID equals a security identity" rule). Same bound as
+   * `ProcessCandidate.exeName` (`MAX_EXE_NAME_BYTES`); truncated the same way by `encodeStart`. */
+  readonly expectedExeName: string;
 }
 
 export interface FormatPayload {
@@ -355,7 +366,13 @@ export function encodeEnumerateResponse(candidates: readonly ProcessCandidate[])
 }
 
 export function encodeStart(payload: StartPayload): Bytes {
-  const writer = new Writer().u32(payload.targetProcessId).u8(payload.includeProcessTree ? 1 : 0);
+  const expectedExeName = truncateUtf8(payload.expectedExeName, MAX_EXE_NAME_BYTES);
+  const writer = new Writer()
+    .u32(payload.targetProcessId)
+    .u8(payload.includeProcessTree ? 1 : 0)
+    // MAX_EXE_NAME_BYTES (260, MAX_PATH) exceeds string8's 255-byte length-prefix ceiling, so this
+    // needs string16 — same reasoning as EnumerateResponse's exeName field above.
+    .string16(expectedExeName);
   return frame(MessageType.Start, writer.toUint8Array());
 }
 
@@ -435,8 +452,9 @@ function decodePayload(type: MessageType, payload: Bytes): DecodedMessage {
     case MessageType.Start: {
       const targetProcessId = reader.u32();
       const includeProcessTree = reader.u8() !== 0;
+      const expectedExeName = reader.string16();
       reader.assertExhausted();
-      return { type, payload: { targetProcessId, includeProcessTree } };
+      return { type, payload: { targetProcessId, includeProcessTree, expectedExeName } };
     }
     case MessageType.Format: {
       const sampleRateHz = reader.u32();

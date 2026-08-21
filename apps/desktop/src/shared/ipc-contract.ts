@@ -104,6 +104,34 @@ export interface DesktopE2EVoiceConfig {
    */
   readonly autoScreenShareAudio: boolean;
   /**
+   * T12: publisher role only — when either is set alongside `autoScreenShare`, the auto-share
+   * sequence picks "Application audio" instead of "System audio", targeting a specific enumerated
+   * `listProcessAudioCandidates()` candidate. `processAudioTargetPid` (exact match) takes priority
+   * over `processAudioTargetExe` (substring match against `exeName`) when both are set — see
+   * `desktop-config.ts`'s own doc comment for why PID-exact-matching is what the E2E harness
+   * actually needs (its synthetic "tone process" candidates share the same `electron.exe` image name
+   * as every other Electron instance in that test topology). `undefined`/`undefined` means the
+   * auto-share sequence behaves exactly as it did before T12 (System audio, per
+   * `autoScreenShareAudio`). See `apps/desktop/scripts/e2e-process-audio-smoke.mjs`.
+   */
+  readonly processAudioTargetPid: number | undefined;
+  readonly processAudioTargetExe: string | undefined;
+  /**
+   * T12: viewer role only — both set together arm `e2e-frequency-probe.ts` on the remote
+   * screen-audio track, in *addition* to (never instead of) the plain RMS `e2e-audio-probe.ts`
+   * check every scenario already gets, expecting `processAudioExpectedHz` strongly present and
+   * `processAudioRejectedHz` excluded by a wide margin.
+   */
+  readonly processAudioExpectedHz: number | undefined;
+  readonly processAudioRejectedHz: number | undefined;
+  /**
+   * T12: publisher role only — arms a scripted post-share lifecycle sequence (mute mic -> unmute ->
+   * stop sharing) proving mic-mute independence and clean-stop behavior for process audio,
+   * mirroring T6's own scripted sequence. See `apps/desktop/scripts/e2e-process-audio-smoke.mjs`'s
+   * "mid-share lifecycle" scenario.
+   */
+  readonly processAudioLifecycleScenario: boolean;
+  /**
    * T8: overrides which server `AutoConnect` connects to, independent of `DesktopRealtimeConfig.url`
    * (the CSP-relevant deployment default). Only `e2e-connection-smoke.mjs` sets this, deliberately to
    * a *different* address than `DISCO_VOADOR_REALTIME_URL` — proving the Renderer can actually reach

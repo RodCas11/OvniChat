@@ -11,6 +11,15 @@
 //                         arrives (simulates a helper that rejects the connecting party).
 //   exit-after-ready    - completes the handshake, then exits non-zero without being asked to stop
 //                         (simulates a native crash mid-session).
+//   echo-start-exe      - like "normal", but decodes the real `expectedExeName` field out of the
+//                         Start payload it receives and echoes it back as the `displayTitle` of a
+//                         single synthetic EnumerateResponse candidate (pid 999) sent right after
+//                         Format — proving `ProcessLoopbackSupervisor.startCapture(pid, exeName)`
+//                         genuinely serializes and transmits the caller's `exeName` argument onto
+//                         the wire (via the real `encodeStart`), not merely that *some* Start frame
+//                         triggers a response (see this task's own T12 TOCTOU security fix: the
+//                         native helper cross-checks this exact field against the resolved PID's
+//                         real exe name before activation).
 import net from 'node:net';
 
 const MessageType = {
@@ -99,8 +108,12 @@ const server = net.createServer((socket) => {
       const type = buffer.readUInt8(0);
       const length = buffer.readUInt32LE(1);
       if (buffer.length < 5 + length) return;
-      // This stub never needs to inspect a payload's contents (not even Hello's token or Start's
-      // targetProcessId) — every response is fixed, keyed only on message type.
+      // Normally this stub never needs to inspect a payload's contents (not even Hello's token or
+      // Start's targetProcessId) — every response is fixed, keyed only on message type. The one
+      // exception is `echo-start-exe` mode below, which decodes Start's own `expectedExeName` field
+      // to prove the supervisor actually put it on the wire (see this file's own top-of-file doc
+      // comment for why).
+      const payload = buffer.subarray(5, 5 + length);
       buffer = buffer.subarray(5 + length);
 
       if (!receivedHello) {
@@ -127,6 +140,16 @@ const server = net.createServer((socket) => {
         socket.write(
           encodeFormat({ sampleRateHz: 48000, channelCount: 2, bitsPerSample: 16, isFloat: false }),
         );
+        if (mode === 'echo-start-exe') {
+          // Decode Start's payload: u32 targetProcessId, u8 includeProcessTree, then a string16
+          // (u16 length-prefix + utf8 bytes) expectedExeName — see `protocol.ts`'s `encodeStart`/
+          // `decodePayload(MessageType.Start)` for the authoritative wire shape this mirrors.
+          const exeNameLen = payload.readUInt16LE(5);
+          const exeName = payload.subarray(7, 7 + exeNameLen).toString('utf8');
+          socket.write(
+            encodeEnumerateResponse([{ pid: 999, exeName: 'echo.exe', displayTitle: exeName }]),
+          );
+        }
         for (let i = 0; i < 3; i += 1) {
           socket.write(encodeAudioFrame(i, Buffer.from([1, 2, 3, 4])));
         }

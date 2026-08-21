@@ -549,24 +549,30 @@ Renderer/Main trust boundary.
 
 There is no running Coturn stack (templates exist but no TURN credential minting), installer/maker
 artifact, or SFU. Production configuration/TLS termination and Docker packaging for the Dedicated
-Server are also not yet implemented (T13). Windows per-process/game audio is not implemented (T12).
-Voice, camera, screen-video, and screen-audio sharing (T3–T6, P2P-mesh, small-room, self-hosted
-scope), local cryptographic client identity (T7), the Dedicated Server product boundary (T8),
-server-local groups/permissions/tokens/bans (T9), persistent server-side text chat (T10 — server-wide
-and per-voice-channel, real restart persistence, no message editing/deletion yet), and local device
-management/bookmarks/automatic reconnect (T11) are all implemented, mechanism-verified, and
-live-verified end to end. The product is now marketed as **OvniChat** (see [`PRODUCT.md`](PRODUCT.md));
-the internal `@disco-voador/*` package namespace is unchanged.
+Server are also not yet implemented (T13). Voice, camera, screen-video, and screen-audio sharing
+(T3–T6, P2P-mesh, small-room, self-hosted scope), local cryptographic client identity (T7), the
+Dedicated Server product boundary (T8), server-local groups/permissions/tokens/bans (T9), persistent
+server-side text chat (T10 — server-wide and per-voice-channel, real restart persistence, no message
+editing/deletion yet), local device management/bookmarks/automatic reconnect (T11), and Windows
+per-application audio capture (T12 — real native WASAPI process-loopback, this repository's first
+native/compiled code) are all implemented, mechanism-verified, and live-verified end to end. The
+product is now marketed as **OvniChat** (see [`PRODUCT.md`](PRODUCT.md)); the internal
+`@disco-voador/*` package namespace is unchanged.
 
 ## What should happen next?
 
-**T12 — Windows per-process/game audio** is next (sharing a specific process's audio, e.g.
-`game.exe`, instead of the entire system output). Do not implement it as part of T11.
+**T13 — production self-hosting** (TURN, TLS/WSS, Docker, production configuration, health checks,
+network/firewall documentation) is next.
 
-Non-blocking follow-ups still open, cheap relative to the risk they guard against: (1) a
+Non-blocking follow-ups still open, cheap relative to the risk they guard against: (1) ~~a
 frequency-domain (e.g. dominant-frequency-near-440Hz) check for `e2e:screen-audio-smoke`'s
 `E2E_SCREEN_AUDIO_OK` proof, strengthening it beyond the current RMS-only non-silence check (recorded
-since T6); (2) `e2e:camera-smoke`'s intermittent, environmental flakiness (recorded since T6, observed
+since T6)~~ — T12 built exactly this capability (`apps/desktop/src/renderer/voice/e2e-frequency-probe.ts`,
+built for its own mandatory process-audio isolation proof), but it was never wired into
+`e2e-screen-audio-smoke.mjs`'s own existing RMS check, which is T6's own separate scenario — closing
+this specific gap is now a small, low-risk follow-up (reuse the existing probe, one new assertion),
+not a from-scratch build; (2) `e2e:camera-smoke`'s intermittent, environmental flakiness (recorded
+since T6, observed
 again during T11 — see T11's own handoff notes) remains un-root-caused; a targeted failing-vs-passing
 stdout trace comparison across several deliberately-provoked failures would be the next diagnostic
 step if it becomes disruptive rather than occasional. (3) T11-specific: no automated regression test
@@ -599,7 +605,10 @@ scope, and T11 already had a large surface; still open for a future task.
 - Runtime validation uses `zod`, shared by `packages/protocol` and `packages/config`.
 - P2P first with an SFU-ready UI/transport seam.
 - Independent microphone, camera, screen-video, and screen-audio sources.
-- Windows-specific media isolated in `packages/windows-media`.
+- Windows-specific media isolated in `packages/windows-media` — including, since T12, real native
+  Win32/WASAPI C++ code (this repository's first) for per-application process-loopback audio
+  capture, run as an out-of-process helper rather than an in-process addon, primarily for crash
+  isolation (see [`adr/0017-windows-process-loopback-native-boundary.md`](adr/0017-windows-process-loopback-native-boundary.md)).
 - SQLite first behind a storage boundary — implemented for the Dedicated Server's authorization
   store (T9) and its chat store (T10), both via `node:sqlite`, in two deliberately separate physical
   files (`authorization.sqlite`, `chat.sqlite` — see
@@ -625,7 +634,6 @@ See accepted ADRs in [`adr/`](adr/); supersede them explicitly if evidence chang
 - Whether/when the internal `@disco-voador/*` package namespace is migrated to match the OvniChat
   product name — deliberately deferred to its own, separately verified task (not part of T10).
 - Exact RTC transport API, negotiation topology, diagnostics model, and room limits.
-- Native addon versus isolated helper for advanced Windows audio.
 - Installer/signing/update approach and production deployment topology.
 - Whether/when measured scale justifies an SFU and which implementation to use.
 
@@ -835,9 +843,46 @@ recording two further gaps as not fabricated rather than built ad hoc — see
 [`tasks/T11_DAILY_USE_UX.md`](tasks/T11_DAILY_USE_UX.md)'s handoff notes for the full findings), and
 unit/integration/live-verified through a real Dedicated Server restart, real sockets, and a real
 multi-instance Electron flow, with all Definition of Done items satisfied. See
-[`tasks/T11_DAILY_USE_UX.md`](tasks/T11_DAILY_USE_UX.md)'s handoff notes for the full record, including
+[`tasks/T11_DAILY_USE_UX.md`](tasks/T11_DAILY_USE_UX.md)’s handoff notes for the full record, including
 the settings-store and reconnect-controller placement decisions (ADR 0015/0016) and the two
 honestly-documented, not-yet-closed test-coverage gaps.
+
+T12’s clean-state evidence is the same gate with 1019 Vitest tests (up from T11’s 913; the same one
+pre-existing, already-allowlisted high-severity dependency advisory; no new npm dependencies — T12’s
+only new dependency is a compiled native `.exe`, gitignored and never committed, built reproducibly
+from source via its own `build.ps1`) — formatting, lint, whole-repo typecheck, `vitest run`, composite
+build, `verify-repository.mjs`, and the dependency audit all pass via one canonical `corepack pnpm
+check` run — plus its own required real-runtime evidence: `e2e:process-audio-smoke` (new), the
+mandatory non-negotiable acceptance proof, passed **3 consecutive clean runs on the final,
+security-fixed code** (a 4th followed immediately after a fully clean from-scratch native rebuild and
+repackage, for good measure), each run measuring 68-78 dB of real frequency-domain isolation margin
+(against a 20 dB minimum threshold) between two genuinely independent real Windows processes, in
+both selection directions, across all four scenarios (dual-direction isolation, mid-share mic-mute/
+clean-stop lifecycle, target-process-exit cleanup with a real orphan-helper-process check); all ten
+pre-existing Electron E2E scripts (`e2e:voice-smoke`, `e2e:camera-smoke`, `e2e:screen-smoke`,
+`e2e:screen-audio-smoke`, `e2e:identity-persistence`, `e2e:settings-persistence`,
+`e2e:connection-smoke`, `e2e:authorization`, `e2e:text-chat-persistence`, `e2e:reconnect-smoke`) were
+re-verified passing against the final, combined, repackaged build — no regression, including
+`e2e:screen-audio-smoke` confirming T6’s system-wide loopback path is unaffected by T12’s new
+process-scoped path sharing the same `screen-audio` semantic source. **T12 is marked COMPLETE in
+[`tasks/STATUS.md`](tasks/STATUS.md)** — its mechanism is implemented, reviewed (`security-reviewer`
+found and this task fixed a real PID-reuse TOCTOU gap — a bare `pid` was trusted at capture-start time
+with no check it still named the process the user actually selected, closed by cross-checking the
+enumerated exe name against the resolved PID’s real exe name inside the native helper itself, before
+any activation call — plus a low-priority `postMessage` targetOrigin hardening; `qa-engineer` found
+and closed a real, load-bearing test-coverage gap — the Main-process integration module
+(`main/process-audio.ts`) enforcing capability fail-narrow behavior, single-supervisor exclusivity,
+and the TOCTOU fix itself had _zero_ direct tests before this pass — plus a missing E2E
+`package.json` script entry and stale handoff notes; see
+[`tasks/T12_WINDOWS_PROCESS_AUDIO.md`](tasks/T12_WINDOWS_PROCESS_AUDIO.md)’s handoff notes for the
+full findings from both reviews), and unit/integration/live-verified through a real out-of-process
+native Win32/WASAPI helper (this repository’s first native/compiled code), real named-pipe IPC, real
+WebRTC, and a real multi-instance Electron flow, with all Definition of Done items satisfied. See
+[`tasks/T12_WINDOWS_PROCESS_AUDIO.md`](tasks/T12_WINDOWS_PROCESS_AUDIO.md)’s handoff notes for the
+full record, including the native-helper-vs-addon decision (ADR 0017) and one honestly-documented,
+not-yet-closed follow-up (the E2E harness proves "no silent fallback to System Audio" only indirectly
+via the isolation-margin proof, not as its own direct assertion — recorded as a future strengthening,
+not implemented this pass).
 
 Then perform the task’s required manual/platform checks. Apply
 [`DEFINITION_OF_DONE.md`](DEFINITION_OF_DONE.md) and update status only when every applicable item

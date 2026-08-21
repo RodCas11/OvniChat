@@ -13,6 +13,7 @@ import type { DesktopE2EVoiceConfig } from '../../shared/ipc-contract.js';
 import { AuthorizationPanel } from './AuthorizationPanel.js';
 import { ChatPanel } from './ChatPanel.js';
 import { probeRemoteAudioLevel } from './e2e-audio-probe.js';
+import { probeRemoteAudioFrequency } from './e2e-frequency-probe.js';
 import { probeRemoteScreenFrames } from './e2e-screen-probe.js';
 import { probeRemoteVideoFrames } from './e2e-video-probe.js';
 import { LocalCameraPreview } from './LocalCameraPreview.js';
@@ -228,6 +229,26 @@ export function VoiceChannelView({
     // Sequenced after camera specifically when this same instance also auto-enables one — screen
     // sharing should layer onto an already-stable camera+voice session, not race it.
     if (e2eAutoJoin.autoCamera && !state.cameraEnabled) return;
+    // T12: a process-audio-targeted scenario (`e2e-process-audio-smoke.mjs`) owns the entire
+    // screen-share start end to end itself (see the `processAudioScenarioStarted` effect below,
+    // which selects the video source *and* the application-audio candidate before calling
+    // `enableScreenShare`) — this generic effect fires from the exact same `voiceReady` transition
+    // but reaches its own `enableScreenShare('standard', { type: 'none' })` call sooner (it needs
+    // one fewer awaited IPC round trip: no `listProcessAudioCandidates` step), so without this
+    // exclusion it always wins the race and silently claims `enableScreenShare`'s single-share
+    // guard (`screenAcquiringRef`/`screenRef`) first, turning the process-audio effect's own later
+    // `enableScreenShare` call into a permanent, silent no-op — a real, previously-latent bug this
+    // task's own T12 process-audio E2E smoke test surfaced (screen video published normally from
+    // this effect's video-only share; the intentionally-selected application-audio track was never
+    // acquired or published at all, with no error anywhere, because its `enableScreenShare` call
+    // never got past the concurrent-acquisition guard). `e2e:screen-audio-smoke` (T6) is not
+    // affected by the same race in practice — its own scripted phase 1 also shares audio-off,
+    // functionally identical to what this effect would do, so either one "winning" produces the
+    // same share; it only becomes an observable bug when the two effects want different audio
+    // modes for the very first share, as T12 does.
+    if (e2eAutoJoin.processAudioTargetPid !== undefined || e2eAutoJoin.processAudioTargetExe) {
+      return;
+    }
 
     autoScreenShareAttempted.current = true;
     // This scenario (`e2e:screen-smoke`) stays screen-video-only, unchanged from T5 —
@@ -434,6 +455,59 @@ export function VoiceChannelView({
     }
   }, [e2eAutoJoin, state.remoteScreenAudioStreams, state.participants]);
 
+  // T12 automated process-loopback isolation smoke test only, viewer role: fires the
+  // frequency-domain probe (see `e2e-frequency-probe.ts`'s own doc comment for why this is required
+  // evidence, not the plain RMS probe above) on every remote screen-audio stream, in addition to
+  // (never instead of) `probedScreenAudioStreams`'s existing RMS proof above — both proofs running
+  // independently means a process-audio run still exercises T6's original non-silence check too,
+  // and neither probe's marker output can be confused with the other's. Only active when both
+  // `processAudioExpectedHz`/`processAudioRejectedHz` are set (see `desktop-config.ts`) — absent for
+  // every other scenario, including T6's own system-audio smoke test.
+  const probedProcessAudioFrequencies = useRef(new Set<string>());
+  useEffect(() => {
+    const expectedHz = e2eAutoJoin?.processAudioExpectedHz;
+    const rejectedHz = e2eAutoJoin?.processAudioRejectedHz;
+    if (expectedHz === undefined || rejectedHz === undefined) return;
+    for (const [participantId, stream] of state.remoteScreenAudioStreams) {
+      if (!probedProcessAudioFrequencies.current.has(participantId)) {
+        probedProcessAudioFrequencies.current.add(participantId);
+        probeRemoteAudioFrequency(stream, participantId, expectedHz, rejectedHz);
+      }
+    }
+  }, [e2eAutoJoin, state.remoteScreenAudioStreams]);
+
+  // T12 automated process-loopback isolation smoke test only, viewer role: a second, later
+  // frequency-domain re-probe of the SAME still-active process-audio stream, timed to land during
+  // the publisher's scripted mic-mute phase (see `processAudioLifecycleScenarioStarted` below) —
+  // proves process-audio remains correctly isolated (not merely non-silent, mirroring T6's own
+  // `screenAudioPostMuteProbed` pattern but with the stronger frequency-identity proof) while the
+  // publisher's microphone is muted. A distinct marker prefix (`E2E_FREQ_PROBE_POST_MUTE`) so it can
+  // never be confused with the initial `E2E_FREQ_PROBE` proof. Fires once per participant's
+  // process-audio appearance. The fixed 25s delay assumes the publisher's own lifecycle scenario
+  // mutes at ~20s after share start (see that effect's `PHASE_WAIT_MS`) — comfortably inside the
+  // muted window before it unmutes at ~40s.
+  const probedProcessAudioPostMute = useRef(new Set<string>());
+  useEffect(() => {
+    const expectedHz = e2eAutoJoin?.processAudioExpectedHz;
+    const rejectedHz = e2eAutoJoin?.processAudioRejectedHz;
+    if (expectedHz === undefined || rejectedHz === undefined) return;
+    if (!e2eAutoJoin?.processAudioLifecycleScenario) return;
+    for (const [participantId, stream] of state.remoteScreenAudioStreams) {
+      if (!probedProcessAudioPostMute.current.has(participantId)) {
+        probedProcessAudioPostMute.current.add(participantId);
+        setTimeout(() => {
+          probeRemoteAudioFrequency(
+            stream,
+            participantId,
+            expectedHz,
+            rejectedHz,
+            'E2E_FREQ_PROBE_POST_MUTE',
+          );
+        }, 25_000);
+      }
+    }
+  }, [e2eAutoJoin, state.remoteScreenAudioStreams]);
+
   // T4 automated camera smoke test only: auto-disables the camera again a fixed delay after
   // enabling it, so the two-instance smoke can deterministically exercise and prove camera-off
   // behavior (remote tile disappears, voice/peer connection survives) without a human involved.
@@ -610,6 +684,119 @@ export function VoiceChannelView({
       cancelled = true;
     };
   }, [e2eAutoJoin, voiceReady, actions, autoStartScreenShare]);
+
+  // T12 automated process-loopback isolation smoke test only, publisher role: drives the exact same
+  // production path a real user's "Application audio" picker choice does —
+  // `listScreenShareSources` -> `selectScreenShareSource(id, false)` for the video half (never
+  // `true`: process audio never also requests Windows system-loopback, matching
+  // `use-voice-channel.ts`'s own "process-audio never rides system-loopback" contract) — then
+  // `listProcessAudioCandidates` -> a matching candidate (exact `processAudioTargetPid` takes
+  // priority over a `processAudioTargetExe` substring match — see `desktop-config.ts`'s doc comment
+  // for why PID-exact-matching is what this harness actually needs) ->
+  // `enableScreenShare('standard', { type: 'process', pid })`, the same call `ScreenSourcePicker`'s
+  // real UI makes. Deliberately a separate effect/guard from both the plain T5 video-only auto-share
+  // and T6's system-audio scripted sequence — this only ever fires when one of the two target
+  // fields is explicitly set, which no other scenario's env vars set. Logs
+  // `E2E_PROCESS_AUDIO_SELECTED:pid=<pid>:exe=<exeName>` once capture is requested, or a descriptive
+  // `console.error` (never a silent no-op) if capability is unsupported or no matching candidate is
+  // enumerated — this scenario must fail loudly, not quietly fall back to sharing nothing or to
+  // System audio (T12's own "never silently broaden capture scope" rule, applied to test honesty).
+  const processAudioScenarioStarted = useRef(false);
+  useEffect(() => {
+    const targetPid = e2eAutoJoin?.processAudioTargetPid;
+    const targetExe = e2eAutoJoin?.processAudioTargetExe;
+    if ((targetPid === undefined && !targetExe) || !e2eAutoJoin?.autoScreenShare) return;
+    if (!voiceReady || processAudioScenarioStarted.current) return;
+    processAudioScenarioStarted.current = true;
+
+    void (async () => {
+      try {
+        const sources = await window.desktopApp.listScreenShareSources();
+        const sourceId = firstScreenSourceId(sources);
+        if (!sourceId) {
+          console.error('E2E process-audio auto-select found no screen (video) source');
+          return;
+        }
+        const accepted = await window.desktopApp.selectScreenShareSource(sourceId, false);
+        if (!accepted) {
+          console.error('E2E process-audio auto-select: selectScreenShareSource was rejected');
+          return;
+        }
+
+        const candidatesResult = await window.desktopApp.listProcessAudioCandidates();
+        if (!candidatesResult.supported) {
+          console.error(
+            `E2E process-audio auto-select: capability unsupported (${candidatesResult.reason})`,
+          );
+          return;
+        }
+        const candidate =
+          targetPid !== undefined
+            ? candidatesResult.candidates.find((c) => c.pid === targetPid)
+            : candidatesResult.candidates.find((c) => c.exeName.includes(targetExe ?? ''));
+        if (!candidate) {
+          const wanted =
+            targetPid !== undefined ? `pid=${String(targetPid)}` : `exe~="${targetExe}"`;
+          console.error(
+            `E2E process-audio auto-select found no candidate matching ${wanted} ` +
+              `(enumerated: ${candidatesResult.candidates.map((c) => `${c.exeName}(${String(c.pid)})`).join(', ') || '<none>'})`,
+          );
+          return;
+        }
+
+        actions.enableScreenShare('standard', { type: 'process', pid: candidate.pid });
+        console.info(
+          `E2E_PROCESS_AUDIO_SELECTED:pid=${String(candidate.pid)}:exe=${candidate.exeName}`,
+        );
+      } catch (error) {
+        console.error('E2E process-audio auto-select failed', error);
+      }
+    })();
+  }, [e2eAutoJoin, voiceReady, actions]);
+
+  // T12 automated process-loopback isolation smoke test only, publisher role: a scripted post-share
+  // lifecycle sequence — mute microphone -> wait -> unmute -> wait -> stop sharing — proving
+  // mic-mute independence and clean-stop behavior for process audio, mirroring T6's own scripted
+  // sequence (see the `screenAudioScenarioStarted` effect above) but far simpler: process audio has
+  // no on/off/re-share cycle to script, only mute-independence and a final clean stop. Gated on
+  // `screenShareAudioActive` (not merely "share attempted") so this never starts mutating mic/share
+  // state before the process-audio track has actually finished acquiring. The 20s initial wait gives
+  // the viewer's own frequency probe (up to ~30s ceiling, typically much faster) generous room to
+  // reach its own pass/fail conclusion before this sequence starts touching shared state.
+  const processAudioLifecycleScenarioStarted = useRef(false);
+  useEffect(() => {
+    if (!e2eAutoJoin?.processAudioLifecycleScenario) return;
+    if (!state.screenShareAudioActive || processAudioLifecycleScenarioStarted.current) return;
+    processAudioLifecycleScenarioStarted.current = true;
+
+    const PHASE_WAIT_MS = 20_000;
+    let cancelled = false;
+    const wait = (ms: number): Promise<void> =>
+      new Promise((resolve) => {
+        setTimeout(resolve, ms);
+      });
+
+    void (async () => {
+      await wait(PHASE_WAIT_MS);
+      if (cancelled) return;
+
+      actions.setMuted(true);
+      console.info('E2E_LOCAL_MIC_MUTED');
+      await wait(PHASE_WAIT_MS);
+      if (cancelled) return;
+
+      actions.setMuted(false);
+      console.info('E2E_LOCAL_MIC_UNMUTED');
+      await wait(8000);
+      if (cancelled) return;
+
+      actions.disableScreenShare();
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [e2eAutoJoin, state.screenShareAudioActive, actions]);
 
   // T6 automated screen-audio smoke test only, viewer role: a second, later re-probe of the SAME
   // still-active screen-audio stream, timed to land during the publisher's scripted mic-mute phase

@@ -67,6 +67,11 @@ struct ProcessCandidate {
 struct StartPayload {
   uint32_t targetProcessId = 0;
   bool includeProcessTree = true;
+  // Exe basename of the process the caller enumerated and the user selected (mirrors
+  // protocol.ts's StartPayload.expectedExeName) - cross-checked against the resolved PID's actual
+  // exe basename immediately after OpenProcess succeeds, before any activation call, to close the
+  // PID-reuse TOCTOU window between enumeration and Start (see audio_capture.cpp).
+  std::string expectedExeNameUtf8;
 };
 
 struct FormatPayload {

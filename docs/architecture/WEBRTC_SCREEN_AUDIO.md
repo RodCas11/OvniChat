@@ -305,6 +305,17 @@ platform's actual default audio output device, not a fake device and not an inje
 WASAPI loopback capture (via `audio: 'loopback'`, see above) picks this up through the exact same
 path a real user's shared system sound would take.
 
+The remote-side proof itself (`e2e-audio-probe.ts`) is RMS-based: it proves _some_ non-silent audio
+arrived, not _which_ audio — a real, documented gap this doc doesn't hide. T12 (Windows
+per-application audio capture) needed a stronger, frequency-domain proof for its own mandatory
+process-isolation acceptance criterion (two independent processes, known different tones, prove the
+remote side received the selected one and not the other) and built exactly that:
+`apps/desktop/src/renderer/voice/e2e-frequency-probe.ts`, an FFT-based probe with a documented
+threshold/margin design — see `docs/tasks/T12_WINDOWS_PROCESS_AUDIO.md`. It was never wired into
+_this_ scenario's own `E2E_SCREEN_AUDIO_OK` check; doing so would close this section's own RMS-only
+gap with a small, low-risk reuse rather than a new build, and remains open as a follow-up (see
+`docs/HANDOFF.md`'s "What should happen next?").
+
 ### Same-machine feedback
 
 Publisher and viewer run on the same Windows machine during this E2E, which creates a real risk: the
@@ -454,17 +465,20 @@ the capture session. Two direct regressions cover audio+video cleanup ordering a
 case; the final full gate contains 508 tests.
 The dedicated real-loopback E2E also passed 3 consecutive times after these fixes.
 
-## Future: process/game audio boundary
+## Process/game audio boundary — resolved as T12, matching this section's own prediction
 
-Not built in T6. When added (a future task), it must remain a _fifth_ independent source of its own
-— native Windows process-tree loopback capture via a helper in `packages/windows-media`
-(`docs/references/WINDOWS_MEDIA.md`'s later stage, requiring Windows build 20348+ with mandatory
-runtime capability detection) — producing the same semantic RTC source, `screen-audio`, so
-`rtc-core`/the remote-side reconciliation does not need to care whether a given `screen-audio` track
-originated from system-wide loopback (T6) or a specific process (future):
+Not built in T6; this section originally described it as a future task's constraint. **Built in T12**
+exactly as anticipated below: process-scoped audio is not a fifth independent semantic source — it
+publishes through the very same `screen-audio` source T6 established, via a native Windows helper in
+`packages/windows-media` (see `docs/tasks/T12_WINDOWS_PROCESS_AUDIO.md` and
+[`adr/0017-windows-process-loopback-native-boundary.md`](../adr/0017-windows-process-loopback-native-boundary.md)
+for the real implementation, including why an out-of-process helper — not an in-process addon — was
+chosen). `rtc-core`/the remote-side reconciliation genuinely never had to change: a `screen-audio`
+track's origin (system-wide loopback vs. one selected process) is invisible past the local capture
+layer, exactly as designed here:
 
 ```text
-T6:                                  Future:
+T6:                                  T12:
 Windows/system audio                 Game.exe/process-specific audio
     |                                     |
 Electron/Chromium loopback           Windows native helper
