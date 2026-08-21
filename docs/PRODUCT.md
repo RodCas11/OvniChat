@@ -47,6 +47,13 @@ Dedicated Server), and reconnect always performs a fresh T7 identity handshake, 
 replayed one. See
 [`architecture/CLIENT_SETTINGS_AND_RECONNECT.md`](architecture/CLIENT_SETTINGS_AND_RECONNECT.md).
 
+T13.1 gave the Client its actual visual identity: a dark, modern, Discord-familiar layout (server
+picker, server rail, channel sidebar, chat, member panel, persistent voice controls) with OvniChat
+green used sparingly as an accent — never a pixel-for-pixel Discord clone, and never Discord's own
+assets or branding. Technical internals a normal participant never needs (identity fingerprint,
+connection protocol details) live behind an explicit Advanced/Diagnostics area, not the main flow.
+See [`architecture/PRODUCT_UI_FOUNDATION.md`](architecture/PRODUCT_UI_FOUNDATION.md).
+
 ## Primary capabilities
 
 The target product will provide:

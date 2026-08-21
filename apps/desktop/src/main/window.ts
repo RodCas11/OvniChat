@@ -45,6 +45,9 @@ export function createMainWindow(
     // the same `!app.isPackaged` gate used for the fake-media-device switches in `main/index.ts`.
     !app.isPackaged ? config.e2eVoiceAutoJoin : undefined,
     !app.isPackaged ? config.e2eSettingsPersistence : undefined,
+    // T13.1 screenshot-capture tooling only — see `DesktopE2EScreenshotConfig`'s doc comment; same
+    // `!app.isPackaged` gate as every other `DesktopE2E*Config` field above.
+    !app.isPackaged ? config.e2eScreenshot : undefined,
   );
 
   window.once('ready-to-show', () => {

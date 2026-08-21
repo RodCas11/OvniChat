@@ -26,6 +26,16 @@ every argument before privileged work.
 Deny unexpected navigation, new-window creation, external protocol handling, and remote content.
 Open external URLs only through an explicit allowlist and user action.
 
+**Renderer presentation layer (T13.1)**: `ui/`/`shell/`/`workspace/` components never call raw
+Electron/Node primitives — only the existing `window.desktopApp` bridge, same as every prior
+Renderer code. Technical/debug internals (cryptographic identity fingerprint, ICE/SDP/mid/
+participantId, WebSocket state, TURN addresses, PCM format, Windows PID) stay out of the main
+product flow, moved into an explicit Advanced/Diagnostics area within Settings rather than shown
+prominently or deleted. Any E2E-only Renderer automation this or a later UI task adds (e.g. a
+scripted bookmark-seeding or screenshot-capture hook) must follow the existing convention: gated on
+both an explicit opt-in environment variable and `!app.isPackaged`, so it is structurally inert in a
+packaged build regardless of environment state.
+
 ## Media permissions and capture
 
 Electron permission requests are not safe merely because the Renderer is local. Install both

@@ -1,0 +1,76 @@
+.container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  background: var(--ovni-bg-base);
+  color: var(--ovni-text-primary);
+  overflow-y: auto;
+}
+
+.content {
+  width: 100%;
+  max-width: 640px;
+  padding: var(--ovni-space-8);
+}
+
+.heading {
+  margin: 0 0 var(--ovni-space-1);
+  font-size: var(--ovni-text-2xl);
+}
+
+.subheading {
+  margin: 0 0 var(--ovni-space-6);
+  color: var(--ovni-text-secondary);
+}
+
+.error {
+  margin: 0 0 var(--ovni-space-4);
+  color: var(--ovni-danger);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: var(--ovni-space-4);
+}
+
+.tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--ovni-space-2);
+  padding: var(--ovni-space-3);
+  border: 1px solid transparent;
+  border-radius: var(--ovni-radius-md);
+  background: transparent;
+  color: var(--ovni-text-primary);
+}
+
+.tile:hover {
+  background: var(--ovni-bg-surface);
+}
+
+.addTile .addIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 64px;
+  border-radius: var(--ovni-radius-full);
+  border: 2px dashed var(--ovni-border);
+  color: var(--ovni-text-secondary);
+}
+
+.addTile:hover .addIcon {
+  border-color: var(--ovni-accent);
+  color: var(--ovni-accent);
+}
+
+.tileName {
+  max-width: 96px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--ovni-text-sm);
+}

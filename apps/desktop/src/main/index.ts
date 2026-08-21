@@ -1,4 +1,5 @@
 import { app, BrowserWindow, Menu, session } from 'electron';
+import { promises as fsPromises } from 'node:fs';
 import path from 'node:path';
 
 import { loadDesktopConfig } from './desktop-config.js';
@@ -63,6 +64,10 @@ const isE2EProcessAudioSmoke =
     config.e2eVoiceAutoJoin?.processAudioTargetExe !== undefined ||
     config.e2eVoiceAutoJoin?.processAudioExpectedHz !== undefined) &&
   !app.isPackaged;
+// T13.1: derived from `config.e2eVoiceAutoJoin.productShellSmoke`, mirroring `isE2EProcessAudioSmoke`
+// above — see `apps/desktop/scripts/e2e-product-shell-smoke.mjs`.
+const isE2EProductShellSmoke =
+  config.e2eVoiceAutoJoin?.productShellSmoke !== undefined && !app.isPackaged;
 
 function rendererDirectory(): string {
   return path.join(__dirname, '../renderer', MAIN_WINDOW_VITE_NAME);
@@ -233,6 +238,22 @@ function armE2EReconnectSmokeRelay(window: BrowserWindow): void {
  */
 function armE2EProcessAudioSmokeRelay(window: BrowserWindow): void {
   if (!isE2EProcessAudioSmoke) return;
+
+  window.webContents.on('console-message', (_event, _level, message) => {
+    console.info(`[renderer] ${message}`);
+  });
+}
+
+/**
+ * Drives `apps/desktop/scripts/e2e-product-shell-smoke.mjs` (T13.1): relay-only, exactly like
+ * `armE2ETextChatRelay`/`armE2EReconnectSmokeRelay`/`armE2EProcessAudioSmokeRelay` above and for
+ * the identical reason — this scenario spawns a single fresh `--user-data-dir` instance and the
+ * orchestrating script owns its own external `kill()` once it has observed the final
+ * `E2E_PRODUCT_SHELL_DONE:*` marker, so there is nothing for this process to force-exit on and no
+ * same-profile-relaunch risk to guard against.
+ */
+function armE2EProductShellSmokeRelay(window: BrowserWindow): void {
+  if (!isE2EProductShellSmoke) return;
 
   window.webContents.on('console-message', (_event, _level, message) => {
     console.info(`[renderer] ${message}`);
@@ -658,6 +679,127 @@ function armE2EScreenAudioSmokeViewerExit(window: BrowserWindow): void {
   });
 }
 
+/**
+ * T13.1 screenshot-capture tooling only — throwaway automation added solely to produce this task's
+ * Definition-of-Done screenshot evidence (`apps/desktop/scripts/e2e-screenshot-capture.mjs`), never
+ * a permanent regression test and never reachable in a packaged build (`!app.isPackaged`, same as
+ * every other `armE2E*` function here). Captures the real `ServerHome` (with two real, IPC-seeded
+ * bookmarks) once `App.tsx`'s `E2E_SCREENSHOT_HOME_READY` marker lands, at a fixed 1920x1080 window
+ * size, then exits.
+ */
+function armE2EScreenshotHomeCapture(window: BrowserWindow): void {
+  const captureDir = process.env['DISCO_VOADOR_E2E_SCREENSHOT_CAPTURE_DIR'];
+  if (!captureDir || !config.e2eScreenshot || app.isPackaged) return;
+
+  let started = false;
+  window.webContents.on('console-message', (_event, _level, message) => {
+    if (started || !message.includes('E2E_SCREENSHOT_HOME_READY')) return;
+    started = true;
+
+    void (async () => {
+      try {
+        window.setBounds({ width: 1920, height: 1080 });
+        await new Promise((resolve) => setTimeout(resolve, 800));
+        const image = await window.webContents.capturePage();
+        await fsPromises.writeFile(path.join(captureDir, '01-server-home.png'), image.toPNG());
+        console.info('E2E_SCREENSHOT_SAVED:01-server-home.png');
+        setTimeout(() => app.exit(0), 250);
+      } catch (error) {
+        console.error('E2E screenshot Home capture failed', error);
+        setTimeout(() => app.exit(1), 250);
+      }
+    })();
+  });
+}
+
+/**
+ * T13.1 screenshot-capture tooling only — see `armE2EScreenshotHomeCapture`'s doc comment for the
+ * overall rationale; this half covers the connected-workspace shots. Waits for the real join
+ * (`disco-voador:voice-joined:<channelId>`) and, best-effort, a real second participant
+ * (`E2E_PEER_CONNECTED:` — proceeds after a bounded wait even if none appears, since a missing
+ * screenshot subject is a worse failure mode than a less-populated Members panel) before driving
+ * three already-existing, real UI affordances via `webContents.executeJavaScript` — opening/closing
+ * Settings and collapsing the Member panel, the exact same buttons (found by their existing
+ * `data-testid`/`aria-label`) a human would click — while resizing the real `BrowserWindow` and
+ * calling `webContents.capturePage()` between shots. Saves PNGs to
+ * `DISCO_VOADOR_E2E_SCREENSHOT_CAPTURE_DIR` and exits when done.
+ */
+function armE2EScreenshotWorkspaceCapture(window: BrowserWindow): void {
+  const captureDirEnv = process.env['DISCO_VOADOR_E2E_SCREENSHOT_CAPTURE_DIR'];
+  const channelId = config.e2eVoiceAutoJoin?.channelId;
+  if (!captureDirEnv || !channelId || app.isPackaged) return;
+  // Never simultaneously active with the Home capture above — each is driven by a distinct,
+  // mutually-exclusive config (`e2eScreenshot` has no realtime connection at all).
+  if (config.e2eScreenshot) return;
+  const captureDir = captureDirEnv;
+
+  const wait = (ms: number): Promise<void> =>
+    new Promise((resolve) => {
+      setTimeout(resolve, ms);
+    });
+
+  async function saveCapture(name: string): Promise<void> {
+    const image = await window.webContents.capturePage();
+    await fsPromises.writeFile(path.join(captureDir, name), image.toPNG());
+    console.info(`E2E_SCREENSHOT_SAVED:${name}`);
+  }
+
+  let started = false;
+  let peerSeen = false;
+  const joinedMarker = `disco-voador:voice-joined:${channelId}`;
+
+  window.webContents.on('console-message', (_event, _level, message) => {
+    if (message.startsWith('E2E_PEER_CONNECTED:')) peerSeen = true;
+    if (started || !message.includes(joinedMarker)) return;
+    started = true;
+
+    void (async () => {
+      try {
+        // Bounded best-effort wait for a real second participant to actually appear in the Members
+        // panel before the first capture — see this function's own doc comment.
+        for (let i = 0; i < 40 && !peerSeen; i += 1) {
+          await wait(250);
+        }
+        await wait(1000); // let the just-joined UI settle (channel list, own member row, etc.)
+
+        window.setBounds({ width: 1920, height: 1080 });
+        await wait(400);
+        await saveCapture('02-workspace-1920x1080.png');
+
+        window.setBounds({ width: 1366, height: 768 });
+        await wait(400);
+        await saveCapture('03-workspace-1366x768.png');
+
+        window.setBounds({ width: 1920, height: 1080 });
+        await wait(400);
+
+        await window.webContents.executeJavaScript(
+          `document.querySelector('[data-testid="user-control-settings"]')?.click();`,
+        );
+        await wait(500);
+        await saveCapture('04-settings.png');
+
+        await window.webContents.executeJavaScript(
+          `document.querySelector('[aria-label="Close"]')?.click();`,
+        );
+        await wait(300);
+
+        await window.webContents.executeJavaScript(
+          `document.querySelector('[data-testid="member-panel-collapse-toggle"]')?.click();`,
+        );
+        await wait(400);
+        await saveCapture('05-member-panel-collapsed.png');
+
+        console.info('E2E_SCREENSHOT_CAPTURE_DONE');
+        setTimeout(() => app.exit(0), 250);
+      } catch (error) {
+        console.error('E2E screenshot workspace capture failed', error);
+        setTimeout(() => app.exit(1), 250);
+      }
+    })();
+  });
+}
+
 async function bootstrap(): Promise<void> {
   await app.whenReady();
 
@@ -684,6 +826,9 @@ async function bootstrap(): Promise<void> {
   armE2EReconnectSmokeRelay(window);
   armE2EProcessAudioSmokeRelay(window);
   armE2ESettingsPersistenceExit(window);
+  armE2EProductShellSmokeRelay(window);
+  armE2EScreenshotHomeCapture(window);
+  armE2EScreenshotWorkspaceCapture(window);
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

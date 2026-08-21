@@ -6,6 +6,8 @@ import type {
   DesktopProcessAudioCandidate,
   DesktopScreenSource,
 } from '../../shared/ipc-contract.js';
+import { Button } from '../ui/Button.js';
+import styles from './ScreenSourcePicker.module.css';
 
 /**
  * T12 — the user's screen-share audio choice: no audio, Windows system-wide loopback (T6), or one
@@ -269,10 +271,8 @@ export function ScreenSourcePicker({
   }
 
   return (
-    <section data-role="screen-source-picker">
-      <h3>Share your screen</h3>
-
-      <div role="tablist">
+    <div data-role="screen-source-picker" className={styles.container}>
+      <div role="tablist" className={styles.tabs}>
         <button
           type="button"
           data-role="screen-source-tab-screen"
@@ -427,21 +427,24 @@ export function ScreenSourcePicker({
 
       {shareError && <p role="alert">{shareError}</p>}
 
-      <button type="button" onClick={onCancel}>
-        Cancel
-      </button>
-      <button
-        type="button"
-        disabled={
-          !selectedSourceId ||
-          sharing ||
-          (audioModeChoice === 'process' && selectedPid === undefined)
-        }
-        onClick={handleShare}
-      >
-        {sharing ? 'Starting…' : 'Share'}
-      </button>
-    </section>
+      <div className={styles.actions}>
+        <Button variant="ghost" type="button" onClick={onCancel}>
+          Cancel
+        </Button>
+        <Button
+          variant="primary"
+          type="button"
+          disabled={
+            !selectedSourceId ||
+            sharing ||
+            (audioModeChoice === 'process' && selectedPid === undefined)
+          }
+          onClick={handleShare}
+        >
+          {sharing ? 'Starting…' : 'Share'}
+        </Button>
+      </div>
+    </div>
   );
 }
 

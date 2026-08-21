@@ -1,0 +1,33 @@
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--ovni-space-2);
+  padding: 4px var(--ovni-space-2) 4px var(--ovni-space-8);
+  list-style: none;
+  font-size: var(--ovni-text-sm);
+  color: var(--ovni-text-secondary);
+}
+
+.name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.you {
+  color: var(--ovni-text-tertiary);
+}
+
+.statusSlot {
+  width: 0;
+}
+
+.mediaIcons {
+  display: flex;
+  align-items: center;
+  gap: var(--ovni-space-1);
+  color: var(--ovni-accent);
+  flex-shrink: 0;
+}

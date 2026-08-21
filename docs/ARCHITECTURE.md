@@ -4,8 +4,9 @@
 > connection/protocol foundation (T2), voice channels/microphone/P2P WebRTC (T3), camera streaming
 > (T4), screen/window video sharing (T5), screen/system audio (T6), local cryptographic client
 > identity (T7), the Dedicated Server product boundary (T8), server-local authorization (T9),
-> persistent server-side text chat (T10), and local device management/bookmarks/automatic reconnect
-> (T11) are implemented and live-verified — see
+> persistent server-side text chat (T10), local device management/bookmarks/automatic reconnect
+> (T11), Windows per-application audio capture (T12), and the Renderer's visual/interaction
+> foundation (T13.1) are implemented and live-verified — see
 > [`tasks/T3_VOICE_WEBRTC.md`](tasks/T3_VOICE_WEBRTC.md),
 > [`tasks/T4_CAMERA_STREAMING.md`](tasks/T4_CAMERA_STREAMING.md),
 > [`tasks/T5_SCREEN_SHARE.md`](tasks/T5_SCREEN_SHARE.md),
@@ -13,8 +14,10 @@
 > [`tasks/T7_LOCAL_IDENTITY.md`](tasks/T7_LOCAL_IDENTITY.md),
 > [`tasks/T8_DEDICATED_SERVER.md`](tasks/T8_DEDICATED_SERVER.md),
 > [`tasks/T9_SERVER_AUTHORIZATION.md`](tasks/T9_SERVER_AUTHORIZATION.md),
-> [`tasks/T10_PERSISTENT_TEXT_CHAT.md`](tasks/T10_PERSISTENT_TEXT_CHAT.md), and
-> [`tasks/T11_DAILY_USE_UX.md`](tasks/T11_DAILY_USE_UX.md). See
+> [`tasks/T10_PERSISTENT_TEXT_CHAT.md`](tasks/T10_PERSISTENT_TEXT_CHAT.md),
+> [`tasks/T11_DAILY_USE_UX.md`](tasks/T11_DAILY_USE_UX.md),
+> [`tasks/T12_WINDOWS_PROCESS_AUDIO.md`](tasks/T12_WINDOWS_PROCESS_AUDIO.md), and
+> [`tasks/T13_1_VISUAL_FOUNDATION.md`](tasks/T13_1_VISUAL_FOUNDATION.md). See
 > [`tasks/STATUS.md`](tasks/STATUS.md) for what remains a marker or is not yet started. Treat any
 > capability this document describes as unimplemented unless STATUS.md says otherwise.
 
@@ -75,6 +78,18 @@ flowchart TB
 The Renderer never receives raw `ipcRenderer`, filesystem, shell, process, or native-helper access.
 Main validates the sender/frame and runtime-validates every privileged request. Media permissions
 are deny-by-default and tied to an expected origin, frame, media kind, and user gesture.
+
+### Renderer UI foundation
+
+T13.1 established the Renderer's visual/interaction layer: design tokens and CSS Modules for
+styling, `lucide-react` for icons, and a `ui/` (generic primitives) / `shell/` (server-picker,
+connected-workspace root) / `workspace/` (channel sidebar, chat, member panel, controls) component
+layering — all inside `apps/desktop/src/renderer/`, with no new IPC channel, no new persistence, and
+`use-voice-channel.ts` remaining the sole owner of WebSocket/RTC/identity-signing state (presentation
+components consume it as props, never duplicate it). See
+[`architecture/PRODUCT_UI_FOUNDATION.md`](architecture/PRODUCT_UI_FOUNDATION.md) for the full design
+record and [`adr/0018-renderer-ui-foundation-css-modules-and-component-layering.md`](adr/0018-renderer-ui-foundation-css-modules-and-component-layering.md)
+for the decision.
 
 ## Network boundary
 

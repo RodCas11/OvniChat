@@ -1,0 +1,7 @@
+.shell {
+  display: flex;
+  height: 100vh;
+  overflow: hidden;
+  background: var(--ovni-bg-base);
+  color: var(--ovni-text-primary);
+}

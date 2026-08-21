@@ -1,29 +1,28 @@
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  type ChangeEvent,
-  type ReactElement,
-} from 'react';
-
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 import type { ScreenQualityPreset } from '@disco-voador/media-core';
 
-import type { DesktopE2EVoiceConfig } from '../../shared/ipc-contract.js';
+import type { DesktopE2EVoiceConfig, DesktopIdentity } from '../../shared/ipc-contract.js';
+import { Button } from '../ui/Button.js';
+import { Modal } from '../ui/Modal.js';
+import { ChannelSidebar } from '../workspace/ChannelSidebar.js';
+import { MainContent } from '../workspace/MainContent.js';
+import { MemberPanel } from '../workspace/MemberPanel.js';
+import { UserControlBar } from '../workspace/UserControlBar.js';
+import type { ChatTarget } from '../workspace/chat-target.js';
 import { AuthorizationPanel } from './AuthorizationPanel.js';
-import { ChatPanel } from './ChatPanel.js';
 import { probeRemoteAudioLevel } from './e2e-audio-probe.js';
 import { probeRemoteAudioFrequency } from './e2e-frequency-probe.js';
 import { probeRemoteScreenFrames } from './e2e-screen-probe.js';
 import { probeRemoteVideoFrames } from './e2e-video-probe.js';
-import { LocalCameraPreview } from './LocalCameraPreview.js';
-import { LocalScreenPreview } from './LocalScreenPreview.js';
 import { RemoteAudio } from './RemoteAudio.js';
-import { RemoteCamera } from './RemoteCamera.js';
-import { RemoteScreen } from './RemoteScreen.js';
 import { ScreenSourcePicker, type ScreenShareAudioMode } from './ScreenSourcePicker.js';
 import { SettingsPanel } from './SettingsPanel.js';
-import { useVoiceChannel, type VoiceChannelConnectionConfig } from './use-voice-channel.js';
+import {
+  useVoiceChannel,
+  type VoiceChannelConnectionConfig,
+  type VoiceParticipantView,
+} from './use-voice-channel.js';
+import styles from './VoiceChannelView.module.css';
 
 /** T11 — checked once, at module load: `HTMLMediaElement.prototype.setSinkId` is either present or
  * it is not, on a given Electron/Chromium build — this can never change at runtime, so there is no
@@ -41,6 +40,13 @@ interface VoiceChannelViewProps {
    * validated by `clientVoiceJoinMessageSchema`) and `nickname` (identity-level, sent once at
    * `client:hello`) stay two independent concepts, the user can still edit this field freely. */
   readonly defaultDisplayName?: string | undefined;
+  /** T13.1 — threaded down from `App.tsx` (via `AppShell.tsx`) so the relocated Identity section of
+   * the redesigned `SettingsPanel.tsx` can render without duplicating `useIdentity()` ownership,
+   * which stays entirely in `App.tsx` as it always has. */
+  readonly identity: DesktopIdentity;
+  readonly nickname: string;
+  readonly onNicknameChange: (nickname: string) => Promise<boolean>;
+  readonly onRegenerateIdentity: () => Promise<void>;
 }
 
 /** Finds the first enumerated *screen* (never a window) source — used only by the E2E
@@ -57,11 +63,21 @@ export function VoiceChannelView({
   realtimeConfig,
   e2eAutoJoin,
   defaultDisplayName,
+  identity,
+  nickname,
+  onNicknameChange,
+  onRegenerateIdentity,
 }: VoiceChannelViewProps): ReactElement {
   const [state, actions] = useVoiceChannel(realtimeConfig);
   const [displayName, setDisplayName] = useState(defaultDisplayName ?? '');
   const [showScreenPicker, setShowScreenPicker] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showAuthorization, setShowAuthorization] = useState(false);
+  // T13.1 — which chat thread the workspace shows, entirely independent of voice-join status (see
+  // `workspace/chat-target.ts`'s own doc comment for the hard "click never joins voice" rule this
+  // exists to satisfy). Local, presentation-only UI state — never persisted, never affects the
+  // underlying `useVoiceChannel` hook contract above.
+  const [selectedChatTarget, setSelectedChatTarget] = useState<ChatTarget>({ scope: 'server' });
   // T11 — the user's persisted output-device and screen-share-quality preferences, loaded once on
   // mount and updated live from `SettingsPanel.tsx`. Kept here (not inside `use-voice-channel.ts`)
   // because neither is a `MediaTransport`/WebRTC concern: output-device selection is a plain
@@ -90,8 +106,20 @@ export function VoiceChannelView({
   const canJoin =
     state.connectionStatus === 'connected' && displayName.trim().length > 0 && !state.joining;
 
-  function handleDisplayNameChange(event: ChangeEvent<HTMLInputElement>): void {
-    setDisplayName(event.target.value);
+  // T13.1 — presentation-only derived sets so `ChannelSidebar`/`ChannelRow`/`ParticipantRow` can
+  // check "does this participant have an active camera/screen" via a plain `Set.has` instead of each
+  // nested component re-deriving it from the raw stream maps.
+  const remoteCameraParticipantIds = useMemo(
+    () => new Set(state.remoteCameraStreams.keys()),
+    [state.remoteCameraStreams],
+  );
+  const remoteScreenParticipantIds = useMemo(
+    () => new Set(state.remoteScreenStreams.keys()),
+    [state.remoteScreenStreams],
+  );
+
+  function handleJoinChannel(channelId: string): void {
+    actions.join(channelId, displayName.trim());
   }
 
   function handleScreenShareSelected(
@@ -120,6 +148,85 @@ export function VoiceChannelView({
     state.channels,
     actions,
   ]);
+
+  /**
+   * T13.1 product-shell-smoke only (`e2e-product-shell-smoke.mjs`) — proves a fresh `VoiceChannelView`
+   * instance mounts on every connection sequence (the `AppShell` remount-key fix's own correctness,
+   * see `App.tsx`/`shell/AppShell.tsx`'s doc comments): a component instance incorrectly *reused*
+   * across a server switch would never re-run this empty-dependency, mount-only effect a second
+   * time, so the orchestrating script requiring two distinct occurrences (one per server) is itself
+   * the proof, not merely the printed value. Gated by the `workspaceMountLogged` ref (not the empty
+   * dependency array alone) so it still fires exactly once per real mount even though `e2eAutoJoin`/
+   * `realtimeConfig` are listed as honest dependencies.
+   */
+  const workspaceMountLogged = useRef(false);
+  useEffect(() => {
+    if (!e2eAutoJoin?.productShellSmoke || workspaceMountLogged.current) return;
+    workspaceMountLogged.current = true;
+    console.info(`E2E_PRODUCT_SHELL_WORKSPACE_MOUNTED:${realtimeConfig?.url ?? ''}`);
+  }, [e2eAutoJoin, realtimeConfig]);
+
+  /**
+   * T13.1 product-shell-smoke only — selects (never joins) the auto-join target channel's chat as
+   * soon as it is known to exist, through the exact same production `setSelectedChatTarget` path a
+   * real click on `ChannelRow`'s chat-bubble icon drives (see `ChannelSidebar.tsx`'s
+   * `onSelectChatTarget`). Deliberately independent of `autoJoinAttempted` above — never delays or
+   * otherwise alters the real join effect — so the orchestrating script can observe this
+   * selection's own `E2E_PRODUCT_SHELL_CHAT_TARGET_SELECTED` marker (a synchronous, zero-network-
+   * round-trip `console.info`) land before the network-round-trip-gated
+   * `disco-voador:voice-joined:<channelId>` marker the real join produces — real, non-flaky
+   * evidence for the task's hard "a single click/selection shows a channel's chat and never joins
+   * its voice" rule, exercised end to end through an actual Electron instance and a real Dedicated
+   * Server rather than only at the component level (see `tests/desktop/components/channel-row.test.tsx`
+   * for that boundary).
+   */
+  const pssChatTargetSelected = useRef(false);
+  useEffect(() => {
+    if (!e2eAutoJoin?.productShellSmoke || pssChatTargetSelected.current) return;
+    if (state.connectionStatus !== 'connected') return;
+    if (!state.channels.some((channel) => channel.channelId === e2eAutoJoin.channelId)) return;
+
+    pssChatTargetSelected.current = true;
+    setSelectedChatTarget({ scope: 'channel', channelId: e2eAutoJoin.channelId });
+    console.info(`E2E_PRODUCT_SHELL_CHAT_TARGET_SELECTED:${e2eAutoJoin.channelId}`);
+  }, [e2eAutoJoin, state.connectionStatus, state.channels]);
+
+  /**
+   * T13.1 product-shell-smoke only — once actually joined (the real `autoJoinAttempted` effect
+   * above succeeded, evidenced by `state.currentChannelId` matching the target channel), opens then
+   * closes Settings via the exact same `showSettings` state the bottom control bar's Settings
+   * button drives, proving the modal is reachable end to end without a human present.
+   */
+  const pssSettingsOpenScheduled = useRef(false);
+  useEffect(() => {
+    if (!e2eAutoJoin?.productShellSmoke || pssSettingsOpenScheduled.current) return;
+    if (state.currentChannelId !== e2eAutoJoin.channelId) return;
+    pssSettingsOpenScheduled.current = true;
+
+    const timer = setTimeout(() => {
+      setShowSettings(true);
+      console.info('E2E_PRODUCT_SHELL_SETTINGS_OPENED');
+    }, 1000);
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [e2eAutoJoin, state.currentChannelId]);
+
+  const pssSettingsCloseScheduled = useRef(false);
+  useEffect(() => {
+    if (!e2eAutoJoin?.productShellSmoke || !showSettings || pssSettingsCloseScheduled.current) {
+      return;
+    }
+    pssSettingsCloseScheduled.current = true;
+
+    const timer = setTimeout(() => {
+      setShowSettings(false);
+      console.info('E2E_PRODUCT_SHELL_SETTINGS_CLOSED');
+    }, 1000);
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [e2eAutoJoin, showSettings]);
 
   // T5 stabilization: the shared minimum bar every auto-media action (camera, screen) waits for —
   // at least one remote peer's `RTCPeerConnection` has reached `'connected'`. Sequences auto-media
@@ -164,11 +271,12 @@ export function VoiceChannelView({
     actions.sendChatMessage('channel', state.currentChannelId, e2eAutoJoin.autoChatSendChannelBody);
   }, [e2eAutoJoin, state.currentChannelId, actions]);
 
-  // T10 E2E-only automation, any scenario that auto-joins a channel: `ChatPanel`'s own
-  // channel-history load only happens once a human clicks that channel's tab (never auto-selected —
-  // see `ChatPanel.tsx`). This drives the exact same production `loadChatHistory` action directly,
-  // so a channel-persistence E2E script does not need to simulate a DOM click to prove the channel
-  // history API actually returns real, previously-persisted messages.
+  // T10 E2E-only automation, any scenario that auto-joins a channel: `ChatView`'s own
+  // channel-history load only happens once a human selects that channel's chat in the sidebar
+  // (never auto-selected — see `workspace/ChatView.tsx`). This drives the exact same production
+  // `loadChatHistory` action directly, so a channel-persistence E2E script does not need to simulate
+  // a DOM click to prove the channel history API actually returns real, previously-persisted
+  // messages.
   const autoChatLoadChannelHistoryAttempted = useRef(false);
   useEffect(() => {
     if (!e2eAutoJoin || autoChatLoadChannelHistoryAttempted.current) return;
@@ -817,218 +925,202 @@ export function VoiceChannelView({
     }
   }, [e2eAutoJoin, state.remoteScreenAudioStreams]);
 
+  const effectiveDisplayName = displayName.trim().length > 0 ? displayName.trim() : nickname;
+
+  // Visual QA (T13.1): `state.participants` is populated only from the server's roster of *other*
+  // participants (used to set up peer connections) — the local user is never in it, so
+  // `ChannelSidebar`/`ChannelRow`/`MemberPanel`/`MemberRow`'s existing, already-built `isSelf`/"(you)"
+  // rendering never had anything to render. This synthesizes a self entry from data this component
+  // already owns for real (its own `effectiveDisplayName`, `state.selfParticipantId`,
+  // `state.myGroups`) — not fabricated data — purely so the local user appears in their own member
+  // list and joined-channel roster, the way a Discord-familiar user expects. `connectionState` is
+  // genuinely `undefined` for self: there is no `RTCPeerConnection` to oneself to report a state for.
+  const participantsWithSelf = useMemo<readonly VoiceParticipantView[]>(() => {
+    if (!state.selfParticipantId) return state.participants;
+    const selfEntry: VoiceParticipantView = {
+      participantId: state.selfParticipantId,
+      displayName: effectiveDisplayName,
+      connectionState: undefined,
+      groups: state.myGroups,
+    };
+    return [...state.participants, selfEntry];
+  }, [state.participants, state.selfParticipantId, effectiveDisplayName, state.myGroups]);
+
   return (
-    <section>
-      <h2>Voice</h2>
-      <p>Realtime connection: {state.connectionStatus}</p>
-      {state.connectionStatus === 'reconnecting' && (
-        <p role="status">
-          Connection lost. Reconnecting…
-          {state.reconnectAttempt !== undefined &&
-            ` (attempt ${String(state.reconnectAttempt)})`}{' '}
-          <button type="button" onClick={actions.cancelReconnect}>
-            Cancel
-          </button>
-        </p>
-      )}
-      {state.connectionStatus === 'disconnected' && state.connectionError && (
-        <p role="alert">{state.connectionError}</p>
-      )}
-      {state.serverInfo && (
-        <p>
-          Server: {state.serverInfo.serverName} (capabilities:{' '}
-          {state.serverInfo.serverCapabilities.join(', ') || 'none'})
-        </p>
+    <div className={styles.workspace}>
+      {(state.micError ?? state.cameraError ?? state.screenShareError ?? state.lastError) && (
+        <div className={styles.alertBanner}>
+          {state.micError && <p role="alert">Microphone error: {state.micError}</p>}
+          {state.cameraError && <p role="alert">Camera error: {state.cameraError}</p>}
+          {state.screenShareError && (
+            <p role="alert">Screen share error: {state.screenShareError}</p>
+          )}
+          {state.lastError && <p role="alert">{state.lastError}</p>}
+        </div>
       )}
 
-      {state.connectionStatus === 'connected' && (
+      {state.connectionStatus !== 'connected' ? (
+        <div className={styles.statusScreen}>
+          {state.connectionStatus === 'reconnecting' && (
+            <>
+              <p role="status">
+                Connection lost. Reconnecting…
+                {state.reconnectAttempt !== undefined &&
+                  ` (attempt ${String(state.reconnectAttempt)})`}
+              </p>
+              <Button variant="secondary" onClick={actions.cancelReconnect}>
+                Cancel
+              </Button>
+            </>
+          )}
+          {state.connectionStatus === 'disconnected' && state.connectionError && (
+            <p role="alert">{state.connectionError}</p>
+          )}
+          {(state.connectionStatus === 'connecting' ||
+            state.connectionStatus === 'authenticating') && <p>Connecting…</p>}
+        </div>
+      ) : (
         <>
-          <ChatPanel state={state} actions={actions} />
-          <AuthorizationPanel state={state} actions={actions} />
-          <button
-            type="button"
-            onClick={() => {
-              setShowSettings((prev) => !prev);
-            }}
-          >
-            {showSettings ? 'Hide settings' : 'Settings'}
-          </button>
-          {showSettings && (
-            <SettingsPanel
+          <ChannelSidebar
+            serverName={state.serverInfo?.serverName}
+            channels={state.channels}
+            participants={participantsWithSelf}
+            currentChannelId={state.currentChannelId}
+            selfParticipantId={state.selfParticipantId}
+            remoteCameraParticipantIds={remoteCameraParticipantIds}
+            remoteScreenParticipantIds={remoteScreenParticipantIds}
+            selfCameraEnabled={state.cameraEnabled}
+            selfSharingScreen={state.screenSharingState === 'sharing'}
+            canJoin={canJoin}
+            joining={state.joining}
+            selectedChatTarget={selectedChatTarget}
+            onSelectChatTarget={setSelectedChatTarget}
+            onJoinChannel={handleJoinChannel}
+            onLeaveChannel={actions.leave}
+          />
+
+          <div className={styles.center}>
+            <MainContent
               state={state}
               actions={actions}
-              outputDeviceId={outputDeviceId}
-              onOutputDeviceChange={setOutputDeviceId}
-              screenQualityPreset={screenQualityPreset}
-              onScreenQualityPresetChange={setScreenQualityPreset}
-              outputDeviceSelectionSupported={OUTPUT_DEVICE_SELECTION_SUPPORTED}
-            />
-          )}
-        </>
-      )}
-
-      {!state.currentChannelId && (
-        <>
-          <label>
-            Display name
-            <input value={displayName} onChange={handleDisplayNameChange} maxLength={32} />
-          </label>
-
-          <ul>
-            {state.channels.map((channel) => (
-              <li key={channel.channelId}>
-                {channel.name}{' '}
-                <button
-                  type="button"
-                  disabled={!canJoin}
-                  onClick={() => {
-                    actions.join(channel.channelId, displayName.trim());
-                  }}
-                >
-                  Join
-                </button>
-              </li>
-            ))}
-          </ul>
-        </>
-      )}
-
-      {state.currentChannelId && (
-        <>
-          <p>
-            Connected to <strong>{state.currentChannelId}</strong>
-          </p>
-          <button
-            type="button"
-            onClick={() => {
-              actions.setMuted(!state.muted);
-            }}
-          >
-            {state.muted ? 'Unmute' : 'Mute'}
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              actions.setDeafened(!state.deafened);
-            }}
-          >
-            {state.deafened ? 'Undeafen' : 'Deafen'}
-          </button>
-          <button
-            type="button"
-            disabled={state.cameraAcquiring}
-            onClick={() => {
-              if (state.cameraEnabled) actions.disableCamera();
-              else actions.enableCamera();
-            }}
-          >
-            {state.cameraEnabled ? 'Camera off' : 'Camera'}
-          </button>
-          <button
-            type="button"
-            disabled={state.screenSharingState === 'starting'}
-            onClick={() => {
-              if (state.screenSharingState === 'sharing') actions.disableScreenShare();
-              else setShowScreenPicker(true);
-            }}
-          >
-            {state.screenSharingState === 'sharing'
-              ? state.screenShareAudioActive
-                ? 'Stop sharing (+ audio)'
-                : 'Stop sharing'
-              : state.screenSharingState === 'starting'
-                ? 'Starting…'
-                : 'Share screen'}
-          </button>
-          <button type="button" onClick={actions.leave}>
-            Leave
-          </button>
-
-          {showScreenPicker && (
-            <ScreenSourcePicker
-              onSourceSelected={handleScreenShareSelected}
-              onCancel={() => {
-                setShowScreenPicker(false);
+              channels={state.channels}
+              selectedChatTarget={selectedChatTarget}
+              onOpenAuthorization={() => {
+                setShowAuthorization(true);
               }}
-              defaultQuality={screenQualityPreset}
             />
-          )}
-
-          <ul>
-            {state.participants.map((participant) => (
-              <li key={participant.participantId}>
-                {participant.displayName}
-                {participant.groups.length > 0 &&
-                  ` [${participant.groups.map((g) => g.name).join(', ')}]`}
-                {participant.connectionState ? ` — ${participant.connectionState}` : ''}
-              </li>
-            ))}
-          </ul>
-
-          {[...state.remoteAudioStreams.entries()].map(([participantId, stream]) => (
-            <RemoteAudio
-              key={participantId}
-              participantId={participantId}
-              stream={stream}
-              muted={state.deafened}
-              outputDeviceId={outputDeviceId}
+            <UserControlBar
+              state={state}
+              actions={actions}
+              displayName={effectiveDisplayName}
+              onOpenSettings={() => {
+                setShowSettings(true);
+              }}
+              onOpenScreenPicker={() => {
+                setShowScreenPicker(true);
+              }}
             />
-          ))}
-
-          {/* T6: screen/system audio has its own independent playback ownership — a distinct
-              <audio> element per participant, never mixed into the microphone element above, even
-              though both are plain `RemoteAudio` instances. Deafen suppresses both the same way;
-              microphone mute never touches this map (see `docs/architecture/WEBRTC_SCREEN_AUDIO.md`). */}
-          {[...state.remoteScreenAudioStreams.entries()].map(([participantId, stream]) => (
-            <RemoteAudio
-              key={`screen-audio-${participantId}`}
-              participantId={participantId}
-              stream={stream}
-              muted={state.deafened}
-              outputDeviceId={outputDeviceId}
-            />
-          ))}
-
-          <div>
-            {state.localCameraStream && <LocalCameraPreview stream={state.localCameraStream} />}
-            {[...state.remoteCameraStreams.entries()].map(([participantId, stream]) => {
-              const participant = state.participants.find((p) => p.participantId === participantId);
-              return (
-                <RemoteCamera
-                  key={participantId}
-                  participantId={participantId}
-                  displayName={participant?.displayName ?? participantId}
-                  stream={stream}
-                />
-              );
-            })}
           </div>
 
-          {/* Screen shares render in their own section, separate from camera tiles — larger, with
-              a preserved aspect ratio (see `RemoteScreen.tsx`), never mixed into the camera grid
-              even though both are `track.kind === 'video'`. */}
-          <div>
-            {state.localScreenStream && <LocalScreenPreview stream={state.localScreenStream} />}
-            {[...state.remoteScreenStreams.entries()].map(([participantId, stream]) => {
-              const participant = state.participants.find((p) => p.participantId === participantId);
-              return (
-                <RemoteScreen
-                  key={participantId}
-                  participantId={participantId}
-                  displayName={participant?.displayName ?? participantId}
-                  stream={stream}
-                />
-              );
-            })}
-          </div>
+          <MemberPanel
+            inChannel={Boolean(state.currentChannelId)}
+            participants={participantsWithSelf}
+            selfParticipantId={state.selfParticipantId}
+          />
         </>
       )}
 
-      {state.joining && <p>Joining…</p>}
-      {state.micError && <p role="alert">Microphone error: {state.micError}</p>}
-      {state.cameraError && <p role="alert">Camera error: {state.cameraError}</p>}
-      {state.screenShareError && <p role="alert">Screen share error: {state.screenShareError}</p>}
-      {state.lastError && <p role="alert">{state.lastError}</p>}
-    </section>
+      {showScreenPicker && (
+        <Modal
+          open
+          onClose={() => {
+            setShowScreenPicker(false);
+          }}
+          title="Share your screen"
+          size="large"
+          testId="screen-picker-modal"
+        >
+          <ScreenSourcePicker
+            onSourceSelected={handleScreenShareSelected}
+            onCancel={() => {
+              setShowScreenPicker(false);
+            }}
+            defaultQuality={screenQualityPreset}
+          />
+        </Modal>
+      )}
+
+      {showSettings && (
+        <Modal
+          open
+          onClose={() => {
+            setShowSettings(false);
+          }}
+          title="Settings"
+          size="large"
+          testId="settings-modal"
+        >
+          <SettingsPanel
+            state={state}
+            actions={actions}
+            outputDeviceId={outputDeviceId}
+            onOutputDeviceChange={setOutputDeviceId}
+            screenQualityPreset={screenQualityPreset}
+            onScreenQualityPresetChange={setScreenQualityPreset}
+            outputDeviceSelectionSupported={OUTPUT_DEVICE_SELECTION_SUPPORTED}
+            identity={identity}
+            nickname={nickname}
+            onNicknameChange={onNicknameChange}
+            onRegenerateIdentity={onRegenerateIdentity}
+            voiceDisplayName={displayName}
+            onVoiceDisplayNameChange={setDisplayName}
+          />
+        </Modal>
+      )}
+
+      {showAuthorization && (
+        <Modal
+          open
+          onClose={() => {
+            setShowAuthorization(false);
+          }}
+          title="Authorization"
+          size="large"
+          testId="authorization-modal"
+        >
+          <AuthorizationPanel state={state} actions={actions} />
+        </Modal>
+      )}
+
+      {[...state.remoteAudioStreams.entries()].map(([participantId, stream]) => (
+        <RemoteAudio
+          key={participantId}
+          participantId={participantId}
+          stream={stream}
+          muted={state.deafened}
+          outputDeviceId={outputDeviceId}
+        />
+      ))}
+
+      {/* T6: screen/system audio has its own independent playback ownership — a distinct
+          <audio> element per participant, never mixed into the microphone element above, even
+          though both are plain `RemoteAudio` instances. Deafen suppresses both the same way;
+          microphone mute never touches this map (see `docs/architecture/WEBRTC_SCREEN_AUDIO.md`). */}
+      {[...state.remoteScreenAudioStreams.entries()].map(([participantId, stream]) => (
+        <RemoteAudio
+          key={`screen-audio-${participantId}`}
+          participantId={participantId}
+          stream={stream}
+          muted={state.deafened}
+          outputDeviceId={outputDeviceId}
+        />
+      ))}
+
+      {state.joining && (
+        <div className={styles.joiningNotice} role="status">
+          Joining…
+        </div>
+      )}
+    </div>
   );
 }

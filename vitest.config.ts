@@ -1,7 +1,17 @@
 import path from 'node:path';
+import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
+  // T13.1 — `@vitejs/plugin-react` is otherwise only a dependency of `apps/desktop` (its real
+  // Renderer build, see `apps/desktop/vite.renderer.config.ts`); adding it here too gives this
+  // repo's first `@testing-library/react` component tests (`tests/desktop/*.test.tsx`, scoped via
+  // their own per-file `// @vitest-environment jsdom` pragma) the exact same JSX-to-`react/jsx-
+  // runtime` transform the real app uses, rather than a hand-rolled esbuild `jsx` option that could
+  // silently drift from it. Every existing Main-process `.test.ts` file is untouched by this — it
+  // only affects how `.tsx` files are transformed, and this repo has none outside `apps/desktop`'s
+  // own Renderer source and these new tests.
+  plugins: [react()],
   resolve: {
     // Workspace packages resolve through node_modules (-> their built "dist/") for real
     // consumers, but that would make a test importing the same package by source path (as this
@@ -50,7 +60,7 @@ export default defineConfig({
       reporter: ['text', 'json-summary'],
     },
     environment: 'node',
-    include: ['tests/**/*.test.ts', 'tests/**/*.test.mjs'],
+    include: ['tests/**/*.test.ts', 'tests/**/*.test.tsx', 'tests/**/*.test.mjs'],
     passWithNoTests: false,
   },
 });

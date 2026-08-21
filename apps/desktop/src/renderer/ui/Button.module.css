@@ -1,0 +1,63 @@
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--ovni-space-2);
+  height: 36px;
+  padding: 0 var(--ovni-space-4);
+  border: 1px solid transparent;
+  border-radius: var(--ovni-radius-md);
+  font-size: var(--ovni-text-base);
+  font-weight: 600;
+  white-space: nowrap;
+  transition:
+    background-color var(--ovni-transition-fast),
+    border-color var(--ovni-transition-fast),
+    color var(--ovni-transition-fast);
+}
+
+.button:disabled {
+  opacity: 0.5;
+}
+
+.fullWidth {
+  width: 100%;
+}
+
+.primary {
+  background: var(--ovni-accent);
+  color: var(--ovni-accent-fg);
+}
+
+.primary:not(:disabled):hover {
+  background: var(--ovni-accent-hover);
+}
+
+.secondary {
+  background: var(--ovni-bg-surface-alt);
+  color: var(--ovni-text-primary);
+  border-color: var(--ovni-border);
+}
+
+.secondary:not(:disabled):hover {
+  background: var(--ovni-bg-hover);
+}
+
+.danger {
+  background: var(--ovni-danger);
+  color: var(--ovni-text-primary);
+}
+
+.danger:not(:disabled):hover {
+  background: var(--ovni-danger-hover);
+}
+
+.ghost {
+  background: transparent;
+  color: var(--ovni-text-secondary);
+}
+
+.ghost:not(:disabled):hover {
+  background: var(--ovni-bg-hover);
+  color: var(--ovni-text-primary);
+}

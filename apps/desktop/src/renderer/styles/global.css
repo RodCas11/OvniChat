@@ -1,0 +1,70 @@
+/* T13.1 — base resets and global element defaults, built on tokens.css. Every component-specific
+ * style belongs in its own `*.module.css` file — this file only sets document-level defaults. */
+@import './tokens.css';
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  font-family: var(--ovni-font-family);
+  font-size: var(--ovni-text-base);
+  background: var(--ovni-bg-base);
+  color: var(--ovni-text-primary);
+  /* This app renders real-time WebRTC video/screen-share alongside the UI — keep scrolling/repaint
+   * cheap; no `backdrop-filter` or heavy blur is used anywhere in this design system. */
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Deliberately no `#root { height: 100vh; overflow: hidden }` here yet: the current (pre-AppShell)
+ * rendering still relies on normal document scroll and has no internal per-panel scroll regions of
+ * its own. `shell/AppShell.tsx`'s own module CSS should set that constraint once it exists, paired
+ * with the independent per-panel scroll areas the layout actually needs — imposing it globally
+ * before then would silently clip content taller than the viewport. */
+
+button,
+input,
+select,
+textarea {
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: default;
+}
+
+/* Visible, consistent focus ring for keyboard navigation across every interactive element — never
+ * suppressed with a blanket `outline: none`. */
+:focus-visible {
+  outline: 2px solid var(--ovni-focus-ring);
+  outline-offset: 2px;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--ovni-bg-selected);
+  border-radius: var(--ovni-radius-full);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--ovni-bg-hover);
+}

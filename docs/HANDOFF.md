@@ -549,20 +549,30 @@ Renderer/Main trust boundary.
 
 There is no running Coturn stack (templates exist but no TURN credential minting), installer/maker
 artifact, or SFU. Production configuration/TLS termination and Docker packaging for the Dedicated
-Server are also not yet implemented (T13). Voice, camera, screen-video, and screen-audio sharing
-(T3–T6, P2P-mesh, small-room, self-hosted scope), local cryptographic client identity (T7), the
-Dedicated Server product boundary (T8), server-local groups/permissions/tokens/bans (T9), persistent
-server-side text chat (T10 — server-wide and per-voice-channel, real restart persistence, no message
-editing/deletion yet), local device management/bookmarks/automatic reconnect (T11), and Windows
-per-application audio capture (T12 — real native WASAPI process-loopback, this repository's first
-native/compiled code) are all implemented, mechanism-verified, and live-verified end to end. The
-product is now marketed as **OvniChat** (see [`PRODUCT.md`](PRODUCT.md)); the internal
-`@disco-voador/*` package namespace is unchanged.
+Server are also not yet implemented — this work is now **T14** (see the T13 redefinition below).
+Channel/server administration (categories, subchannels, passwords/ACLs), real avatars/presence,
+voice-activity/push-to-talk UX, and Discord-like stream/camera layout are also not yet implemented —
+this is **T13.2-T13.5**. Voice, camera, screen-video, and screen-audio sharing (T3–T6, P2P-mesh,
+small-room, self-hosted scope), local cryptographic client identity (T7), the Dedicated Server
+product boundary (T8), server-local groups/permissions/tokens/bans (T9), persistent server-side text
+chat (T10 — server-wide and per-voice-channel, real restart persistence, no message editing/deletion
+yet), local device management/bookmarks/automatic reconnect (T11), Windows per-application audio
+capture (T12 — real native WASAPI process-loopback, this repository's first native/compiled code),
+and the Renderer's visual/interaction foundation (T13.1 — design tokens, CSS Modules, `lucide-react`
+icons, server-home/rail/channel-sidebar/chat/member-panel/bottom-control-bar layout, replacing the
+previous unstyled UI with no protocol/IPC/persistence change) are all implemented,
+mechanism-verified, and live-verified end to end. The product is now marketed as **OvniChat** (see
+[`PRODUCT.md`](PRODUCT.md)); the internal `@disco-voador/*` package namespace is unchanged.
 
 ## What should happen next?
 
-**T13 — production self-hosting** (TURN, TLS/WSS, Docker, production configuration, health checks,
-network/firewall documentation) is next.
+T13 was redefined, by explicit product direction, from a single "self-hosting production package"
+task into a five-part Product Experience series (T13.1-T13.5) — see
+[`tasks/STATUS.md`](tasks/STATUS.md) for the full renumbering (production self-hosting is now T14,
+installer/releases T15, private-beta polish T16, SFU T17, hardening/release-candidate T18).
+**T13.2 — Channels & Server Administration** is next: channel create/edit/delete/hierarchy,
+subchannels, temporary channels, channel access policies, and richer server admin UX, building on the
+visual foundation T13.1 established.
 
 Non-blocking follow-ups still open, cheap relative to the risk they guard against: (1) ~~a
 frequency-domain (e.g. dominant-frequency-near-440Hz) check for `e2e:screen-audio-smoke`'s
@@ -883,6 +893,47 @@ full record, including the native-helper-vs-addon decision (ADR 0017) and one ho
 not-yet-closed follow-up (the E2E harness proves "no silent fallback to System Audio" only indirectly
 via the isolation-margin proof, not as its own direct assertion — recorded as a future strengthening,
 not implemented this pass).
+
+T13.1’s clean-state evidence is the same gate with 1085 Vitest tests (up from T12’s 1019; the same
+one pre-existing, already-allowlisted high-severity dependency advisory — T13.1’s new dependencies
+(`lucide-react`, and root-level `@testing-library/react`/`@testing-library/dom`/
+`@testing-library/jest-dom`/`jsdom`) introduced zero new advisories) — formatting, lint, whole-repo
+typecheck, `vitest run`, composite build, `verify-repository.mjs`/`verify-architecture.mjs`, and the
+dependency audit all pass via one canonical `corepack pnpm check` run — plus its own required
+real-runtime evidence: a new `e2e:product-shell-smoke` passed, proving the full journey (fresh
+profile, nickname, two bookmarks, Home showing both, connect, select-without-joining a channel’s
+chat, real explicit Join, Settings open/close, a real `disconnect()`→`connectTo()` switch to a second
+server with a verified fresh `AppShell`/`VoiceChannelView` mount — the remount-key fix’s own proof —
+and a clean return toward Home with both bookmarks intact) through a real Electron instance and two
+real Dedicated Servers; all twelve pre-existing Electron E2E scripts (`e2e:voice-smoke`,
+`e2e:camera-smoke`, `e2e:screen-smoke`, `e2e:screen-audio-smoke`, `e2e:process-audio-smoke`,
+`e2e:identity-auth`, `e2e:identity-persistence`, `e2e:connection-smoke`, `e2e:authorization`,
+`e2e:text-chat-persistence`, `e2e:settings-persistence`, `e2e:reconnect-smoke`) were re-verified
+passing against the final, security-fixed, repackaged build — no regression, confirming the visual
+redesign changed presentation only. Five real screenshots from an actual packaged Electron instance
+(Home at 1920×1080, connected workspace at 1920×1080 and 1366×768, Settings, and a
+collapsed-member-panel state) were captured and personally visually reviewed twice — once before and
+once after the post-review fixes below, since the first pass surfaced two real defects a screenshot
+alone made visible (see below). **T13.1 is marked COMPLETE in [`tasks/STATUS.md`](tasks/STATUS.md)**
+— its foundation is implemented, reviewed (`security-reviewer` found four real, low-severity,
+non-blocking issues, all fixed in this task: a stale-form-state bug in the Add/Edit Server dialog, a
+quadratic unmemoized chat-message-grouping DoS risk, a redundant chat-history-refetch-on-thread-switch
+rate-limit amplifier, and one unpinned dependency range; `qa-engineer` found and fixed one further
+real bug — `MainContent` mounting `ChatView` without a per-thread key, letting an unsent composer
+draft leak across a chat-target switch — and wrote this repository’s first Renderer component-test
+suite, 62 tests across 12 files, plus the new E2E script), and the task’s own visual review
+independently found and fixed two further real defects visible only in an actual screenshot: the
+local user never appearing in their own member/participant lists (a real, already-built `isSelf`/
+"(you)" rendering path with nothing to render against, since `state.participants` only ever held
+_other_ participants — fixed by synthesizing a self entry from data already owned for real, not
+fabricated), and the cryptographic Identity ID/"Regenerate Identity" action being prominent in the
+main Settings flow rather than tucked into Advanced as the task explicitly required — fixed by
+relocating the existing `IdentityPanel` into the Advanced section. All Definition of Done items are
+satisfied. See [`tasks/T13_1_VISUAL_FOUNDATION.md`](tasks/T13_1_VISUAL_FOUNDATION.md)’s handoff notes,
+[`architecture/PRODUCT_UI_FOUNDATION.md`](architecture/PRODUCT_UI_FOUNDATION.md) for the full design
+record, and [`adr/0018-renderer-ui-foundation-css-modules-and-component-layering.md`](adr/0018-renderer-ui-foundation-css-modules-and-component-layering.md)
+for the styling/component-architecture decision, including the real `TS2882`/pattern-ambient-module
+diagnostic trail and the React-19-batching remount-key fix.
 
 Then perform the task’s required manual/platform checks. Apply
 [`DEFINITION_OF_DONE.md`](DEFINITION_OF_DONE.md) and update status only when every applicable item

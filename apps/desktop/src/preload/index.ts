@@ -8,6 +8,7 @@ import {
   type DesktopBookmarkInput,
   type DesktopClientSettings,
   type DesktopClientSettingsPatch,
+  type DesktopE2EScreenshotConfig,
   type DesktopE2ESettingsPersistenceConfig,
   type DesktopE2EVoiceConfig,
   type DesktopIdentity,
@@ -63,6 +64,11 @@ const desktopApi: DesktopApi = {
   getE2ESettingsPersistenceConfig: () =>
     ipcRenderer.invoke(IPC_CHANNELS.getE2ESettingsPersistenceConfig) as Promise<
       DesktopE2ESettingsPersistenceConfig | undefined
+    >,
+  // T13.1 screenshot-capture tooling only — see `DesktopE2EScreenshotConfig`'s doc comment.
+  getE2EScreenshotConfig: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.getE2EScreenshotConfig) as Promise<
+      DesktopE2EScreenshotConfig | undefined
     >,
   listScreenShareSources: () =>
     ipcRenderer.invoke(IPC_CHANNELS.listScreenShareSources) as Promise<

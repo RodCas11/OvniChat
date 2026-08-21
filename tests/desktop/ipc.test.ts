@@ -178,14 +178,14 @@ describe('registerIpcHandlers', () => {
     expect(() =>
       registerIpcHandlers(fakeMainWebContents(2), allowedOrigins, realtimeConfig),
     ).not.toThrow();
-    // Twenty-one channels (getVersionInfo, getRealtimeConfig, getE2EVoiceConfig,
-    // getE2ESettingsPersistenceConfig, listScreenShareSources, selectScreenShareSource,
-    // getProcessAudioCapability, listProcessAudioCandidates, cancelProcessAudioEnumeration,
-    // startProcessAudioCapture, stopProcessAudioCapture, getIdentity, signIdentityChallenge,
-    // regenerateIdentity, getNickname, setNickname, getClientSettings, updateClientSettings,
-    // addBookmark, updateBookmark, removeBookmark) are each registered exactly once, ever — not
-    // once per `registerIpcHandlers` call.
-    expect(ipcHandleSpy).toHaveBeenCalledTimes(21);
+    // Twenty-two channels (getVersionInfo, getRealtimeConfig, getE2EVoiceConfig,
+    // getE2ESettingsPersistenceConfig, getE2EScreenshotConfig, listScreenShareSources,
+    // selectScreenShareSource, getProcessAudioCapability, listProcessAudioCandidates,
+    // cancelProcessAudioEnumeration, startProcessAudioCapture, stopProcessAudioCapture, getIdentity,
+    // signIdentityChallenge, regenerateIdentity, getNickname, setNickname, getClientSettings,
+    // updateClientSettings, addBookmark, updateBookmark, removeBookmark) are each registered exactly
+    // once, ever — not once per `registerIpcHandlers` call.
+    expect(ipcHandleSpy).toHaveBeenCalledTimes(22);
 
     const handler = handlers.get(IPC_CHANNELS.getVersionInfo);
     expect(() => handler?.(fakeEvent(1, 'app://renderer/index.html'))).toThrow(/untrusted sender/);
@@ -233,6 +233,7 @@ describe('registerIpcHandlers', () => {
       redeemToken: undefined,
       autoChatSendServerBody: undefined,
       autoChatSendChannelBody: undefined,
+      productShellSmoke: undefined,
     };
     registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig, e2eVoiceConfig);
 

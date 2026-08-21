@@ -1,0 +1,58 @@
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: var(--ovni-z-modal);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.dialog {
+  display: flex;
+  flex-direction: column;
+  max-height: 85vh;
+  background: var(--ovni-bg-surface);
+  border: 1px solid var(--ovni-border);
+  border-radius: var(--ovni-radius-lg);
+  box-shadow: var(--ovni-shadow-lg);
+}
+
+.small {
+  width: 360px;
+}
+
+.medium {
+  width: 480px;
+}
+
+.large {
+  width: 680px;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--ovni-space-4) var(--ovni-space-5);
+  border-bottom: 1px solid var(--ovni-border);
+}
+
+.title {
+  margin: 0;
+  font-size: var(--ovni-text-lg);
+  font-weight: 700;
+}
+
+.body {
+  padding: var(--ovni-space-5);
+  overflow-y: auto;
+}
+
+.footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--ovni-space-2);
+  padding: var(--ovni-space-4) var(--ovni-space-5);
+  border-top: 1px solid var(--ovni-border);
+}

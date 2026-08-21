@@ -39,6 +39,7 @@ describe('preload bridge', () => {
       'addBookmark',
       'cancelProcessAudioEnumeration',
       'getClientSettings',
+      'getE2EScreenshotConfig',
       'getE2ESettingsPersistenceConfig',
       'getE2EVoiceConfig',
       'getIdentity',

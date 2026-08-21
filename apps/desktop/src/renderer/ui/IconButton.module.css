@@ -1,0 +1,48 @@
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: var(--ovni-radius-sm);
+  background: transparent;
+  color: var(--ovni-text-secondary);
+  transition:
+    background-color var(--ovni-transition-fast),
+    color var(--ovni-transition-fast);
+}
+
+.medium {
+  width: 36px;
+  height: 36px;
+}
+
+.small {
+  width: 28px;
+  height: 28px;
+}
+
+.button:not(:disabled):hover {
+  background: var(--ovni-bg-hover);
+  color: var(--ovni-text-primary);
+}
+
+.button:disabled {
+  opacity: 0.4;
+}
+
+.active {
+  color: var(--ovni-accent);
+}
+
+.active:not(:disabled):hover {
+  color: var(--ovni-accent-hover);
+}
+
+.danger {
+  color: var(--ovni-danger);
+}
+
+.danger:not(:disabled):hover {
+  background: rgba(229, 72, 77, 0.12);
+  color: var(--ovni-danger-hover);
+}

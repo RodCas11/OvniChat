@@ -21,6 +21,10 @@ export const IPC_CHANNELS = {
   getRealtimeConfig: 'app:get-realtime-config',
   getE2EVoiceConfig: 'app:get-e2e-voice-config',
   getE2ESettingsPersistenceConfig: 'app:get-e2e-settings-persistence-config',
+  // T13.1 screenshot-capture tooling only — see `DesktopE2EScreenshotConfig`'s doc comment. Not a
+  // permanent product feature: added solely to produce the Definition-of-Done screenshot evidence
+  // for T13.1's visual review, gated `!app.isPackaged` like every other `DesktopE2E*Config` channel.
+  getE2EScreenshotConfig: 'app:get-e2e-screenshot-config',
   listScreenShareSources: 'app:list-screen-share-sources',
   selectScreenShareSource: 'app:select-screen-share-source',
   // T12 — Windows per-process/game audio capture. See `main/process-audio.ts`.
@@ -157,6 +161,23 @@ export interface DesktopE2EVoiceConfig {
    * See `apps/desktop/scripts/e2e-text-chat-channel-persistence.mjs`.
    */
   readonly autoChatSendChannelBody: string | undefined;
+  /**
+   * T13.1 — arms `apps/desktop/scripts/e2e-product-shell-smoke.mjs`'s bookmark-seeding and
+   * server-switch/disconnect automation in `App.tsx`, plus the chat-target-selection and
+   * settings-open/close automation in `VoiceChannelView.tsx` (both purely additive new effects —
+   * see each file's own doc comment for the exact sequencing). `undefined` for every other
+   * scenario and every real user. Deliberately reuses this same config object (rather than a
+   * sibling `DesktopE2E*Config`, cf. `DesktopE2ESettingsPersistenceConfig`) because this scenario
+   * *does* need the ordinary voice-join/connect machinery `DesktopE2EVoiceConfig`'s other fields
+   * already drive (`channelId`, `displayName`, `connectUrl`) — it is a superset of the plain
+   * connection-smoke scenario, not an independent one.
+   */
+  readonly productShellSmoke:
+    | {
+        readonly bookmarkA: { readonly displayName: string; readonly serverAddress: string };
+        readonly bookmarkB: { readonly displayName: string; readonly serverAddress: string };
+      }
+    | undefined;
 }
 
 /**
@@ -172,6 +193,24 @@ export interface DesktopE2ESettingsPersistenceConfig {
   /** `true` only on the orchestrating script's first launch of a given `--user-data-dir` — see
    * `App.tsx`'s settings-persistence-automation effect for the full read/write scenario. */
   readonly write: boolean;
+}
+
+/**
+ * T13.1 screenshot-capture tooling only — throwaway automation added solely so
+ * `apps/desktop/scripts/e2e-screenshot-capture.mjs` can produce real Definition-of-Done screenshot
+ * evidence (real nickname, real bookmarks, real `ServerHome`) without a human present, never a
+ * permanent product feature. `undefined` for every real user and every other scenario, always,
+ * gated `!app.isPackaged` the same way every other `DesktopE2E*Config` field in this file is (see
+ * `main/window.ts`). Deliberately its own small config, independent of `DesktopE2EVoiceConfig` —
+ * that one's very presence forces `App.tsx`'s `AutoConnect` path, which this Home-screen-only
+ * scenario must never reach (mirrors `DesktopE2ESettingsPersistenceConfig`'s own reasoning above).
+ */
+export interface DesktopE2EScreenshotConfig {
+  /** Nickname submitted automatically via `AutoFirstRun`, exactly like `DesktopE2EVoiceConfig`'s
+   * own `displayName` field drives for its own scenarios. */
+  readonly displayName: string;
+  readonly bookmarkA: { readonly displayName: string; readonly serverAddress: string };
+  readonly bookmarkB: { readonly displayName: string; readonly serverAddress: string };
 }
 
 /**
@@ -364,6 +403,8 @@ export interface DesktopApi {
   getE2EVoiceConfig: () => Promise<DesktopE2EVoiceConfig | undefined>;
   /** See {@link DesktopE2ESettingsPersistenceConfig}. */
   getE2ESettingsPersistenceConfig: () => Promise<DesktopE2ESettingsPersistenceConfig | undefined>;
+  /** See {@link DesktopE2EScreenshotConfig}. Throwaway T13.1 screenshot-capture tooling only. */
+  getE2EScreenshotConfig: () => Promise<DesktopE2EScreenshotConfig | undefined>;
   /**
    * Enumerates current screen/window capture candidates as sanitized plain data. Calling this
    * again replaces the set of ids `selectScreenShareSource` will accept — an id from a previous

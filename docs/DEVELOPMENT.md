@@ -64,6 +64,11 @@ does not replace manual Electron/media/package verification when those surfaces 
 ## Test layers
 
 - **Unit:** deterministic domain, schema, lifecycle, configuration, and error behavior.
+- **Renderer component (T13.1):** `@testing-library/react` + `jsdom`, scoped per test file via a
+  `// @vitest-environment jsdom` docblock pragma — the global Vitest environment stays `node` for
+  every other test. Covers presentation behavior (interaction rules, conditional rendering, prop
+  wiring) with real application state mocked at the `use-voice-channel.ts`/IPC boundary, never
+  hook-internal logic.
 - **Integration:** client/server protocol, storage adapters, IPC contracts, and module boundaries.
 - **Electron smoke:** secure window settings, load/start/quit, navigation denial, IPC capability,
   and packaged artifact—not only Vite output.

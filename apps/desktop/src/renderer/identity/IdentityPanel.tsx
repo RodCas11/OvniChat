@@ -78,7 +78,10 @@ export function IdentityPanel({
 
   return (
     <section>
-      <h2>Identity</h2>
+      {/* T13.1: this panel now renders inside Settings > Advanced, alongside sibling `h4`
+          subsections ("Diagnostics", "Not implemented yet") — `h4` here keeps that hierarchy
+          consistent (this was a bare `h2` from before those sections existed). */}
+      <h4>Identity</h4>
       <p>
         <label>
           Nickname{' '}

@@ -2,9 +2,13 @@ import { useEffect, useRef, useState, type ChangeEvent, type ReactElement } from
 
 import type { ScreenQualityPreset } from '@disco-voador/media-core';
 
+import type { DesktopIdentity } from '../../shared/ipc-contract.js';
+import { useBookmarks } from '../connection/use-bookmarks.js';
+import { IdentityPanel } from '../identity/IdentityPanel.js';
 import type { VoiceChannelActions, VoiceChannelState } from './use-voice-channel.js';
 import { useMediaDevices, type EnumeratedDevice } from './device-enumeration.js';
 import { LocalCameraPreview } from './LocalCameraPreview.js';
+import styles from './SettingsPanel.module.css';
 
 interface SettingsPanelProps {
   readonly state: VoiceChannelState;
@@ -24,7 +28,26 @@ interface SettingsPanelProps {
    * speaker dropdown and output test tone are rendered disabled with an explanatory note instead of
    * silently pretending to work (T11 Section 18: never fake a working selector). */
   readonly outputDeviceSelectionSupported: boolean;
+  /** T13.1 — the User & Identity section renders the existing `IdentityPanel` (T7) in place, rather
+   * than duplicating its nickname/identityId/regenerate logic here. */
+  readonly identity: DesktopIdentity;
+  readonly nickname: string;
+  readonly onNicknameChange: (nickname: string) => Promise<boolean>;
+  readonly onRegenerateIdentity: () => Promise<void>;
+  /** T13.1 — the per-join display-name convenience field (T7 Section 41's own doc comment: never
+   * merged with the identity `nickname` above). Relocated here from the retired pre-join screen. */
+  readonly voiceDisplayName: string;
+  readonly onVoiceDisplayNameChange: (value: string) => void;
 }
+
+// Stale since T4/T5/T10/T12 shipped camera, screen sharing, text chat, and Windows per-process
+// audio respectively — corrected here (found while touching this file for T11, relocated into
+// Settings > Advanced for T13.1) rather than continuing to show a real user false information
+// about what OvniChat can already do.
+const NOT_IMPLEMENTED = [
+  'Servers (multiple guild-style groupings)',
+  'Message editing and deletion',
+] as const;
 
 const QUALITY_OPTIONS: readonly ScreenQualityPreset[] = ['standard', 'high', 'smooth', 'smooth720'];
 const QUALITY_LABELS: Record<ScreenQualityPreset, string> = {
@@ -235,9 +258,9 @@ function useOutputTestTone(): {
 }
 
 /**
- * T11 device management + screen-share quality preference. A minimal, functional (not polished)
- * panel per this task's own guidance — plain forms, no styling framework, sibling of
- * `AuthorizationPanel.tsx`/`ChatPanel.tsx` rather than folded into the already-large
+ * T11 device management + screen-share quality preference, restyled for T13.1 into User & Identity /
+ * Voice & Video / Advanced sections and rendered inside `ui/Modal.tsx` by `VoiceChannelView.tsx` —
+ * a sibling of `AuthorizationPanel.tsx` rather than folded into the already-large
  * `VoiceChannelView.tsx`.
  *
  * **`setSinkId` support finding**: confirmed present in this app's pinned Electron 43.4.0 build
@@ -262,11 +285,39 @@ export function SettingsPanel({
   screenQualityPreset,
   onScreenQualityPresetChange,
   outputDeviceSelectionSupported,
+  identity,
+  nickname,
+  onNicknameChange,
+  onRegenerateIdentity,
+  voiceDisplayName,
+  onVoiceDisplayNameChange,
 }: SettingsPanelProps): ReactElement {
   const devices = useMediaDevices();
   const [preferredMicDeviceId, setPreferredMicDeviceId] = useState<string | null>(null);
   const [preferredCameraDeviceId, setPreferredCameraDeviceId] = useState<string | null>(null);
   const [micTesting, setMicTesting] = useState(false);
+  const [{ connectOnStartup }, bookmarkActions] = useBookmarks();
+  // T13.1 — relocated from the old always-visible `App.tsx` "T1 Electron Shell" block into
+  // Settings > Advanced: real Electron/app version diagnostics, never deleted, just no longer
+  // prominent in the main product flow (T13.1 rule #6).
+  const [versionInfo, setVersionInfo] = useState<
+    { readonly electronVersion: string; readonly appVersion: string } | undefined
+  >(undefined);
+
+  useEffect(() => {
+    let cancelled = false;
+    window.desktopApp
+      .getVersionInfo()
+      .then((info) => {
+        if (!cancelled) setVersionInfo(info);
+      })
+      .catch((error: unknown) => {
+        console.error('settings panel: failed to load version info', error);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -328,89 +379,153 @@ export function SettingsPanel({
   }
 
   return (
-    <section data-role="settings-panel">
-      <h3>Settings</h3>
-
-      <section>
-        <h4>Audio</h4>
-        <DeviceSelect
-          label="Microphone"
-          devices={devices.audioInputs}
-          selectedDeviceId={preferredMicDeviceId}
-          onChange={handleMicChange}
-        />
-        {state.micUsingFallback && (
-          <p role="status">Preferred microphone unavailable — using the system default.</p>
-        )}
-        {state.micDisconnected && (
-          <p role="alert">Microphone disconnected unexpectedly. Pick a device to resume.</p>
-        )}
-        <DeviceSelect
-          label="Speaker"
-          devices={devices.audioOutputs}
-          selectedDeviceId={outputDeviceId}
-          disabled={!outputDeviceSelectionSupported}
-          onChange={handleOutputChange}
-        />
-        {!outputDeviceSelectionSupported && (
-          <p>Speaker selection is not supported on this build.</p>
-        )}
-        <div>
-          <button
-            type="button"
-            onClick={() => {
-              setMicTesting((prev) => !prev);
+    <div data-role="settings-panel" className={styles.container}>
+      <section className={styles.section}>
+        <h3 className={styles.sectionTitle}>User &amp; Identity</h3>
+        <label className={styles.field}>
+          <span>Voice display name</span>
+          <input
+            value={voiceDisplayName}
+            onChange={(event) => {
+              onVoiceDisplayNameChange(event.target.value);
             }}
-          >
-            {micTesting ? 'Stop microphone test' : 'Test microphone'}
-          </button>
-          {micTesting && <meter data-role="mic-level-meter" min={0} max={1} value={micLevel} />}
-        </div>
-        <div>
-          <button
-            type="button"
-            disabled={!outputDeviceSelectionSupported}
-            onClick={() => {
-              if (outputTestTone.playing) outputTestTone.stop();
-              else outputTestTone.play(outputDeviceId);
-            }}
-          >
-            {outputTestTone.playing ? 'Stop test tone' : 'Play test tone'}
-          </button>
-        </div>
-      </section>
-
-      <section>
-        <h4>Video</h4>
-        <DeviceSelect
-          label="Camera"
-          devices={devices.videoInputs}
-          selectedDeviceId={preferredCameraDeviceId}
-          onChange={handleCameraChange}
-        />
-        {state.cameraUsingFallback && (
-          <p role="status">Preferred camera unavailable — using the system default.</p>
-        )}
-        {state.cameraEnabled && state.localCameraStream ? (
-          <LocalCameraPreview stream={state.localCameraStream} />
-        ) : (
-          <p>Enable the camera to preview it here.</p>
-        )}
-      </section>
-
-      <section>
-        <h4>Screen sharing</h4>
-        <label>
-          Default quality
-          <select value={screenQualityPreset} onChange={handleQualityChange}>
-            {QUALITY_OPTIONS.map((preset) => (
-              <option key={preset} value={preset}>
-                {QUALITY_LABELS[preset]}
-              </option>
-            ))}
-          </select>
+            maxLength={32}
+          />
+          <span className={styles.hint}>
+            Shown to others when you join a voice channel — independent of your identity nickname,
+            found under Advanced below.
+          </span>
         </label>
       </section>
-    </section>
+
+      <section className={styles.section}>
+        <h3 className={styles.sectionTitle}>Voice &amp; Video</h3>
+        <section>
+          <h4>Audio</h4>
+          <DeviceSelect
+            label="Microphone"
+            devices={devices.audioInputs}
+            selectedDeviceId={preferredMicDeviceId}
+            onChange={handleMicChange}
+          />
+          {state.micUsingFallback && (
+            <p role="status">Preferred microphone unavailable — using the system default.</p>
+          )}
+          {state.micDisconnected && (
+            <p role="alert">Microphone disconnected unexpectedly. Pick a device to resume.</p>
+          )}
+          <DeviceSelect
+            label="Speaker"
+            devices={devices.audioOutputs}
+            selectedDeviceId={outputDeviceId}
+            disabled={!outputDeviceSelectionSupported}
+            onChange={handleOutputChange}
+          />
+          {!outputDeviceSelectionSupported && (
+            <p>Speaker selection is not supported on this build.</p>
+          )}
+          <div>
+            <button
+              type="button"
+              onClick={() => {
+                setMicTesting((prev) => !prev);
+              }}
+            >
+              {micTesting ? 'Stop microphone test' : 'Test microphone'}
+            </button>
+            {micTesting && <meter data-role="mic-level-meter" min={0} max={1} value={micLevel} />}
+          </div>
+          <div>
+            <button
+              type="button"
+              disabled={!outputDeviceSelectionSupported}
+              onClick={() => {
+                if (outputTestTone.playing) outputTestTone.stop();
+                else outputTestTone.play(outputDeviceId);
+              }}
+            >
+              {outputTestTone.playing ? 'Stop test tone' : 'Play test tone'}
+            </button>
+          </div>
+        </section>
+
+        <section>
+          <h4>Video</h4>
+          <DeviceSelect
+            label="Camera"
+            devices={devices.videoInputs}
+            selectedDeviceId={preferredCameraDeviceId}
+            onChange={handleCameraChange}
+          />
+          {state.cameraUsingFallback && (
+            <p role="status">Preferred camera unavailable — using the system default.</p>
+          )}
+          {state.cameraEnabled && state.localCameraStream ? (
+            <LocalCameraPreview stream={state.localCameraStream} />
+          ) : (
+            <p>Enable the camera to preview it here.</p>
+          )}
+        </section>
+
+        <section>
+          <h4>Screen sharing</h4>
+          <label className={styles.field}>
+            <span>Default quality</span>
+            <select value={screenQualityPreset} onChange={handleQualityChange}>
+              {QUALITY_OPTIONS.map((preset) => (
+                <option key={preset} value={preset}>
+                  {QUALITY_LABELS[preset]}
+                </option>
+              ))}
+            </select>
+          </label>
+        </section>
+      </section>
+
+      <section className={styles.section}>
+        <h3 className={styles.sectionTitle}>Advanced</h3>
+        {/* T13.1 (visual QA follow-up): the cryptographic Identity ID and the destructive
+            "Regenerate Identity" action must not be prominent in the main settings flow — moved
+            here from "User & Identity" verbatim (same `IdentityPanel`, same hooks/handlers, only
+            its position changed). Nickname editing stays inside `IdentityPanel` rather than being
+            split out, since it is genuinely part of the same identity record as the id/regenerate
+            action it sits beside. */}
+        <IdentityPanel
+          nickname={nickname}
+          identity={identity}
+          onNicknameChange={onNicknameChange}
+          onRegenerate={onRegenerateIdentity}
+        />
+        <label className={styles.checkboxField}>
+          <input
+            type="checkbox"
+            checked={connectOnStartup}
+            onChange={(event) => {
+              bookmarkActions.setConnectOnStartup(event.target.checked);
+            }}
+          />
+          Connect automatically on startup
+        </label>
+        <p className={styles.hint}>
+          Reconnects to the last server you connected to, using the same identity as always — never
+          a new account or credential.
+        </p>
+
+        <h4>Diagnostics</h4>
+        <dl className={styles.diagnostics}>
+          <dt>Electron</dt>
+          <dd>{versionInfo?.electronVersion ?? '…'}</dd>
+          <dt>App version</dt>
+          <dd>{versionInfo?.appVersion ?? '…'}</dd>
+        </dl>
+
+        <h4>Not implemented yet</h4>
+        <ul className={styles.notImplemented}>
+          {NOT_IMPLEMENTED.map((item) => (
+            <li key={item}>{item}</li>
+          ))}
+        </ul>
+      </section>
+    </div>
   );
 }

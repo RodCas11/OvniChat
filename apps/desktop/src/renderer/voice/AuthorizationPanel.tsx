@@ -2,7 +2,9 @@ import { useState, type FormEvent, type ReactElement } from 'react';
 
 import type { PermissionKey, TokenKind } from '@disco-voador/protocol';
 
+import { Button } from '../ui/Button.js';
 import type { VoiceChannelActions, VoiceChannelState } from './use-voice-channel.js';
+import styles from './AuthorizationPanel.module.css';
 
 interface AuthorizationPanelProps {
   readonly state: VoiceChannelState;
@@ -76,16 +78,15 @@ export function AuthorizationPanel({ state, actions }: AuthorizationPanelProps):
   }
 
   return (
-    <section>
-      <h3>Authorization</h3>
+    <div className={styles.container}>
       <p>
         My groups:{' '}
         {state.myGroups.length > 0 ? state.myGroups.map((g) => g.name).join(', ') : 'Guest'}
       </p>
 
-      <form onSubmit={handleRedeem}>
-        <label>
-          Privilege key / invite token
+      <form onSubmit={handleRedeem} className={styles.redeemForm}>
+        <label className={styles.field}>
+          <span>Privilege key / invite token</span>
           <input
             value={tokenInput}
             onChange={(event) => {
@@ -94,14 +95,14 @@ export function AuthorizationPanel({ state, actions }: AuthorizationPanelProps):
             placeholder="DV-..."
           />
         </label>
-        <button type="submit" disabled={tokenInput.trim().length === 0}>
+        <Button variant="primary" type="submit" disabled={tokenInput.trim().length === 0}>
           Redeem
-        </button>
+        </Button>
       </form>
       {state.lastRedeemedGroup && <p>Success — now: {state.lastRedeemedGroup.name}</p>}
 
       {can('authorization.tokens.manage') && (
-        <section>
+        <section className={styles.section}>
           <h4>Tokens</h4>
           <form onSubmit={handleCreateToken}>
             <label>
@@ -147,7 +148,7 @@ export function AuthorizationPanel({ state, actions }: AuthorizationPanelProps):
       )}
 
       {can('authorization.groups.manage') && (
-        <section>
+        <section className={styles.section}>
           <h4>Groups</h4>
           <button
             type="button"
@@ -206,7 +207,7 @@ export function AuthorizationPanel({ state, actions }: AuthorizationPanelProps):
       )}
 
       {can('moderation.ban') && (
-        <section>
+        <section className={styles.section}>
           <h4>Bans</h4>
           <button
             type="button"
@@ -253,7 +254,7 @@ export function AuthorizationPanel({ state, actions }: AuthorizationPanelProps):
         (can('authorization.memberships.manage') ||
           can('moderation.kick') ||
           can('moderation.ban')) && (
-          <section>
+          <section className={styles.section}>
             <h4>Participants</h4>
             <ul>
               {state.participants.map((participant) => (
@@ -306,6 +307,6 @@ export function AuthorizationPanel({ state, actions }: AuthorizationPanelProps):
             </ul>
           </section>
         )}
-    </section>
+    </div>
   );
 }

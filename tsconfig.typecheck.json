@@ -29,6 +29,7 @@
     "services/**/*.ts",
     "packages/**/*.ts",
     "tests/**/*.ts",
+    "tests/**/*.tsx",
     "*.config.ts"
   ],
   "exclude": ["**/dist/**", "**/.vite/**", "node_modules"]

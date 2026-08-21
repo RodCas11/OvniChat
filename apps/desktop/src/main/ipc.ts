@@ -13,6 +13,7 @@ import {
   type DesktopBookmarkInput,
   type DesktopClientSettings,
   type DesktopClientSettingsPatch,
+  type DesktopE2EScreenshotConfig,
   type DesktopE2ESettingsPersistenceConfig,
   type DesktopE2EVoiceConfig,
   type DesktopIdentity,
@@ -140,6 +141,8 @@ let currentAllowedOrigins: readonly string[] = [];
 let currentRealtimeConfig: DesktopRealtimeConfig = { url: '', iceServers: [] };
 let currentE2EVoiceConfig: DesktopE2EVoiceConfig | undefined;
 let currentE2ESettingsPersistenceConfig: DesktopE2ESettingsPersistenceConfig | undefined;
+// T13.1 screenshot-capture tooling only — see `DesktopE2EScreenshotConfig`'s doc comment.
+let currentE2EScreenshotConfig: DesktopE2EScreenshotConfig | undefined;
 let handlersRegistered = false;
 
 function assertTrustedSender(event: IpcMainInvokeEvent, channel: string): void {
@@ -165,12 +168,15 @@ export function registerIpcHandlers(
   realtimeConfig: DesktopRealtimeConfig,
   e2eVoiceConfig: DesktopE2EVoiceConfig | undefined = undefined,
   e2eSettingsPersistenceConfig: DesktopE2ESettingsPersistenceConfig | undefined = undefined,
+  // T13.1 screenshot-capture tooling only — see `DesktopE2EScreenshotConfig`'s doc comment.
+  e2eScreenshotConfig: DesktopE2EScreenshotConfig | undefined = undefined,
 ): void {
   currentMainWebContents = mainWebContents;
   currentAllowedOrigins = allowedOrigins;
   currentRealtimeConfig = realtimeConfig;
   currentE2EVoiceConfig = e2eVoiceConfig;
   currentE2ESettingsPersistenceConfig = e2eSettingsPersistenceConfig;
+  currentE2EScreenshotConfig = e2eScreenshotConfig;
 
   if (handlersRegistered) return;
   handlersRegistered = true;
@@ -204,6 +210,15 @@ export function registerIpcHandlers(
     (event: IpcMainInvokeEvent): DesktopE2ESettingsPersistenceConfig | undefined => {
       assertTrustedSender(event, IPC_CHANNELS.getE2ESettingsPersistenceConfig);
       return currentE2ESettingsPersistenceConfig;
+    },
+  );
+
+  // T13.1 screenshot-capture tooling only — see `DesktopE2EScreenshotConfig`'s doc comment.
+  ipcMain.handle(
+    IPC_CHANNELS.getE2EScreenshotConfig,
+    (event: IpcMainInvokeEvent): DesktopE2EScreenshotConfig | undefined => {
+      assertTrustedSender(event, IPC_CHANNELS.getE2EScreenshotConfig);
+      return currentE2EScreenshotConfig;
     },
   );
 

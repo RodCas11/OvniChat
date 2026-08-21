@@ -1,0 +1,48 @@
+.bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ovni-space-2);
+  height: 56px;
+  padding: 0 var(--ovni-space-3);
+  flex-shrink: 0;
+  background: var(--ovni-bg-surface-alt);
+  border-top: 1px solid var(--ovni-border);
+}
+
+.identity {
+  display: flex;
+  align-items: center;
+  gap: var(--ovni-space-2);
+  min-width: 0;
+}
+
+.names {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.displayName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--ovni-text-sm);
+  font-weight: 600;
+}
+
+.connectionStatus {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--ovni-text-xs);
+  color: var(--ovni-text-tertiary);
+  text-transform: capitalize;
+}
+
+.controls {
+  display: flex;
+  align-items: center;
+  gap: var(--ovni-space-1);
+  flex-shrink: 0;
+}

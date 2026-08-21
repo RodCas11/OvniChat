@@ -177,6 +177,23 @@ const desktopConfigSchema = z.object({
   // T11: only meaningful alongside the flag above — see
   // `DesktopE2ESettingsPersistenceConfig.write`'s doc comment.
   DISCO_VOADOR_E2E_SETTINGS_PERSISTENCE_WRITE: z.enum(['1', '0']).optional(),
+  // T13.1: arms `apps/desktop/scripts/e2e-product-shell-smoke.mjs` — see
+  // `DesktopE2EVoiceConfig.productShellSmoke`'s doc comment. Gated on all four fields being present
+  // (mirrors `autoJoinChannel`'s own presence-gating pattern below) rather than a separate boolean
+  // flag, since a bookmark with no name/address would be meaningless anyway.
+  DISCO_VOADOR_E2E_PSS_BOOKMARK_A_NAME: z.string().min(1).optional(),
+  DISCO_VOADOR_E2E_PSS_BOOKMARK_A_ADDRESS: z.string().min(1).optional(),
+  DISCO_VOADOR_E2E_PSS_BOOKMARK_B_NAME: z.string().min(1).optional(),
+  DISCO_VOADOR_E2E_PSS_BOOKMARK_B_ADDRESS: z.string().min(1).optional(),
+  // T13.1 screenshot-capture tooling only — arms `apps/desktop/scripts/e2e-screenshot-capture.mjs`'s
+  // Home-screen shot (see `DesktopE2EScreenshotConfig`'s doc comment). Gated on all five fields
+  // being present together, mirroring the PSS bookmark fields' own presence-gating pattern above.
+  // Never set by a real user; same `!app.isPackaged` gating applied one layer up in `main/window.ts`.
+  DISCO_VOADOR_E2E_SCREENSHOT_DISPLAY_NAME: z.string().min(1).max(32).optional(),
+  DISCO_VOADOR_E2E_SCREENSHOT_BOOKMARK_A_NAME: z.string().min(1).optional(),
+  DISCO_VOADOR_E2E_SCREENSHOT_BOOKMARK_A_ADDRESS: z.string().min(1).optional(),
+  DISCO_VOADOR_E2E_SCREENSHOT_BOOKMARK_B_NAME: z.string().min(1).optional(),
+  DISCO_VOADOR_E2E_SCREENSHOT_BOOKMARK_B_ADDRESS: z.string().min(1).optional(),
 });
 
 export interface DesktopConfig {
@@ -202,12 +219,29 @@ export interface DesktopConfig {
         readonly redeemToken: string | undefined;
         readonly autoChatSendServerBody: string | undefined;
         readonly autoChatSendChannelBody: string | undefined;
+        // T13.1 — see `DesktopE2EVoiceConfig.productShellSmoke`'s doc comment.
+        readonly productShellSmoke:
+          | {
+              readonly bookmarkA: { readonly displayName: string; readonly serverAddress: string };
+              readonly bookmarkB: { readonly displayName: string; readonly serverAddress: string };
+            }
+          | undefined;
       }
     | undefined;
   // T11 — see `DesktopE2ESettingsPersistenceConfig`'s doc comment; `undefined` unless
   // `DISCO_VOADOR_E2E_SETTINGS_PERSISTENCE=1`, mirroring `e2eVoiceAutoJoin`'s own presence-gating
   // shape exactly.
   readonly e2eSettingsPersistence: { readonly write: boolean } | undefined;
+  // T13.1 screenshot-capture tooling only — see `DesktopE2EScreenshotConfig`'s doc comment in
+  // `shared/ipc-contract.ts`. `undefined` unless all five `DISCO_VOADOR_E2E_SCREENSHOT_*` fields are
+  // set, mirroring `productShellSmoke`'s own all-or-nothing presence gate above.
+  readonly e2eScreenshot:
+    | {
+        readonly displayName: string;
+        readonly bookmarkA: { readonly displayName: string; readonly serverAddress: string };
+        readonly bookmarkB: { readonly displayName: string; readonly serverAddress: string };
+      }
+    | undefined;
 }
 
 export function loadDesktopConfig(
@@ -241,11 +275,45 @@ export function loadDesktopConfig(
           redeemToken: parsed.DISCO_VOADOR_E2E_REDEEM_TOKEN,
           autoChatSendServerBody: parsed.DISCO_VOADOR_E2E_CHAT_SEND_SERVER,
           autoChatSendChannelBody: parsed.DISCO_VOADOR_E2E_CHAT_SEND_CHANNEL,
+          productShellSmoke:
+            parsed.DISCO_VOADOR_E2E_PSS_BOOKMARK_A_NAME &&
+            parsed.DISCO_VOADOR_E2E_PSS_BOOKMARK_A_ADDRESS &&
+            parsed.DISCO_VOADOR_E2E_PSS_BOOKMARK_B_NAME &&
+            parsed.DISCO_VOADOR_E2E_PSS_BOOKMARK_B_ADDRESS
+              ? {
+                  bookmarkA: {
+                    displayName: parsed.DISCO_VOADOR_E2E_PSS_BOOKMARK_A_NAME,
+                    serverAddress: parsed.DISCO_VOADOR_E2E_PSS_BOOKMARK_A_ADDRESS,
+                  },
+                  bookmarkB: {
+                    displayName: parsed.DISCO_VOADOR_E2E_PSS_BOOKMARK_B_NAME,
+                    serverAddress: parsed.DISCO_VOADOR_E2E_PSS_BOOKMARK_B_ADDRESS,
+                  },
+                }
+              : undefined,
         }
       : undefined,
     e2eSettingsPersistence:
       parsed.DISCO_VOADOR_E2E_SETTINGS_PERSISTENCE === '1'
         ? { write: parsed.DISCO_VOADOR_E2E_SETTINGS_PERSISTENCE_WRITE === '1' }
+        : undefined,
+    e2eScreenshot:
+      parsed.DISCO_VOADOR_E2E_SCREENSHOT_DISPLAY_NAME &&
+      parsed.DISCO_VOADOR_E2E_SCREENSHOT_BOOKMARK_A_NAME &&
+      parsed.DISCO_VOADOR_E2E_SCREENSHOT_BOOKMARK_A_ADDRESS &&
+      parsed.DISCO_VOADOR_E2E_SCREENSHOT_BOOKMARK_B_NAME &&
+      parsed.DISCO_VOADOR_E2E_SCREENSHOT_BOOKMARK_B_ADDRESS
+        ? {
+            displayName: parsed.DISCO_VOADOR_E2E_SCREENSHOT_DISPLAY_NAME,
+            bookmarkA: {
+              displayName: parsed.DISCO_VOADOR_E2E_SCREENSHOT_BOOKMARK_A_NAME,
+              serverAddress: parsed.DISCO_VOADOR_E2E_SCREENSHOT_BOOKMARK_A_ADDRESS,
+            },
+            bookmarkB: {
+              displayName: parsed.DISCO_VOADOR_E2E_SCREENSHOT_BOOKMARK_B_NAME,
+              serverAddress: parsed.DISCO_VOADOR_E2E_SCREENSHOT_BOOKMARK_B_ADDRESS,
+            },
+          }
         : undefined,
   };
 }

@@ -1,0 +1,95 @@
+/**
+ * T13.1 — OvniChat's design tokens. Dark, modern, gamer-oriented surfaces with green used
+ * deliberately as a sparing accent (active selection, positive/connected state, primary actions) —
+ * never a dominant surface color. Comfortable Discord-like density, not TeamSpeak-dense.
+ *
+ * No web fonts, no CDN assets — everything here is a plain CSS custom property consumed by
+ * CSS Modules throughout `apps/desktop/src/renderer/`. Values are a deliberate starting point, not
+ * a spec to protect at all costs — tune for genuine visual correctness, keep the underlying
+ * philosophy (dark neutral surfaces, sparing green accent, no neon/Matrix aesthetic).
+ */
+:root {
+  /* Surfaces (near-black graphite base, lightening slightly for hover/selected) */
+  --ovni-bg-base: #0f1113;
+  --ovni-bg-surface: #16181c;
+  --ovni-bg-surface-alt: #1c1f24;
+  --ovni-bg-hover: #22262c;
+  --ovni-bg-selected: #262b31;
+  --ovni-border: #2a2e35;
+
+  /* Text */
+  --ovni-text-primary: #e9edf1;
+  --ovni-text-secondary: #9aa3ad;
+  --ovni-text-tertiary: #6b7280;
+
+  /* Accent — OvniChat green, used sparingly (active server, selected/positive accents, connected
+     state, primary CTA) — never as a dominant surface fill. */
+  --ovni-accent: #3ecf6e;
+  --ovni-accent-hover: #35b862;
+  --ovni-accent-fg: #06170d;
+
+  /* Semantic */
+  --ovni-danger: #e5484d;
+  --ovni-danger-hover: #cf4247;
+  --ovni-warning: #e8b339;
+  --ovni-focus-ring: #3ecf6e;
+
+  /* Spacing (4px base scale) */
+  --ovni-space-1: 4px;
+  --ovni-space-2: 8px;
+  --ovni-space-3: 12px;
+  --ovni-space-4: 16px;
+  --ovni-space-5: 20px;
+  --ovni-space-6: 24px;
+  --ovni-space-8: 32px;
+  --ovni-space-10: 40px;
+
+  /* Radius */
+  --ovni-radius-sm: 6px;
+  --ovni-radius-md: 10px;
+  --ovni-radius-lg: 14px;
+  --ovni-radius-full: 9999px;
+
+  /* Typography — system-ui stack, matches this app's pre-existing choice in index.html; no webfonts,
+     no runtime network dependency. */
+  --ovni-font-family:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --ovni-text-xs: 11px;
+  --ovni-text-sm: 12px;
+  --ovni-text-base: 14px;
+  --ovni-text-md: 15px;
+  --ovni-text-lg: 16px;
+  --ovni-text-xl: 20px;
+  --ovni-text-2xl: 24px;
+
+  /* Elevation — subtle only. This app does real-time WebRTC media; heavy blur/backdrop-filter
+     anywhere in the UI would compete with video/screen-share/audio for GPU budget, so shadows stay
+     simple box-shadows, never `backdrop-filter`. */
+  --ovni-shadow-md: 0 4px 12px rgba(0, 0, 0, 0.35);
+  --ovni-shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.45);
+
+  /* Z-index layers */
+  --ovni-z-dropdown: 100;
+  --ovni-z-modal: 200;
+  --ovni-z-toast: 300;
+  --ovni-z-tooltip: 400;
+
+  /* Transitions — subtle, never gratuitous */
+  --ovni-transition-fast: 100ms ease;
+  --ovni-transition-base: 150ms ease;
+
+  /* Panel sizing */
+  --ovni-rail-width: 72px;
+  --ovni-sidebar-width: 260px;
+  --ovni-member-panel-width: 240px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

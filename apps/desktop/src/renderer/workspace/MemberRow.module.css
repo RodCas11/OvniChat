@@ -1,0 +1,25 @@
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--ovni-space-2);
+  padding: var(--ovni-space-1) var(--ovni-space-2);
+  list-style: none;
+}
+
+.name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--ovni-text-sm);
+  color: var(--ovni-text-secondary);
+}
+
+.you {
+  color: var(--ovni-text-tertiary);
+}
+
+.badgeSlot {
+  width: 0;
+}

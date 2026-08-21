@@ -1,0 +1,73 @@
+.container {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ovni-space-6);
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ovni-space-3);
+}
+
+.sectionTitle {
+  margin: 0;
+  padding-bottom: var(--ovni-space-2);
+  border-bottom: 1px solid var(--ovni-border);
+  font-size: var(--ovni-text-md);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ovni-space-1);
+  font-size: var(--ovni-text-sm);
+  color: var(--ovni-text-secondary);
+}
+
+.field input,
+.field select {
+  height: 34px;
+  padding: 0 var(--ovni-space-3);
+  border: 1px solid var(--ovni-border);
+  border-radius: var(--ovni-radius-md);
+  background: var(--ovni-bg-base);
+  color: var(--ovni-text-primary);
+}
+
+.checkboxField {
+  display: flex;
+  align-items: center;
+  gap: var(--ovni-space-2);
+  font-size: var(--ovni-text-sm);
+}
+
+.hint {
+  margin: 0;
+  color: var(--ovni-text-tertiary);
+  font-size: var(--ovni-text-xs);
+}
+
+.diagnostics {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--ovni-space-1) var(--ovni-space-3);
+  margin: 0;
+  font-size: var(--ovni-text-sm);
+  color: var(--ovni-text-secondary);
+}
+
+.diagnostics dt {
+  font-weight: 600;
+}
+
+.diagnostics dd {
+  margin: 0;
+}
+
+.notImplemented {
+  margin: 0;
+  padding-left: var(--ovni-space-5);
+  color: var(--ovni-text-tertiary);
+  font-size: var(--ovni-text-sm);
+}

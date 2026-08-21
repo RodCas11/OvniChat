@@ -1,0 +1,33 @@
+.container {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ovni-space-4);
+}
+
+.redeemForm {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--ovni-space-2);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ovni-space-1);
+  font-size: var(--ovni-text-sm);
+  color: var(--ovni-text-secondary);
+}
+
+.field input {
+  height: 34px;
+  padding: 0 var(--ovni-space-3);
+  border: 1px solid var(--ovni-border);
+  border-radius: var(--ovni-radius-md);
+  background: var(--ovni-bg-base);
+  color: var(--ovni-text-primary);
+}
+
+.section {
+  padding-top: var(--ovni-space-3);
+  border-top: 1px solid var(--ovni-border);
+}
