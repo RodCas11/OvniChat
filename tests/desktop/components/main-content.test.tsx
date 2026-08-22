@@ -21,9 +21,9 @@ describe('MainContent (T13.1 — no stale per-thread state on selection change)'
   it('clears an unsent composer draft when switching from one channel to another', () => {
     const state = createVoiceState({
       myPermissions: ['chat.channel.send'],
-      channels: [
-        createChannel({ channelId: 'general', name: 'General' }),
-        createChannel({ channelId: 'games', name: 'Games' }),
+      channelTree: [
+        createChannel({ nodeId: 'general', name: 'General' }),
+        createChannel({ nodeId: 'games', name: 'Games' }),
       ],
     });
     const actions = createVoiceActions();
@@ -32,7 +32,7 @@ describe('MainContent (T13.1 — no stale per-thread state on selection change)'
       <MainContent
         state={state}
         actions={actions}
-        channels={state.channels}
+        channelTree={state.channelTree}
         selectedChatTarget={{ scope: 'channel', channelId: 'general' }}
         onOpenAuthorization={vi.fn()}
       />,
@@ -46,7 +46,7 @@ describe('MainContent (T13.1 — no stale per-thread state on selection change)'
       <MainContent
         state={state}
         actions={actions}
-        channels={state.channels}
+        channelTree={state.channelTree}
         selectedChatTarget={{ scope: 'channel', channelId: 'games' }}
         onOpenAuthorization={vi.fn()}
       />,
@@ -59,7 +59,7 @@ describe('MainContent (T13.1 — no stale per-thread state on selection change)'
   it('clears an unsent composer draft when switching from a channel to Server Chat', () => {
     const state = createVoiceState({
       myPermissions: ['chat.channel.send', 'chat.server.send'],
-      channels: [createChannel({ channelId: 'general', name: 'General' })],
+      channelTree: [createChannel({ nodeId: 'general', name: 'General' })],
     });
     const actions = createVoiceActions();
 
@@ -67,7 +67,7 @@ describe('MainContent (T13.1 — no stale per-thread state on selection change)'
       <MainContent
         state={state}
         actions={actions}
-        channels={state.channels}
+        channelTree={state.channelTree}
         selectedChatTarget={{ scope: 'channel', channelId: 'general' }}
         onOpenAuthorization={vi.fn()}
       />,
@@ -81,7 +81,7 @@ describe('MainContent (T13.1 — no stale per-thread state on selection change)'
       <MainContent
         state={state}
         actions={actions}
-        channels={state.channels}
+        channelTree={state.channelTree}
         selectedChatTarget={{ scope: 'server' }}
         onOpenAuthorization={vi.fn()}
       />,
@@ -92,14 +92,14 @@ describe('MainContent (T13.1 — no stale per-thread state on selection change)'
 
   it('header always makes clear whether Server Chat or a named channel is showing', () => {
     const state = createVoiceState({
-      channels: [createChannel({ channelId: 'general', name: 'General' })],
+      channelTree: [createChannel({ nodeId: 'general', name: 'General' })],
     });
 
     const { rerender } = render(
       <MainContent
         state={state}
         actions={createVoiceActions()}
-        channels={state.channels}
+        channelTree={state.channelTree}
         selectedChatTarget={{ scope: 'server' }}
         onOpenAuthorization={vi.fn()}
       />,
@@ -110,7 +110,7 @@ describe('MainContent (T13.1 — no stale per-thread state on selection change)'
       <MainContent
         state={state}
         actions={createVoiceActions()}
-        channels={state.channels}
+        channelTree={state.channelTree}
         selectedChatTarget={{ scope: 'channel', channelId: 'general' }}
         onOpenAuthorization={vi.fn()}
       />,

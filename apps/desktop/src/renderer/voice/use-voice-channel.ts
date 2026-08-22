@@ -2,8 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import type {
   BanSummary,
+  ChannelNodeAdminView,
+  ChannelNodeView,
   ChatMessageView,
   ChatScope,
+  ErrorCode,
   GroupBadge,
   GroupSummary,
   IceCandidatePayload,
@@ -13,6 +16,9 @@ import type {
   ServerAuthorizationStateMessage,
   ServerAuthorizationTokenCreatedMessage,
   ServerAuthorizationTokenRedeemedMessage,
+  ServerChannelAckMessage,
+  ServerChannelCreatedMessage,
+  ServerChannelEditableNodeMessage,
   ServerChatHistoryPageMessage,
   ServerChatMessageMessage,
   ServerErrorMessage,
@@ -21,12 +27,12 @@ import type {
   ServerVoiceJoinedMessage,
   ServerVoiceParticipantJoinedMessage,
   ServerVoiceParticipantLeftMessage,
+  ServerVoiceRemovedByPolicyMessage,
   ServerWebrtcAnswerMessage,
   ServerWebrtcIceCandidateMessage,
   ServerWebrtcOfferMessage,
   TokenKind,
   TrackSource,
-  VoiceChannelSummary,
 } from '@disco-voador/protocol';
 import {
   acquireCamera,
@@ -55,7 +61,12 @@ import type {
 } from '../../shared/ipc-contract.js';
 import { acquireProcessAudioTrack } from '../media/process-audio-bridge.js';
 import { IpcIdentitySigner } from '../realtime/identity-signer.js';
-import type { RealtimeClient, ServerInfo } from '../realtime/realtime-client.js';
+import type {
+  ChannelUpdatePatch,
+  RealtimeClient,
+  ServerInfo,
+} from '../realtime/realtime-client.js';
+import { channelErrorMessage } from '../workspace/channel-error-copy.js';
 import {
   ReconnectController,
   type ConnectionFailedEvent,
@@ -160,7 +171,15 @@ export interface VoiceChannelState {
    * effect below), so a leftover value can never be shown for a server the client isn't actually
    * connected to anymore. */
   readonly serverInfo: ServerInfo | undefined;
-  readonly channels: readonly VoiceChannelSummary[];
+  /** T13.2 — the flat, already-visibility-filtered channel/category tree the server's `voice:catalog`
+   * sends; a hidden node is simply absent, never present-but-marked-hidden (see `ChannelPort`'s own
+   * privacy guarantee). Every `voice:catalog` message replaces this wholesale (never merges/patches
+   * — see `packages/protocol/src/messages/channels.ts`'s doc comment), so this now updates far more
+   * often than the old fixed `channels` list did (every admin mutation, every group-membership/ban
+   * change that can alter what this connection may see). Components derive a real nested hierarchy
+   * from this flat list via `workspace/channel-tree.ts`'s `buildChannelTree` — never duplicated
+   * per-component. */
+  readonly channelTree: readonly ChannelNodeView[];
   readonly currentChannelId: string | undefined;
   readonly selfParticipantId: string | undefined;
   readonly participants: readonly VoiceParticipantView[];
@@ -265,10 +284,52 @@ export interface VoiceChannelState {
    * `onReconnected` re-requests whichever threads were open before the loss once the connection
    * recovers (see `openChatThreadsBeforeLossRef`). */
   readonly chatThreads: ReadonlyMap<string, ChatThreadState>;
+  /** T13.2 — set whenever the most recent `voice:join` attempt (a real user click, or a T11
+   * reconnect-restore attempt) failed with `CHANNEL_PASSWORD_REQUIRED`/`CHANNEL_PASSWORD_INVALID`,
+   * so the UI can render a focused password dialog for exactly this channel. `undefined` otherwise.
+   * The password itself is never stored here or anywhere else in this state — only ever passed
+   * through `actions.submitChannelPassword` for one retry attempt, then discarded regardless of
+   * outcome (see that action's own doc comment). */
+  readonly channelPasswordPrompt: ChannelPasswordPromptState | undefined;
+  /** T13.2 — a real, non-punitive notice that this connection was force-removed from a voice
+   * channel by a live ACL/group-membership change (`server:voice-removed-by-policy`) — distinct
+   * from `lastError` (which also covers moderation kicks/bans and ordinary request failures) so the
+   * UI can render clearly different copy ("you can no longer access this channel," never "you were
+   * kicked"). Cleared by `actions.dismissChannelAccessRevokedNotice` or the next successful join. */
+  readonly channelAccessRevokedNotice: string | undefined;
+}
+
+/** T13.2 — see `VoiceChannelState.channelPasswordPrompt`'s own doc comment. `isRestore` is `true`
+ * only when this prompt was raised by a T11 reconnect-restore join attempt (never a direct user
+ * click) — `PasswordJoinDialog` renders identical UI either way, but the hook uses this internally to
+ * decide whether `CHANNEL_NOT_FOUND`/`CHANNEL_ACCESS_DENIED` should silently give up instead of
+ * opening this same prompt (see the main connection effect's join-error handling). */
+export interface ChannelPasswordPromptState {
+  readonly channelId: string;
+  readonly isRestore: boolean;
+  readonly submitting: boolean;
+  readonly error: string | undefined;
+}
+
+/** T13.2 — thrown by every promise-returning channel-administration action
+ * (`createCategory`/`updateChannel`/etc.) when the server replies with `server:error` correlated to
+ * that specific request (via `replyTo`) — callers (the admin modals) can inspect `.code` to decide
+ * between `channelErrorMessage(code)`'s centralized copy and a field-specific inline message (e.g.
+ * `CHANNEL_PARENT_INVALID` in a parent picker), never a raw code shown to the user. */
+export class ChannelRequestError extends Error {
+  constructor(
+    readonly code: ErrorCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'ChannelRequestError';
+  }
 }
 
 export interface VoiceChannelActions {
-  join(channelId: string, displayName: string): void;
+  /** `password` is only meaningful against a channel with `hasPassword === true` — never cached
+   * anywhere beyond this one call (see `RealtimeClient.joinVoiceChannel`'s own doc comment). */
+  join(channelId: string, displayName: string, password?: string): void;
   leave(): void;
   /** T11 — stops a pending automatic-reconnect retry (T11 Section 44). A no-op unless
    * `connectionStatus === 'reconnecting'`. Does not unmount this hook/view — the caller's own
@@ -328,6 +389,38 @@ export interface VoiceChannelActions {
    * up for more" (T10 Section 25/26/68). A no-op if a request for this exact thread is already in
    * flight, or if the thread is already known to have no older messages left. */
   loadChatHistory(scope: ChatScope, channelId: string | undefined): void;
+
+  // --- T13.2 channel/category tree administration ---------------------------------------------
+  // Unlike the T9/T10 fire-and-forget actions above, each of these returns a Promise so an admin
+  // modal can `await` it and show a field-specific inline error (e.g. `CHANNEL_PARENT_INVALID` in
+  // a parent picker) instead of only a generic global toast — rejects with `ChannelRequestError`
+  // when the server replies with `server:error` correlated (via `replyTo`) to this specific
+  // request. The server remains the sole authority on whether any of these succeed.
+
+  createCategory(name: string, parentId?: string): Promise<ChannelNodeAdminView>;
+  createVoiceChannel(
+    name: string,
+    parentId?: string,
+    temporary?: boolean,
+  ): Promise<ChannelNodeAdminView>;
+  updateChannel(nodeId: string, patch: ChannelUpdatePatch): Promise<void>;
+  moveChannel(nodeId: string, newParentId: string | undefined): Promise<void>;
+  reorderChannels(parentId: string | undefined, orderedNodeIds: readonly string[]): Promise<void>;
+  deleteChannel(nodeId: string): Promise<void>;
+  setChannelPassword(nodeId: string, password: string): Promise<void>;
+  removeChannelPassword(nodeId: string): Promise<void>;
+  getEditableChannelNode(nodeId: string): Promise<ChannelNodeAdminView>;
+
+  /** Retries the join that raised `state.channelPasswordPrompt`, supplying `password` this time.
+   * A wrong password re-opens the same prompt with an inline error (never silently closes); never
+   * persists the password anywhere beyond this one call. A no-op if no prompt is currently open. */
+  submitChannelPassword(password: string): void;
+  /** Closes `state.channelPasswordPrompt` without retrying — for a user-initiated join, this simply
+   * abandons the attempt; for a T11 reconnect-restore prompt, the remembered channel is also
+   * forgotten (mirrors an explicit `leave()`, since the user chose not to complete the rejoin). */
+  dismissChannelPasswordPrompt(): void;
+  /** Clears `state.channelAccessRevokedNotice` once the user has seen it. */
+  dismissChannelAccessRevokedNotice(): void;
 }
 
 /**
@@ -390,7 +483,7 @@ function toRtcIceCandidateInit(payload: IceCandidatePayload | null): RTCIceCandi
 const INITIAL_STATE: VoiceChannelState = {
   connectionStatus: 'connecting',
   serverInfo: undefined,
-  channels: [],
+  channelTree: [],
   currentChannelId: undefined,
   selfParticipantId: undefined,
   participants: [],
@@ -424,6 +517,8 @@ const INITIAL_STATE: VoiceChannelState = {
   lastCreatedToken: undefined,
   lastRedeemedGroup: undefined,
   chatThreads: new Map(),
+  channelPasswordPrompt: undefined,
+  channelAccessRevokedNotice: undefined,
 };
 
 /**
@@ -462,7 +557,10 @@ export function useVoiceChannel(
   /** T11 — a stable ref to the latest `join` action, so the main effect's `'reconnected'` handler
    * can call it without needing `join` (declared later in this function, via `useCallback`) in its
    * own dependency/closure chain. */
-  const joinRef = useRef<((channelId: string, displayName: string) => void) | undefined>(undefined);
+  const joinRef = useRef<
+    | ((channelId: string, displayName: string, password?: string, isRestore?: boolean) => void)
+    | undefined
+  >(undefined);
   /** T11 — which chat threads were loaded right before the most recent unexpected connection loss,
    * so `'reconnected'` can re-request exactly those from the server (never trusting anything left in
    * memory — T10's own "never the authoritative store" rule applies here too). Populated by the
@@ -552,6 +650,30 @@ export function useVoiceChannel(
    * elsewhere in this hook, applied here because `chatThreads` otherwise has no dedicated ref. */
   const chatThreadsRef = useRef<ReadonlyMap<string, ChatThreadState>>(new Map());
 
+  /** T13.2 — correlates a `client:channel-*` administration request's generated id back to the
+   * Promise an admin modal is awaiting (see `VoiceChannelActions`'s own doc comment on why these
+   * are Promise-returning, unlike the T9/T10 fire-and-forget actions above). Resolved by
+   * `onChannelCreated`/`onChannelAck`/`onChannelEditableNode`; rejected (with a `ChannelRequestError`)
+   * by `onServerError` when a `server:error`'s `replyTo` matches a still-pending entry. */
+  const pendingChannelRequestsRef = useRef(
+    new Map<
+      string,
+      {
+        readonly resolve: (node?: ChannelNodeAdminView) => void;
+        readonly reject: (error: Error) => void;
+      }
+    >(),
+  );
+  /** T13.2 — the most recent in-flight `voice:join` request this hook itself issued (a real user
+   * click, or a T11 reconnect-restore attempt) — `onServerError` reads this to decide whether a
+   * `CHANNEL_*` rejection should open `channelPasswordPrompt`, silently abandon a background
+   * restore, or surface an ordinary `lastError` toast. Cleared once that specific request's
+   * success/failure has been observed (`onJoined`/`onServerError`), never left stale across a
+   * later, unrelated join. */
+  const lastJoinRequestRef = useRef<
+    { readonly id: string; readonly channelId: string; readonly isRestore: boolean } | undefined
+  >(undefined);
+
   /**
    * T11 — loads persisted device/mute-on-launch preferences exactly once, at hook mount, per the
    * task's own "read settings once at hook-mount time for this — don't overengineer a live-sync
@@ -602,6 +724,10 @@ export function useVoiceChannel(
     chatThreadsRef.current = new Map();
     openChatThreadsBeforeLossRef.current = [];
     currentChannelRef.current = undefined;
+    // T13.2 — mirrors the chat-history reset immediately above: a fresh connection starts with no
+    // outstanding channel-admin requests or in-flight join to correlate against.
+    pendingChannelRequestsRef.current = new Map();
+    lastJoinRequestRef.current = undefined;
 
     // T11 — the controller owns exactly one `RealtimeClient` for this whole connection sequence,
     // including every automatic reconnect attempt (see `reconnect-controller.ts`'s doc comment for
@@ -749,6 +875,13 @@ export function useVoiceChannel(
         chatThreadsRef.current = new Map();
         pendingChatHistoryRequestsRef.current = new Map();
         openChatThreadsBeforeLossRef.current = [];
+        // T13.2 — an admin modal awaiting one of these would otherwise hang forever once the
+        // connection it was sent on is gone for good; reject cleanly instead of leaving it pending.
+        for (const pending of pendingChannelRequestsRef.current.values()) {
+          pending.reject(new Error('Disconnected before the server replied.'));
+        }
+        pendingChannelRequestsRef.current = new Map();
+        lastJoinRequestRef.current = undefined;
       }
 
       const connectionStatus: VoiceConnectionStatus =
@@ -815,6 +948,15 @@ export function useVoiceChannel(
       );
       chatThreadsRef.current = new Map();
       pendingChatHistoryRequestsRef.current = new Map();
+      // T13.2 — a request sent on the now-dead socket will never get a reply; reject rather than
+      // leave an admin modal awaiting it hanging until some unrelated later request happens to
+      // reuse the same id space. `currentChannelRef` (the restore target) is deliberately left
+      // untouched — only the dead request bookkeeping is cleared here.
+      for (const pending of pendingChannelRequestsRef.current.values()) {
+        pending.reject(new Error('Connection lost before the server replied.'));
+      }
+      pendingChannelRequestsRef.current = new Map();
+      lastJoinRequestRef.current = undefined;
 
       // Public data only — see `onControllerStateChange`'s identical marker for the full
       // conventions this follows.
@@ -825,6 +967,9 @@ export function useVoiceChannel(
         connectionStatus: 'reconnecting',
         reconnectAttempt: event.attempt,
         connectionError: undefined,
+        // A password prompt tied to the now-dead connection is stale — if the restore attempt
+        // below hits `CHANNEL_PASSWORD_REQUIRED` again once reconnected, it reopens fresh.
+        channelPasswordPrompt: undefined,
         currentChannelId: undefined,
         selfParticipantId: undefined,
         participants: [],
@@ -857,7 +1002,11 @@ export function useVoiceChannel(
      */
     const onReconnected = () => {
       const restore = currentChannelRef.current;
-      if (restore) joinRef.current?.(restore.channelId, restore.displayName);
+      // T13.2 — `isRestore: true` so `onServerError` can tell a background reconciliation attempt
+      // apart from a real user click when this specific request fails (see that handler's own doc
+      // comment for the three-way CHANNEL_NOT_FOUND/CHANNEL_ACCESS_DENIED/CHANNEL_PASSWORD_REQUIRED
+      // handling this enables).
+      if (restore) joinRef.current?.(restore.channelId, restore.displayName, undefined, true);
 
       for (const { scope, channelId } of openChatThreadsBeforeLossRef.current) {
         requestInitialChatHistory(scope, channelId);
@@ -881,8 +1030,30 @@ export function useVoiceChannel(
       console.info(`disco-voador:server-name:${info.serverName}`);
     };
 
+    // T13.2 — every `voice:catalog` replaces the tree wholesale (never merges/patches — see
+    // `ServerVoiceCatalogMessage`'s own doc comment), and now arrives far more often than the old
+    // fixed catalog did (every admin mutation, every group-membership/ban change that can alter
+    // what this connection may see or join), not only once at connect.
     const onCatalog = (message: ServerVoiceCatalogMessage) => {
-      setState((prev) => ({ ...prev, channels: message.channels }));
+      setState((prev) => ({ ...prev, channelTree: message.nodes }));
+      // T13.2 E2E hook only — public data already sent to this connection over the wire (never a
+      // secret; `channelNodeSchema` itself already omits `visibilityGroupIds`/`joinGroupIds`/
+      // `manageGroupIds`/the password verifier). Added specifically for
+      // `apps/desktop/scripts/e2e-channel-admin-smoke.mjs`, which otherwise has no way to observe
+      // this connection's *actual received* channel tree (id/name/parentId) without scraping the
+      // DOM — mirrors `disco-voador:my-groups:...`'s existing "log the small, already-public,
+      // already-received wire payload as a diagnostic marker" convention exactly. Emits the whole
+      // tree (not just ids) because this script also needs to observe a live rename/reparent of an
+      // already-visible node, which a bare id list could never reveal.
+      console.info(
+        `disco-voador:voice-catalog-nodes:${JSON.stringify(
+          message.nodes.map((node) => ({
+            nodeId: node.nodeId,
+            name: node.name,
+            parentId: node.parentId,
+          })),
+        )}`,
+      );
     };
 
     const onJoined = (message: ServerVoiceJoinedMessage) => {
@@ -935,6 +1106,69 @@ export function useVoiceChannel(
         localScreenStream: undefined,
         screenShareAudioActive: false,
       }));
+    };
+
+    // T13.2 — mirrors `onLeft`'s cleanup exactly (this connection's voice membership just ended,
+    // server-side, same as any ordinary leave). The one difference: this was never initiated by
+    // the client's own `leave()` action, so the T11 reconnect-restore target must be forgotten here
+    // too (never silently restored into a channel whose access was just revoked), and the reason is
+    // surfaced via `channelAccessRevokedNotice` — distinct from `lastError` (which also covers
+    // moderation kicks/bans and ordinary request failures) — so the UI can show accurate,
+    // non-punitive copy ("you can no longer access this channel," never "you were kicked").
+    const onVoiceRemovedByPolicy = (message: ServerVoiceRemovedByPolicyMessage) => {
+      currentChannelRef.current = undefined;
+      for (const id of currentParticipantIds) transport.removeParticipant(id);
+      currentParticipantIds = new Set();
+      reconciler.reset();
+      releaseMicrophone();
+      releaseCamera();
+      releaseScreen();
+
+      setState((prev) => ({
+        ...prev,
+        currentChannelId: undefined,
+        selfParticipantId: undefined,
+        participants: [],
+        ...createEmptyRemoteMediaStreamsState(),
+        cameraEnabled: false,
+        localCameraStream: undefined,
+        screenSharingState: 'idle',
+        localScreenStream: undefined,
+        screenShareAudioActive: false,
+        channelAccessRevokedNotice: 'You can no longer access this channel.',
+      }));
+      // Public data only (a channel id, never identity/membership content) — lets a future E2E
+      // observe this specific, non-punitive removal path without depending on UI text rendering,
+      // matching `onJoined`'s own `disco-voador:voice-joined:...` marker convention.
+      console.info(`disco-voador:voice-removed-by-policy:${message.channelId}`);
+    };
+
+    // --- T13.2 channel/category tree administration replies ----------------------------------
+    // Each resolves the Promise `pendingChannelRequestsRef` is holding for this request's `id` —
+    // `onServerError` above handles the rejection side via the same map. A reply with no matching
+    // pending entry (already resolved, or from a request this specific hook instance never sent)
+    // is silently ignored, not an error — mirrors `onChatHistoryPage`'s identical "no pending
+    // entry, drop it" discipline.
+
+    const onChannelCreated = (message: ServerChannelCreatedMessage) => {
+      const pending = pendingChannelRequestsRef.current.get(message.id);
+      if (!pending) return;
+      pendingChannelRequestsRef.current.delete(message.id);
+      pending.resolve(message.node);
+    };
+
+    const onChannelAck = (message: ServerChannelAckMessage) => {
+      const pending = pendingChannelRequestsRef.current.get(message.id);
+      if (!pending) return;
+      pendingChannelRequestsRef.current.delete(message.id);
+      pending.resolve(undefined);
+    };
+
+    const onChannelEditableNode = (message: ServerChannelEditableNodeMessage) => {
+      const pending = pendingChannelRequestsRef.current.get(message.id);
+      if (!pending) return;
+      pendingChannelRequestsRef.current.delete(message.id);
+      pending.resolve(message.node);
     };
 
     const onParticipantJoined = (message: ServerVoiceParticipantJoinedMessage) => {
@@ -992,6 +1226,77 @@ export function useVoiceChannel(
       // used by `apps/desktop/scripts/e2e-authorization.mjs` to observe admission-time rejections
       // (BANNED, INVITE_REQUIRED) that close the connection before any other T9 state exists yet.
       console.info(`disco-voador:server-error:${message.code}`);
+
+      // T13.2 — a channel-administration request awaiting its own Promise settlement.
+      const pendingChannelRequest = message.replyTo
+        ? pendingChannelRequestsRef.current.get(message.replyTo)
+        : undefined;
+      if (pendingChannelRequest) {
+        pendingChannelRequestsRef.current.delete(message.replyTo as string);
+        pendingChannelRequest.reject(
+          new ChannelRequestError(
+            message.code,
+            channelErrorMessage(message.code) ?? message.message,
+          ),
+        );
+        return;
+      }
+
+      // T13.2 — a `voice:join` this hook itself issued (a real user click, or a T11
+      // reconnect-restore attempt) failing with a channel-domain code needs differentiated
+      // handling; every other rejection (groups/tokens/chat/anything else) falls through to the
+      // ordinary generic-toast path below, unchanged from before T13.2.
+      const joinRequest =
+        message.replyTo && lastJoinRequestRef.current?.id === message.replyTo
+          ? lastJoinRequestRef.current
+          : undefined;
+      if (joinRequest) {
+        lastJoinRequestRef.current = undefined;
+
+        if (
+          message.code === 'CHANNEL_PASSWORD_REQUIRED' ||
+          message.code === 'CHANNEL_PASSWORD_INVALID'
+        ) {
+          setState((prev) => ({
+            ...prev,
+            joining: false,
+            channelPasswordPrompt: {
+              channelId: joinRequest.channelId,
+              isRestore: joinRequest.isRestore,
+              submitting: false,
+              error:
+                message.code === 'CHANNEL_PASSWORD_INVALID'
+                  ? (channelErrorMessage(message.code) ?? message.message)
+                  : undefined,
+            },
+          }));
+          return;
+        }
+
+        if (
+          joinRequest.isRestore &&
+          (message.code === 'CHANNEL_NOT_FOUND' || message.code === 'CHANNEL_ACCESS_DENIED')
+        ) {
+          // A background reconnect-restore attempt found its remembered channel deleted, hidden,
+          // or no longer joinable — silently give up (no error toast for something the user never
+          // directly asked for just now). `join()` unconditionally set `currentChannelRef` to this
+          // now-known-invalid target before sending the request; forget it here so a *later*
+          // reconnect never retries the same doomed restore again.
+          currentChannelRef.current = undefined;
+          setState((prev) => ({ ...prev, joining: false }));
+          return;
+        }
+
+        // Every other channel-domain code (CHANNEL_FULL, CHANNEL_ACCESS_DENIED/CHANNEL_NOT_FOUND
+        // on a *user-initiated* join, CHANNEL_PASSWORD_RATE_LIMITED) — an ordinary, visible toast.
+        setState((prev) => ({
+          ...prev,
+          joining: false,
+          lastError: channelErrorMessage(message.code) ?? message.message,
+        }));
+        return;
+      }
+
       setState((prev) => ({ ...prev, lastError: message.message, joining: false }));
     };
 
@@ -1176,6 +1481,10 @@ export function useVoiceChannel(
     client.on('authorizationBans', onAuthorizationBans);
     client.on('chatMessage', onChatMessage);
     client.on('chatHistoryPage', onChatHistoryPage);
+    client.on('voiceRemovedByPolicy', onVoiceRemovedByPolicy);
+    client.on('channelCreated', onChannelCreated);
+    client.on('channelAck', onChannelAck);
+    client.on('channelEditableNode', onChannelEditableNode);
     transport.on('remoteTrack', onRemoteTrack);
     transport.on('localTrackMid', onLocalTrackMid);
     transport.on('peerStateChanged', onPeerStateChanged);
@@ -1206,6 +1515,10 @@ export function useVoiceChannel(
       client.off('authorizationBans', onAuthorizationBans);
       client.off('chatMessage', onChatMessage);
       client.off('chatHistoryPage', onChatHistoryPage);
+      client.off('voiceRemovedByPolicy', onVoiceRemovedByPolicy);
+      client.off('channelCreated', onChannelCreated);
+      client.off('channelAck', onChannelAck);
+      client.off('channelEditableNode', onChannelEditableNode);
       transport.off('remoteTrack', onRemoteTrack);
       transport.off('localTrackMid', onLocalTrackMid);
       transport.off('peerStateChanged', onPeerStateChanged);
@@ -1287,62 +1600,74 @@ export function useVoiceChannel(
     });
   }
 
-  const join = useCallback((channelId: string, displayName: string) => {
-    const client = clientRef.current;
-    const transport = transportRef.current;
-    if (!client || !transport) return;
+  const join = useCallback(
+    (channelId: string, displayName: string, password?: string, isRestore = false) => {
+      const client = clientRef.current;
+      const transport = transportRef.current;
+      if (!client || !transport) return;
 
-    // T11 — remembered so an unexpected connection loss can restore this same channel/name once
-    // reconnected (T11 Section 48/50). Set here, not only on confirmed `onJoined` success, since a
-    // join that was still in flight when the connection dropped is still worth restoring. Cleared
-    // only by an explicit `leave()`, never by the reconnect cycle itself.
-    currentChannelRef.current = { channelId, displayName };
+      // T11 — remembered so an unexpected connection loss can restore this same channel/name once
+      // reconnected (T11 Section 48/50). Set here, not only on confirmed `onJoined` success, since a
+      // join that was still in flight when the connection dropped is still worth restoring. Cleared
+      // only by an explicit `leave()`, never by the reconnect cycle itself (T13.2: also cleared by
+      // `onServerError` specifically when a *restore* attempt finds its target deleted/hidden — see
+      // that handler's own doc comment).
+      currentChannelRef.current = { channelId, displayName };
 
-    setState((prev) => ({ ...prev, joining: true, lastError: undefined, micError: undefined }));
+      setState((prev) => ({
+        ...prev,
+        joining: true,
+        lastError: undefined,
+        micError: undefined,
+        channelPasswordPrompt: undefined,
+      }));
 
-    void (async () => {
-      if (!microphoneRef.current) {
-        const generation = ++microphoneGenerationRef.current;
-        const preferredDeviceId = preferredMicDeviceIdRef.current;
-        try {
-          const microphone = await acquireMicrophone(deviceIdConstraint(preferredDeviceId));
-          if (
-            transportRef.current !== transport ||
-            microphoneGenerationRef.current !== generation
-          ) {
-            // This effect's connection/transport was torn down (unmount, or `realtimeConfig`
-            // changed), or a newer acquisition (a `switchMicrophone` call) superseded this one,
-            // while `getUserMedia` was pending. Stop the device immediately instead of leaking the
-            // hardware microphone or publishing a track nobody asked for anymore.
-            microphone.stop();
+      void (async () => {
+        if (!microphoneRef.current) {
+          const generation = ++microphoneGenerationRef.current;
+          const preferredDeviceId = preferredMicDeviceIdRef.current;
+          try {
+            const microphone = await acquireMicrophone(deviceIdConstraint(preferredDeviceId));
+            if (
+              transportRef.current !== transport ||
+              microphoneGenerationRef.current !== generation
+            ) {
+              // This effect's connection/transport was torn down (unmount, or `realtimeConfig`
+              // changed), or a newer acquisition (a `switchMicrophone` call) superseded this one,
+              // while `getUserMedia` was pending. Stop the device immediately instead of leaking the
+              // hardware microphone or publishing a track nobody asked for anymore.
+              microphone.stop();
+              return;
+            }
+            microphone.setMuted(mutedRef.current);
+            microphoneRef.current = microphone;
+            attachMicrophoneUnexpectedEndedHandler(microphone);
+            transport.publishTrack(microphone.track);
+            const usingFallback = resolveDeviceFallback(
+              preferredDeviceId,
+              microphone.track.getSettings().deviceId,
+            );
+            setState((prev) => ({
+              ...prev,
+              localMicrophoneStream: microphone.stream,
+              micUsingFallback: usingFallback,
+              micDisconnected: false,
+            }));
+          } catch (error) {
+            const message =
+              error instanceof MicrophoneAccessError ? error.message : 'Microphone access failed';
+            console.error('voice: microphone acquisition failed', message, error);
+            setState((prev) => ({ ...prev, micError: message, joining: false }));
             return;
           }
-          microphone.setMuted(mutedRef.current);
-          microphoneRef.current = microphone;
-          attachMicrophoneUnexpectedEndedHandler(microphone);
-          transport.publishTrack(microphone.track);
-          const usingFallback = resolveDeviceFallback(
-            preferredDeviceId,
-            microphone.track.getSettings().deviceId,
-          );
-          setState((prev) => ({
-            ...prev,
-            localMicrophoneStream: microphone.stream,
-            micUsingFallback: usingFallback,
-            micDisconnected: false,
-          }));
-        } catch (error) {
-          const message =
-            error instanceof MicrophoneAccessError ? error.message : 'Microphone access failed';
-          console.error('voice: microphone acquisition failed', message, error);
-          setState((prev) => ({ ...prev, micError: message, joining: false }));
-          return;
         }
-      }
 
-      client.joinVoiceChannel(channelId, displayName);
-    })();
-  }, []);
+        const requestId = client.joinVoiceChannel(channelId, displayName, password);
+        lastJoinRequestRef.current = { id: requestId, channelId, isRestore };
+      })();
+    },
+    [],
+  );
 
   const leave = useCallback(() => {
     // T11 — an explicit leave must never be "restored" after a later reconnect (Section 49).
@@ -1838,6 +2163,122 @@ export function useVoiceChannel(
     setState((prev) => ({ ...prev, chatThreads: next }));
   }, []);
 
+  // --- T13.2 channel/category tree administration ---------------------------------------------
+  // Each pairs a `RealtimeClient` call (which returns the generated request id) with a Promise
+  // registered in `pendingChannelRequestsRef` under that same id — `onChannelCreated`/
+  // `onChannelAck`/`onChannelEditableNode` resolve it, `onServerError` rejects it with a
+  // `ChannelRequestError`. The server is the sole authority on whether any of these succeed; this
+  // is purely request/response plumbing, never a client-side decision.
+
+  function registerPendingChannelRequest(
+    requestId: string,
+  ): Promise<ChannelNodeAdminView | undefined> {
+    return new Promise((resolve, reject) => {
+      pendingChannelRequestsRef.current.set(requestId, { resolve, reject });
+    });
+  }
+
+  const createCategory = useCallback((name: string, parentId?: string) => {
+    const client = clientRef.current;
+    if (!client) return Promise.reject(new Error('Not connected.'));
+    const requestId = client.createChannelCategory(name, parentId);
+    return registerPendingChannelRequest(requestId) as Promise<ChannelNodeAdminView>;
+  }, []);
+
+  const createVoiceChannel = useCallback((name: string, parentId?: string, temporary?: boolean) => {
+    const client = clientRef.current;
+    if (!client) return Promise.reject(new Error('Not connected.'));
+    const requestId = client.createVoiceChannelNode(name, parentId, temporary);
+    return registerPendingChannelRequest(requestId) as Promise<ChannelNodeAdminView>;
+  }, []);
+
+  const updateChannel = useCallback((nodeId: string, patch: ChannelUpdatePatch) => {
+    const client = clientRef.current;
+    if (!client) return Promise.reject(new Error('Not connected.'));
+    const requestId = client.updateChannelNode(nodeId, patch);
+    return registerPendingChannelRequest(requestId).then(() => undefined);
+  }, []);
+
+  const moveChannel = useCallback((nodeId: string, newParentId: string | undefined) => {
+    const client = clientRef.current;
+    if (!client) return Promise.reject(new Error('Not connected.'));
+    const requestId = client.moveChannelNode(nodeId, newParentId);
+    return registerPendingChannelRequest(requestId).then(() => undefined);
+  }, []);
+
+  const reorderChannels = useCallback(
+    (parentId: string | undefined, orderedNodeIds: readonly string[]) => {
+      const client = clientRef.current;
+      if (!client) return Promise.reject(new Error('Not connected.'));
+      const requestId = client.reorderChannelNodes(parentId, orderedNodeIds);
+      return registerPendingChannelRequest(requestId).then(() => undefined);
+    },
+    [],
+  );
+
+  const deleteChannel = useCallback((nodeId: string) => {
+    const client = clientRef.current;
+    if (!client) return Promise.reject(new Error('Not connected.'));
+    const requestId = client.deleteChannelNode(nodeId);
+    return registerPendingChannelRequest(requestId).then(() => undefined);
+  }, []);
+
+  const setChannelPassword = useCallback((nodeId: string, password: string) => {
+    const client = clientRef.current;
+    if (!client) return Promise.reject(new Error('Not connected.'));
+    const requestId = client.setChannelPassword(nodeId, password);
+    return registerPendingChannelRequest(requestId).then(() => undefined);
+  }, []);
+
+  const removeChannelPassword = useCallback((nodeId: string) => {
+    const client = clientRef.current;
+    if (!client) return Promise.reject(new Error('Not connected.'));
+    const requestId = client.removeChannelPassword(nodeId);
+    return registerPendingChannelRequest(requestId).then(() => undefined);
+  }, []);
+
+  const getEditableChannelNode = useCallback((nodeId: string) => {
+    const client = clientRef.current;
+    if (!client) return Promise.reject(new Error('Not connected.'));
+    const requestId = client.getEditableChannelNode(nodeId);
+    return registerPendingChannelRequest(requestId) as Promise<ChannelNodeAdminView>;
+  }, []);
+
+  /** Retries the join that raised `state.channelPasswordPrompt`. Reuses `currentChannelRef`'s
+   * remembered `displayName` — the same one the original attempt used, whether that attempt was a
+   * user click or a T11 restore — so this never has to ask the caller to re-supply it. The password
+   * itself flows straight into `join()` and is never stored in this hook's own state at any point. */
+  const submitChannelPassword = useCallback(
+    (password: string) => {
+      setState((prev) => {
+        const prompt = prev.channelPasswordPrompt;
+        if (!prompt) return prev;
+        const displayName = currentChannelRef.current?.displayName ?? '';
+        join(prompt.channelId, displayName, password, prompt.isRestore);
+        return {
+          ...prev,
+          channelPasswordPrompt: { ...prompt, submitting: true, error: undefined },
+        };
+      });
+    },
+    [join],
+  );
+
+  const dismissChannelPasswordPrompt = useCallback(() => {
+    setState((prev) => {
+      if (!prev.channelPasswordPrompt) return prev;
+      // Mirrors `leave()`'s own "an explicit dismissal must never be silently restored later" rule
+      // — abandoning either a user-initiated or a restore-triggered password prompt means the user
+      // does not want to be in this channel right now.
+      currentChannelRef.current = undefined;
+      return { ...prev, channelPasswordPrompt: undefined };
+    });
+  }, []);
+
+  const dismissChannelAccessRevokedNotice = useCallback(() => {
+    setState((prev) => ({ ...prev, channelAccessRevokedNotice: undefined }));
+  }, []);
+
   // Memoized so callers holding `actions` in a `useEffect` dependency array (e.g. the E2E
   // auto-camera-off timer in `VoiceChannelView.tsx`) get a stable reference instead of one that
   // changes on every render — each individual action is already a `useCallback` with empty deps,
@@ -1869,6 +2310,18 @@ export function useVoiceChannel(
       listBans,
       sendChatMessage,
       loadChatHistory,
+      createCategory,
+      createVoiceChannel,
+      updateChannel,
+      moveChannel,
+      reorderChannels,
+      deleteChannel,
+      setChannelPassword,
+      removeChannelPassword,
+      getEditableChannelNode,
+      submitChannelPassword,
+      dismissChannelPasswordPrompt,
+      dismissChannelAccessRevokedNotice,
     }),
     [
       join,
@@ -1896,6 +2349,18 @@ export function useVoiceChannel(
       listBans,
       sendChatMessage,
       loadChatHistory,
+      createCategory,
+      createVoiceChannel,
+      updateChannel,
+      moveChannel,
+      reorderChannels,
+      deleteChannel,
+      setChannelPassword,
+      removeChannelPassword,
+      getEditableChannelNode,
+      submitChannelPassword,
+      dismissChannelPasswordPrompt,
+      dismissChannelAccessRevokedNotice,
     ],
   );
 

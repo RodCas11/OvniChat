@@ -40,6 +40,7 @@ function testConfig(overrides: Partial<DedicatedServerConfig> = {}): DedicatedSe
       rateLimit: { maxMessages: 100, windowMs: 10_000 },
       chatSendRateLimit: { maxMessages: 100, windowMs: 10_000 },
       chatHistoryRateLimit: { maxMessages: 100, windowMs: 10_000 },
+      channelPasswordRateLimit: { maxMessages: 100, windowMs: 10_000 },
       logLevel: 'error',
     },
     voiceChannels: [{ channelId: 'general', name: 'General' }],
@@ -168,7 +169,7 @@ describe('Dedicated Server — real network integration', () => {
     expect(typeof serverHello.identityId).toBe('string');
     expect(catalog).toMatchObject({
       type: 'voice:catalog',
-      channels: [{ channelId: 'lobby', name: 'Lobby' }],
+      nodes: [{ nodeId: 'lobby', name: 'Lobby' }],
     });
   });
 
@@ -203,8 +204,8 @@ describe('Dedicated Server — real network integration', () => {
     expect(helloA.serverName).toBe('Server A');
     expect(helloB.serverName).toBe('Server B');
     expect(helloA.connectionId).not.toBe(helloB.connectionId);
-    expect((catalogA.channels as unknown[])[0]).toMatchObject({ channelId: 'a-channel' });
-    expect((catalogB.channels as unknown[])[0]).toMatchObject({ channelId: 'b-channel' });
+    expect((catalogA.nodes as unknown[])[0]).toMatchObject({ nodeId: 'a-channel' });
+    expect((catalogB.nodes as unknown[])[0]).toMatchObject({ nodeId: 'b-channel' });
 
     // A participant joining Server A's channel must never be visible/reachable from Server B.
     const joinedA = nextMessage(wsA);
@@ -1048,6 +1049,7 @@ describe('Dedicated Server — T10 persistent text chat (real network)', () => {
       rateLimit: { maxMessages: 100, windowMs: 10_000 },
       chatSendRateLimit: { maxMessages: 100, windowMs: 10_000 },
       chatHistoryRateLimit: { maxMessages: 100, windowMs: 10_000 },
+      channelPasswordRateLimit: { maxMessages: 100, windowMs: 10_000 },
       logLevel: 'error',
       ...overrides,
     };

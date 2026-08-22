@@ -71,6 +71,27 @@ const desktopConfigSchema = z.object({
   // `DISCO_VOADOR_E2E_FAKE_MEDIA`, so a packaged build can never auto-join anything.
   DISCO_VOADOR_E2E_VOICE_AUTO_JOIN_CHANNEL: channelIdSchema.optional(),
   DISCO_VOADOR_E2E_VOICE_DISPLAY_NAME: z.string().min(1).max(32).optional(),
+  // T13.2: attaches a password to the initial auto-join attempt above — the same optional
+  // `voice:join.password` field a real `PasswordJoinDialog` submission drives. Meaningless without
+  // `DISCO_VOADOR_E2E_VOICE_AUTO_JOIN_CHANNEL` also set. See
+  // `apps/desktop/scripts/e2e-channel-admin-smoke.mjs`'s wrong-password/right-password sequence,
+  // which relaunches this same profile with a different value of this field rather than needing a
+  // live in-process retry mechanism (T7's identity, and any group this identity was granted,
+  // persist across a relaunch of the same `--user-data-dir` — see `e2e-authorization.mjs`'s own
+  // proven relaunch technique).
+  DISCO_VOADOR_E2E_VOICE_AUTO_JOIN_PASSWORD: z.string().min(1).max(128).optional(),
+  // T13.2: after the initial auto-join above lands, schedules up to two further *scripted*
+  // `voice:join` attempts against a second channel — real production `actions.join()` calls fired by
+  // a fixed timer (mirroring `DISCO_VOADOR_E2E_VOICE_AUTO_CAMERA_OFF_MS`'s own "config-driven scripted
+  // timer calling a real action" pattern exactly), never a second Electron instance or a DOM click.
+  // Proves a live ACL grant took effect on an *already-connected* connection with no reconnect: the
+  // first scripted attempt fires before `e2e-channel-admin-smoke.mjs`'s admin grants a group, the
+  // second fires after — see that script for the full sequencing. Both attempts target the same
+  // channel; neither carries a password (this scenario's negative-then-positive proof is about join
+  // policy, not password — password is proven separately via the relaunch sequence above).
+  DISCO_VOADOR_E2E_CHANNEL_ADMIN_RETRY_CHANNEL: channelIdSchema.optional(),
+  DISCO_VOADOR_E2E_CHANNEL_ADMIN_RETRY1_AFTER_MS: z.coerce.number().int().positive().optional(),
+  DISCO_VOADOR_E2E_CHANNEL_ADMIN_RETRY2_AFTER_MS: z.coerce.number().int().positive().optional(),
   // T4: automated two-Electron-instance camera smoke test only (see
   // `apps/desktop/scripts/e2e-camera-smoke.mjs`) — after auto-joining voice, also auto-enables the
   // camera with no user interaction. Meaningless without an auto-join channel also configured;
@@ -219,6 +240,15 @@ export interface DesktopConfig {
         readonly redeemToken: string | undefined;
         readonly autoChatSendServerBody: string | undefined;
         readonly autoChatSendChannelBody: string | undefined;
+        // T13.2 — see the schema fields' own doc comments above.
+        readonly autoJoinPassword: string | undefined;
+        readonly channelAdminRetry:
+          | {
+              readonly channelId: string;
+              readonly retry1AfterMs: number;
+              readonly retry2AfterMs: number;
+            }
+          | undefined;
         // T13.1 — see `DesktopE2EVoiceConfig.productShellSmoke`'s doc comment.
         readonly productShellSmoke:
           | {
@@ -275,6 +305,17 @@ export function loadDesktopConfig(
           redeemToken: parsed.DISCO_VOADOR_E2E_REDEEM_TOKEN,
           autoChatSendServerBody: parsed.DISCO_VOADOR_E2E_CHAT_SEND_SERVER,
           autoChatSendChannelBody: parsed.DISCO_VOADOR_E2E_CHAT_SEND_CHANNEL,
+          autoJoinPassword: parsed.DISCO_VOADOR_E2E_VOICE_AUTO_JOIN_PASSWORD,
+          channelAdminRetry:
+            parsed.DISCO_VOADOR_E2E_CHANNEL_ADMIN_RETRY_CHANNEL &&
+            parsed.DISCO_VOADOR_E2E_CHANNEL_ADMIN_RETRY1_AFTER_MS !== undefined &&
+            parsed.DISCO_VOADOR_E2E_CHANNEL_ADMIN_RETRY2_AFTER_MS !== undefined
+              ? {
+                  channelId: parsed.DISCO_VOADOR_E2E_CHANNEL_ADMIN_RETRY_CHANNEL,
+                  retry1AfterMs: parsed.DISCO_VOADOR_E2E_CHANNEL_ADMIN_RETRY1_AFTER_MS,
+                  retry2AfterMs: parsed.DISCO_VOADOR_E2E_CHANNEL_ADMIN_RETRY2_AFTER_MS,
+                }
+              : undefined,
           productShellSmoke:
             parsed.DISCO_VOADOR_E2E_PSS_BOOKMARK_A_NAME &&
             parsed.DISCO_VOADOR_E2E_PSS_BOOKMARK_A_ADDRESS &&

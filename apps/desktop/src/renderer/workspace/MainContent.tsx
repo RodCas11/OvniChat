@@ -1,7 +1,7 @@
 import type { ReactElement } from 'react';
-import { MessageSquare, Shield, Volume2 } from 'lucide-react';
+import { MessageSquare, Settings, Shield, Volume2 } from 'lucide-react';
 
-import type { VoiceChannelSummary } from '@disco-voador/protocol';
+import type { ChannelNodeView } from '@disco-voador/protocol';
 
 import { IconButton } from '../ui/IconButton.js';
 import { LocalCameraPreview } from '../voice/LocalCameraPreview.js';
@@ -17,12 +17,17 @@ import styles from './MainContent.module.css';
 interface MainContentProps {
   readonly state: VoiceChannelState;
   readonly actions: VoiceChannelActions;
-  readonly channels: readonly VoiceChannelSummary[];
+  readonly channelTree: readonly ChannelNodeView[];
   readonly selectedChatTarget: ChatTarget;
   /** Opens the Authorization modal (token redemption +, when permitted, admin sections) — a plain
    * entry point available to every connected user, not an admin-only control itself (the admin
    * sub-sections inside stay gated by `AuthorizationPanel.tsx`'s own real `can()` checks). */
   readonly onOpenAuthorization: () => void;
+  /** T13.2 — opens the new Server Settings shell (Channels/Groups & Permissions/Invites/Bans).
+   * `undefined` (never merely a disabled button) when the caller has determined this identity holds
+   * no relevant capability at all — see `VoiceChannelView.tsx`'s `canOpenServerSettings` — so a Guest
+   * sees zero trace of this icon in the DOM, not a greyed-out one. */
+  readonly onOpenServerSettings?: (() => void) | undefined;
 }
 
 /**
@@ -36,13 +41,14 @@ interface MainContentProps {
 export function MainContent({
   state,
   actions,
-  channels,
+  channelTree,
   selectedChatTarget,
   onOpenAuthorization,
+  onOpenServerSettings,
 }: MainContentProps): ReactElement {
   const channelName =
     selectedChatTarget.scope === 'channel'
-      ? (channels.find((channel) => channel.channelId === selectedChatTarget.channelId)?.name ??
+      ? (channelTree.find((node) => node.nodeId === selectedChatTarget.channelId)?.name ??
         selectedChatTarget.channelId)
       : undefined;
   const isJoinedChannel =
@@ -69,6 +75,16 @@ export function MainContent({
           {selectedChatTarget.scope === 'server' ? 'Server Chat' : `${channelName} — Chat`}
         </span>
         <div className={styles.headerActions}>
+          {onOpenServerSettings && (
+            <IconButton
+              icon={Settings}
+              ariaLabel="Open Server Settings"
+              tooltip="Server Settings"
+              size="small"
+              onClick={onOpenServerSettings}
+              data-testid="open-server-settings"
+            />
+          )}
           <IconButton
             icon={Shield}
             ariaLabel="Open authorization"

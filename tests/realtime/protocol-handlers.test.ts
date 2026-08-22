@@ -6,6 +6,7 @@ import {
 import {
   buildIdentityAuthPayload,
   CURRENT_PROTOCOL_VERSION,
+  MAX_CHANNEL_PARTICIPANTS,
   type ClientIdentityProofMessage,
   type ServerIdentityChallengeMessage,
   type ServerMessage,
@@ -16,6 +17,7 @@ import {
   createNoopAuthorizationPort,
   type AuthorizationPort,
 } from '../../services/realtime/src/authorization-port.js';
+import { createNoopChannelPort } from '../../services/realtime/src/channel-port.js';
 import { createNoopChatPort, type ChatPort } from '../../services/realtime/src/chat-port.js';
 import {
   handleClientPing,
@@ -23,8 +25,24 @@ import {
   type HandlerContext,
   type OutgoingAction,
 } from '../../services/realtime/src/protocol-handlers.js';
+import { RateLimiter } from '../../services/realtime/src/rate-limiter.js';
 import { DEFAULT_VOICE_CHANNELS } from '../../services/realtime/src/voice/catalog.js';
+import { TemporaryChannelRegistry } from '../../services/realtime/src/voice/temporary-channels.js';
 import { VoiceRegistry } from '../../services/realtime/src/voice/registry.js';
+
+/** Matches `createNoopChannelPort()`'s fixed synthesis of `DEFAULT_VOICE_CHANNELS` — used by tests
+ * that assert on the full `voice:catalog` shape. */
+const EXPECTED_NOOP_CATALOG_NODES = DEFAULT_VOICE_CHANNELS.map((channel, index) => ({
+  nodeId: channel.channelId,
+  kind: 'voice',
+  name: channel.name,
+  sortOrder: index,
+  visibilityPolicy: 'everyone',
+  joinPolicy: 'everyone',
+  managePolicy: 'inherit',
+  hasPassword: false,
+  temporary: false,
+}));
 
 const FIXED_TIME = new Date('2026-08-18T00:00:00.000Z');
 const CHALLENGE_TTL_MS = 10_000;
@@ -34,12 +52,15 @@ function makeContext(overrides: Partial<HandlerContext> = {}): HandlerContext {
     connectionId: 'conn-1',
     now: () => FIXED_TIME,
     heartbeat: { intervalMs: 15000, timeoutMs: 10000 },
-    voiceRegistry: new VoiceRegistry(DEFAULT_VOICE_CHANNELS),
+    voiceRegistry: new VoiceRegistry(),
     identityChallengeTtlMs: CHALLENGE_TTL_MS,
     pendingChallenge: undefined,
     serverMetadata: { name: 'Test Server', capabilities: ['voice'] },
     authorization: createNoopAuthorizationPort(),
     chat: createNoopChatPort(),
+    channels: createNoopChannelPort(),
+    temporaryChannels: new TemporaryChannelRegistry(),
+    channelPasswordRateLimiter: new RateLimiter({ maxMessages: 1000, windowMs: 60_000 }),
     // Every ready-state test in this file exercises a handler reachable only after a real identity
     // proof would already have set this (see `requireIdentityId` in protocol-handlers.ts) — default
     // it here so tests that don't care about T9 authorization specifically don't each need to set
@@ -185,7 +206,7 @@ describe('routeClientMessage — handshake', () => {
     });
     expect(messages[2]).toMatchObject({
       type: 'voice:catalog',
-      channels: [...DEFAULT_VOICE_CHANNELS],
+      nodes: EXPECTED_NOOP_CATALOG_NODES,
     });
   });
 
@@ -445,7 +466,7 @@ describe('routeClientMessage — identity proof and replay resistance', () => {
 
 describe('routeClientMessage — voice:join / voice:leave', () => {
   it('joining an empty channel replies voice:joined with an empty participants list', () => {
-    const registry = new VoiceRegistry(DEFAULT_VOICE_CHANNELS);
+    const registry = new VoiceRegistry();
     const ctx = makeContext({ connectionId: 'conn-a', voiceRegistry: registry });
 
     const result = routeClientMessage(
@@ -468,8 +489,8 @@ describe('routeClientMessage — voice:join / voice:leave', () => {
   });
 
   it('joining a populated channel returns existing participants and notifies them of the newcomer', () => {
-    const registry = new VoiceRegistry(DEFAULT_VOICE_CHANNELS);
-    registry.join('conn-a', 'general', 'Rodrigo', 'identity-a');
+    const registry = new VoiceRegistry();
+    registry.join('conn-a', 'general', 'Rodrigo', 'identity-a', MAX_CHANNEL_PARTICIPANTS);
 
     const ctx = makeContext({ connectionId: 'conn-b', voiceRegistry: registry });
     const result = routeClientMessage(
@@ -497,7 +518,7 @@ describe('routeClientMessage — voice:join / voice:leave', () => {
   });
 
   it('assigns unique participant ids across joins', () => {
-    const registry = new VoiceRegistry(DEFAULT_VOICE_CHANNELS);
+    const registry = new VoiceRegistry();
     const ctxA = makeContext({ connectionId: 'conn-a', voiceRegistry: registry });
     const ctxB = makeContext({ connectionId: 'conn-b', voiceRegistry: registry });
 
@@ -531,9 +552,9 @@ describe('routeClientMessage — voice:join / voice:leave', () => {
   });
 
   it('switching channels notifies the old channel and the new one, with no duplicate membership', () => {
-    const registry = new VoiceRegistry(DEFAULT_VOICE_CHANNELS);
-    registry.join('conn-a', 'general', 'Rodrigo', 'identity-a');
-    registry.join('conn-b', 'general', 'Arthur', 'identity-b');
+    const registry = new VoiceRegistry();
+    registry.join('conn-a', 'general', 'Rodrigo', 'identity-a', MAX_CHANNEL_PARTICIPANTS);
+    registry.join('conn-b', 'general', 'Arthur', 'identity-b', MAX_CHANNEL_PARTICIPANTS);
 
     const ctx = makeContext({ connectionId: 'conn-a', voiceRegistry: registry });
     const result = routeClientMessage(
@@ -567,9 +588,9 @@ describe('routeClientMessage — voice:join / voice:leave', () => {
   });
 
   it('leave notifies remaining channel members and confirms to the leaver', () => {
-    const registry = new VoiceRegistry(DEFAULT_VOICE_CHANNELS);
-    const a = registry.join('conn-a', 'general', 'Rodrigo', 'identity-a');
-    registry.join('conn-b', 'general', 'Arthur', 'identity-b');
+    const registry = new VoiceRegistry();
+    const a = registry.join('conn-a', 'general', 'Rodrigo', 'identity-a', MAX_CHANNEL_PARTICIPANTS);
+    registry.join('conn-b', 'general', 'Arthur', 'identity-b', MAX_CHANNEL_PARTICIPANTS);
     if (!a.ok) throw new Error('setup failed');
 
     const ctx = makeContext({ connectionId: 'conn-b', voiceRegistry: registry });
@@ -600,9 +621,9 @@ describe('routeClientMessage — webrtc signaling', () => {
     participantIdA: string;
     participantIdB: string;
   } {
-    const registry = new VoiceRegistry(DEFAULT_VOICE_CHANNELS);
-    const a = registry.join('conn-a', 'general', 'A', 'identity-a');
-    const b = registry.join('conn-b', 'general', 'B', 'identity-b');
+    const registry = new VoiceRegistry();
+    const a = registry.join('conn-a', 'general', 'A', 'identity-a', MAX_CHANNEL_PARTICIPANTS);
+    const b = registry.join('conn-b', 'general', 'B', 'identity-b', MAX_CHANNEL_PARTICIPANTS);
     if (!a.ok || !b.ok) throw new Error('setup failed');
     return { registry, participantIdA: a.participantId, participantIdB: b.participantId };
   }
@@ -677,9 +698,9 @@ describe('routeClientMessage — webrtc signaling', () => {
   });
 
   it('rejects signaling toward a participant in a different channel (non-fatal)', () => {
-    const registry = new VoiceRegistry(DEFAULT_VOICE_CHANNELS);
-    const a = registry.join('conn-a', 'general', 'A', 'identity-a');
-    const c = registry.join('conn-c', 'games', 'C', 'identity-c');
+    const registry = new VoiceRegistry();
+    const a = registry.join('conn-a', 'general', 'A', 'identity-a', MAX_CHANNEL_PARTICIPANTS);
+    const c = registry.join('conn-c', 'games', 'C', 'identity-c', MAX_CHANNEL_PARTICIPANTS);
     if (!a.ok || !c.ok) throw new Error('setup failed');
 
     const ctx = makeContext({ connectionId: 'conn-a', voiceRegistry: registry });
@@ -712,9 +733,9 @@ describe('routeClientMessage — media:track-source (T5)', () => {
     participantIdA: string;
     participantIdB: string;
   } {
-    const registry = new VoiceRegistry(DEFAULT_VOICE_CHANNELS);
-    const a = registry.join('conn-a', 'general', 'A', 'identity-a');
-    const b = registry.join('conn-b', 'general', 'B', 'identity-b');
+    const registry = new VoiceRegistry();
+    const a = registry.join('conn-a', 'general', 'A', 'identity-a', MAX_CHANNEL_PARTICIPANTS);
+    const b = registry.join('conn-b', 'general', 'B', 'identity-b', MAX_CHANNEL_PARTICIPANTS);
     if (!a.ok || !b.ok) throw new Error('setup failed');
     return { registry, participantIdA: a.participantId, participantIdB: b.participantId };
   }
@@ -770,9 +791,9 @@ describe('routeClientMessage — media:track-source (T5)', () => {
   });
 
   it('rejects an announcement toward a participant in a different channel (non-fatal)', () => {
-    const registry = new VoiceRegistry(DEFAULT_VOICE_CHANNELS);
-    const a = registry.join('conn-a', 'general', 'A', 'identity-a');
-    const c = registry.join('conn-c', 'games', 'C', 'identity-c');
+    const registry = new VoiceRegistry();
+    const a = registry.join('conn-a', 'general', 'A', 'identity-a', MAX_CHANNEL_PARTICIPANTS);
+    const c = registry.join('conn-c', 'games', 'C', 'identity-c', MAX_CHANNEL_PARTICIPANTS);
     if (!a.ok || !c.ok) throw new Error('setup failed');
 
     const ctx = makeContext({ connectionId: 'conn-a', voiceRegistry: registry });
@@ -911,8 +932,8 @@ describe('routeClientMessage — T9 authorization: kick/list-bans/list-groups/up
   });
 
   it('delete-group force-closes every online connection left with no admission basis', () => {
-    const registry = new VoiceRegistry(DEFAULT_VOICE_CHANNELS);
-    registry.join('conn-victim', 'general', 'Victim', 'dv1_victim');
+    const registry = new VoiceRegistry();
+    registry.join('conn-victim', 'general', 'Victim', 'dv1_victim', MAX_CHANNEL_PARTICIPANTS);
     const ctx = makeContext({
       voiceRegistry: registry,
       authorization: mockAuthorization({
@@ -989,8 +1010,14 @@ describe('routeClientMessage — T9 authorization: kick/list-bans/list-groups/up
   });
 
   it('grant-group resolves the target via VoiceRegistry, never a client-supplied identityId', () => {
-    const registry = new VoiceRegistry(DEFAULT_VOICE_CHANNELS);
-    const joined = registry.join('conn-target', 'general', 'Target', 'dv1_target');
+    const registry = new VoiceRegistry();
+    const joined = registry.join(
+      'conn-target',
+      'general',
+      'Target',
+      'dv1_target',
+      MAX_CHANNEL_PARTICIPANTS,
+    );
     if (!joined.ok) throw new Error('setup failed');
     let grantedIdentityId: string | undefined;
     const ctx = makeContext({
@@ -1047,8 +1074,14 @@ describe('routeClientMessage — T9 authorization: kick/list-bans/list-groups/up
   });
 
   it('kick closes the target connection with KICKED and creates no persistent ban', () => {
-    const registry = new VoiceRegistry(DEFAULT_VOICE_CHANNELS);
-    const joined = registry.join('conn-target', 'general', 'Target', 'dv1_target');
+    const registry = new VoiceRegistry();
+    const joined = registry.join(
+      'conn-target',
+      'general',
+      'Target',
+      'dv1_target',
+      MAX_CHANNEL_PARTICIPANTS,
+    );
     if (!joined.ok) throw new Error('setup failed');
     let banCalled = false;
     const ctx = makeContext({
@@ -1178,9 +1211,9 @@ describe('routeClientMessage — T10 chat: send/history', () => {
   });
 
   it('channel-scope send requires current membership in that exact channel', () => {
-    const registry = new VoiceRegistry(DEFAULT_VOICE_CHANNELS);
+    const registry = new VoiceRegistry();
     // Sender is in "games", tries to send to "general".
-    registry.join('conn-1', 'games', 'X', 'identity-x');
+    registry.join('conn-1', 'games', 'X', 'identity-x', MAX_CHANNEL_PARTICIPANTS);
     const ctx = makeContext({
       voiceRegistry: registry,
       authorization: mockAuthorization({ can: () => true }),
@@ -1195,8 +1228,8 @@ describe('routeClientMessage — T10 chat: send/history', () => {
   });
 
   it('channel-scope send is denied without chat.channel.send even when a member of the channel', () => {
-    const registry = new VoiceRegistry(DEFAULT_VOICE_CHANNELS);
-    registry.join('conn-1', 'general', 'X', 'identity-x');
+    const registry = new VoiceRegistry();
+    registry.join('conn-1', 'general', 'X', 'identity-x', MAX_CHANNEL_PARTICIPANTS);
     const ctx = makeContext({
       voiceRegistry: registry,
       authorization: mockAuthorization({ can: () => false }),
@@ -1211,10 +1244,16 @@ describe('routeClientMessage — T10 chat: send/history', () => {
   });
 
   it('channel-scope send broadcasts only to current members of that channel, attaching senderParticipantId', () => {
-    const registry = new VoiceRegistry(DEFAULT_VOICE_CHANNELS);
-    const sender = registry.join('conn-a', 'general', 'Sender', 'identity-a');
-    registry.join('conn-b', 'general', 'Other', 'identity-b');
-    registry.join('conn-c', 'games', 'Elsewhere', 'identity-c');
+    const registry = new VoiceRegistry();
+    const sender = registry.join(
+      'conn-a',
+      'general',
+      'Sender',
+      'identity-a',
+      MAX_CHANNEL_PARTICIPANTS,
+    );
+    registry.join('conn-b', 'general', 'Other', 'identity-b', MAX_CHANNEL_PARTICIPANTS);
+    registry.join('conn-c', 'games', 'Elsewhere', 'identity-c', MAX_CHANNEL_PARTICIPANTS);
     if (!sender.ok) throw new Error('setup failed');
     const ctx = makeContext({
       connectionId: 'conn-a',
@@ -1309,7 +1348,7 @@ describe('routeClientMessage — T10 chat: send/history', () => {
   });
 
   it('history-request for a channel does not require current membership in it', () => {
-    const registry = new VoiceRegistry(DEFAULT_VOICE_CHANNELS);
+    const registry = new VoiceRegistry();
     // Sender is not in "general" at all, but the channel exists on this server.
     let requestedScope: unknown;
     const ctx = makeContext({

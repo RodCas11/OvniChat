@@ -1,0 +1,211 @@
+/* T13.2 — shared form-control vocabulary for every channel/category administration surface
+ * (Create/Edit Category, Create/Edit Channel, Move, the ACL editor, the Channels admin page).
+ * Deliberately reuses the exact class names/visual language already established by
+ * `AuthorizationPanel.module.css`/`SettingsPanel.module.css` (`.field`, `.fieldLabel`, `.input`,
+ * `.select`, `.checkboxGrid`, `.checkboxField`, `.section`, `.sectionTitle`, `.hint`) rather than
+ * inventing a parallel vocabulary — see this task's own "visual continuity is non-negotiable" rule. */
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ovni-space-4);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ovni-space-1);
+  font-size: var(--ovni-text-sm);
+  color: var(--ovni-text-secondary);
+}
+
+.fieldLabel {
+  font-weight: 600;
+  color: var(--ovni-text-primary);
+}
+
+.input,
+.select {
+  height: 36px;
+  padding: 0 var(--ovni-space-3);
+  border: 1px solid var(--ovni-border);
+  border-radius: var(--ovni-radius-md);
+  background: var(--ovni-bg-base);
+  color: var(--ovni-text-primary);
+  font-size: var(--ovni-text-base);
+}
+
+.hint {
+  margin: 0;
+  color: var(--ovni-text-tertiary);
+  font-size: var(--ovni-text-xs);
+}
+
+.error {
+  margin: 0;
+  color: var(--ovni-danger);
+  font-size: var(--ovni-text-xs);
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ovni-space-3);
+  padding-top: var(--ovni-space-3);
+  border-top: 1px solid var(--ovni-border);
+}
+
+.section:first-child {
+  padding-top: 0;
+  border-top: none;
+}
+
+.sectionTitle {
+  margin: 0;
+  font-size: var(--ovni-text-sm);
+  font-weight: 700;
+  color: var(--ovni-text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.radioGroup {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ovni-space-2);
+}
+
+.radioOption {
+  display: flex;
+  align-items: center;
+  gap: var(--ovni-space-2);
+  font-size: var(--ovni-text-sm);
+  color: var(--ovni-text-primary);
+}
+
+.checkboxGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--ovni-space-2) var(--ovni-space-4);
+  padding-left: var(--ovni-space-5);
+}
+
+.checkboxField {
+  display: flex;
+  align-items: center;
+  gap: var(--ovni-space-2);
+  font-size: var(--ovni-text-sm);
+  color: var(--ovni-text-secondary);
+  /* T13.2 QA — a group name can be up to 64 characters with no spaces (`GROUP_NAME_MAX_LENGTH`);
+     without this, a flex item's default `min-width: auto` lets one long unbroken word overflow its
+     `minmax(0, 1fr)` grid track instead of wrapping onto a second line. */
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.inheritNote {
+  margin: 0;
+  padding-left: var(--ovni-space-5);
+  color: var(--ovni-text-tertiary);
+  font-size: var(--ovni-text-xs);
+}
+
+.radioRow {
+  display: flex;
+  align-items: center;
+  gap: var(--ovni-space-3);
+}
+
+.footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--ovni-space-2);
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.listRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ovni-space-3);
+  padding: var(--ovni-space-2) 0;
+  border-bottom: 1px solid var(--ovni-border);
+  font-size: var(--ovni-text-sm);
+}
+
+.listRow:last-child {
+  border-bottom: none;
+}
+
+.listRowActions {
+  display: flex;
+  align-items: center;
+  gap: var(--ovni-space-2);
+  flex-shrink: 0;
+}
+
+.passwordStatus {
+  display: flex;
+  align-items: center;
+  gap: var(--ovni-space-2);
+  font-size: var(--ovni-text-sm);
+  color: var(--ovni-text-secondary);
+}
+
+.passwordActions {
+  display: flex;
+  gap: var(--ovni-space-2);
+}
+
+.confirmText {
+  margin: 0;
+  color: var(--ovni-text-primary);
+  font-size: var(--ovni-text-base);
+}
+
+.tree {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.treeRow {
+  display: flex;
+  align-items: center;
+  gap: var(--ovni-space-2);
+  padding: var(--ovni-space-2);
+  border-radius: var(--ovni-radius-sm);
+}
+
+.treeRow:hover {
+  background: var(--ovni-bg-hover);
+}
+
+.treeRowName {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.treeRowActions {
+  display: flex;
+  align-items: center;
+  gap: var(--ovni-space-1);
+  flex-shrink: 0;
+}
+
+.emptyNote {
+  margin: 0;
+  color: var(--ovni-text-tertiary);
+  font-size: var(--ovni-text-sm);
+}

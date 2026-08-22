@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ChannelSidebar } from '../../../apps/desktop/src/renderer/workspace/ChannelSidebar.js';
-import { createChannel } from '../fixtures/voice-state.js';
+import { createChannel, createVoiceActions, createVoiceState } from '../fixtures/voice-state.js';
 
 afterEach(() => {
   cleanup();
@@ -14,9 +14,13 @@ function renderSidebar(overrides: Partial<Parameters<typeof ChannelSidebar>[0]> 
   const onSelectChatTarget = vi.fn();
   const onJoinChannel = vi.fn();
   const onLeaveChannel = vi.fn();
+  const onChannelAdminIntent = vi.fn();
+  const channelTree = overrides.channelTree ?? [
+    createChannel({ nodeId: 'general', name: 'General' }),
+  ];
   const props: Parameters<typeof ChannelSidebar>[0] = {
     serverName: 'Test Server',
-    channels: [createChannel({ channelId: 'general', name: 'General' })],
+    channelTree,
     participants: [],
     currentChannelId: undefined,
     selfParticipantId: undefined,
@@ -30,10 +34,13 @@ function renderSidebar(overrides: Partial<Parameters<typeof ChannelSidebar>[0]> 
     onSelectChatTarget,
     onJoinChannel,
     onLeaveChannel,
+    state: createVoiceState({ channelTree }),
+    actions: createVoiceActions(),
+    onChannelAdminIntent,
     ...overrides,
   };
   const result = render(<ChannelSidebar {...props} />);
-  return { ...result, onSelectChatTarget, onJoinChannel, onLeaveChannel };
+  return { ...result, onSelectChatTarget, onJoinChannel, onLeaveChannel, onChannelAdminIntent };
 }
 
 describe('ChannelSidebar (T13.1)', () => {
@@ -67,9 +74,9 @@ describe('ChannelSidebar (T13.1)', () => {
 
   it('renders exactly one row per real server-owned channel — never fabricated channels', () => {
     renderSidebar({
-      channels: [
-        createChannel({ channelId: 'general', name: 'General' }),
-        createChannel({ channelId: 'games', name: 'Games' }),
+      channelTree: [
+        createChannel({ nodeId: 'general', name: 'General' }),
+        createChannel({ nodeId: 'games', name: 'Games' }),
       ],
     });
 
@@ -80,9 +87,9 @@ describe('ChannelSidebar (T13.1)', () => {
 
   it('derives isJoined per row from currentChannelId, independent of selection', () => {
     renderSidebar({
-      channels: [
-        createChannel({ channelId: 'general', name: 'General' }),
-        createChannel({ channelId: 'games', name: 'Games' }),
+      channelTree: [
+        createChannel({ nodeId: 'general', name: 'General' }),
+        createChannel({ nodeId: 'games', name: 'Games' }),
       ],
       currentChannelId: 'games',
       selectedChatTarget: { scope: 'channel', channelId: 'general' },
@@ -92,5 +99,148 @@ describe('ChannelSidebar (T13.1)', () => {
     // shows Join.
     expect(screen.getByTestId('channel-row-leave-games')).toBeInTheDocument();
     expect(screen.getByTestId('channel-row-join-general')).toBeInTheDocument();
+  });
+
+  it('T13.2 — live catalog reconciliation: re-rendering with an updated channelTree prop updates the visible tree without any remount hack', () => {
+    const { rerender } = renderSidebar({
+      channelTree: [createChannel({ nodeId: 'general', name: 'General' })],
+    });
+    expect(screen.getByTestId('channel-row-general')).toBeInTheDocument();
+    expect(screen.queryByTestId('channel-row-games')).not.toBeInTheDocument();
+
+    const nextChannelTree = [
+      createChannel({ nodeId: 'general', name: 'General' }),
+      createChannel({ nodeId: 'games', name: 'Games' }),
+    ];
+    rerender(
+      <ChannelSidebar
+        serverName="Test Server"
+        channelTree={nextChannelTree}
+        participants={[]}
+        currentChannelId={undefined}
+        selfParticipantId={undefined}
+        remoteCameraParticipantIds={new Set()}
+        remoteScreenParticipantIds={new Set()}
+        selfCameraEnabled={false}
+        selfSharingScreen={false}
+        canJoin
+        joining={false}
+        selectedChatTarget={{ scope: 'server' }}
+        onSelectChatTarget={vi.fn()}
+        onJoinChannel={vi.fn()}
+        onLeaveChannel={vi.fn()}
+        state={createVoiceState({ channelTree: nextChannelTree })}
+        actions={createVoiceActions()}
+        onChannelAdminIntent={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId('channel-row-general')).toBeInTheDocument();
+    expect(screen.getByTestId('channel-row-games')).toBeInTheDocument();
+
+    // Then removing a channel from the catalog removes its row too — the tree is always derived
+    // fresh from the latest `channelTree` prop, never a one-time snapshot.
+    rerender(
+      <ChannelSidebar
+        serverName="Test Server"
+        channelTree={[createChannel({ nodeId: 'games', name: 'Games' })]}
+        participants={[]}
+        currentChannelId={undefined}
+        selfParticipantId={undefined}
+        remoteCameraParticipantIds={new Set()}
+        remoteScreenParticipantIds={new Set()}
+        selfCameraEnabled={false}
+        selfSharingScreen={false}
+        canJoin
+        joining={false}
+        selectedChatTarget={{ scope: 'server' }}
+        onSelectChatTarget={vi.fn()}
+        onJoinChannel={vi.fn()}
+        onLeaveChannel={vi.fn()}
+        state={createVoiceState({
+          channelTree: [createChannel({ nodeId: 'games', name: 'Games' })],
+        })}
+        actions={createVoiceActions()}
+        onChannelAdminIntent={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByTestId('channel-row-general')).not.toBeInTheDocument();
+    expect(screen.getByTestId('channel-row-games')).toBeInTheDocument();
+  });
+
+  it('T13.2 — live catalog reconciliation reflects a node acquiring a password/temporary flag live, same nodeId, no remount hack', () => {
+    const { rerender } = renderSidebar({
+      channelTree: [createChannel({ nodeId: 'vip', name: 'VIP' })],
+    });
+    expect(screen.queryByTestId('channel-row-password-badge-vip')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('channel-row-temporary-badge-vip')).not.toBeInTheDocument();
+
+    const updatedChannelTree = [
+      createChannel({ nodeId: 'vip', name: 'VIP', hasPassword: true, temporary: true }),
+    ];
+    rerender(
+      <ChannelSidebar
+        serverName="Test Server"
+        channelTree={updatedChannelTree}
+        participants={[]}
+        currentChannelId={undefined}
+        selfParticipantId={undefined}
+        remoteCameraParticipantIds={new Set()}
+        remoteScreenParticipantIds={new Set()}
+        selfCameraEnabled={false}
+        selfSharingScreen={false}
+        canJoin
+        joining={false}
+        selectedChatTarget={{ scope: 'server' }}
+        onSelectChatTarget={vi.fn()}
+        onJoinChannel={vi.fn()}
+        onLeaveChannel={vi.fn()}
+        state={createVoiceState({ channelTree: updatedChannelTree })}
+        actions={createVoiceActions()}
+        onChannelAdminIntent={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId('channel-row-password-badge-vip')).toBeInTheDocument();
+    expect(screen.getByTestId('channel-row-temporary-badge-vip')).toBeInTheDocument();
+  });
+
+  it('T13.2 — password/temporary badges carry real tooltip text via a real <title>, never a raw flag', () => {
+    renderSidebar({
+      channelTree: [
+        createChannel({ nodeId: 'vip', name: 'VIP', hasPassword: true }),
+        createChannel({ nodeId: 'raid', name: 'Raid', temporary: true }),
+      ],
+    });
+
+    const passwordBadge = screen.getByTestId('channel-row-password-badge-vip');
+    expect(passwordBadge.querySelector('title')?.textContent).toBe('Password protected');
+
+    const temporaryBadge = screen.getByTestId('channel-row-temporary-badge-raid');
+    expect(temporaryBadge.querySelector('title')?.textContent).toBe('Temporary channel');
+  });
+
+  it('T13.2 — a Guest with no channel-admin permissions sees zero admin context-menu items, even after the optimistic check settles', async () => {
+    const actions = createVoiceActions({
+      getEditableChannelNode: vi.fn().mockRejectedValue(new Error('denied')),
+    });
+    const channelTree = [createChannel({ nodeId: 'general', name: 'General' })];
+    renderSidebar({
+      channelTree,
+      state: createVoiceState({ myPermissions: [], channelTree }),
+      actions,
+    });
+
+    fireEvent.contextMenu(screen.getByTestId('channel-row-general'));
+
+    expect(await screen.findByText('Open Chat')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(actions.getEditableChannelNode).toHaveBeenCalled();
+    });
+    expect(screen.queryByText('Edit Channel')).not.toBeInTheDocument();
+    expect(screen.queryByText('Move Channel')).not.toBeInTheDocument();
+    expect(screen.queryByText('Create Subchannel')).not.toBeInTheDocument();
+    expect(screen.queryByText('Delete Channel')).not.toBeInTheDocument();
   });
 });

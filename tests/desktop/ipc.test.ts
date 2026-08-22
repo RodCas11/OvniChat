@@ -233,6 +233,8 @@ describe('registerIpcHandlers', () => {
       redeemToken: undefined,
       autoChatSendServerBody: undefined,
       autoChatSendChannelBody: undefined,
+      autoJoinPassword: undefined,
+      channelAdminRetry: undefined,
       productShellSmoke: undefined,
     };
     registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig, e2eVoiceConfig);

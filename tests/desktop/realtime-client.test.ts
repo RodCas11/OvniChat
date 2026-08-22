@@ -252,17 +252,20 @@ describe('RealtimeClient', () => {
     const catalogs: unknown[] = [];
     client.on('catalog', (message) => catalogs.push(message));
 
-    socket.simulateMessage(
-      JSON.stringify({
-        type: 'voice:catalog',
-        id: 'c1',
-        channels: [{ channelId: 'general', name: 'General' }],
-      }),
-    );
+    const node = {
+      nodeId: 'general',
+      kind: 'voice',
+      name: 'General',
+      sortOrder: 0,
+      visibilityPolicy: 'everyone',
+      joinPolicy: 'everyone',
+      managePolicy: 'inherit',
+      hasPassword: false,
+      temporary: false,
+    };
+    socket.simulateMessage(JSON.stringify({ type: 'voice:catalog', id: 'c1', nodes: [node] }));
 
-    expect(catalogs).toEqual([
-      { type: 'voice:catalog', id: 'c1', channels: [{ channelId: 'general', name: 'General' }] },
-    ]);
+    expect(catalogs).toEqual([{ type: 'voice:catalog', id: 'c1', nodes: [node] }]);
   });
 
   it('sends a well-formed voice:join message', async () => {
@@ -519,8 +522,101 @@ describe('RealtimeClient', () => {
     client.on('catalog', listener);
     client.off('catalog', listener);
 
-    socket.simulateMessage(JSON.stringify({ type: 'voice:catalog', id: 'c1', channels: [] }));
+    socket.simulateMessage(JSON.stringify({ type: 'voice:catalog', id: 'c1', nodes: [] }));
 
     expect(catalogs).toEqual([]);
+  });
+
+  it('sends voice:join with an optional password when the caller provides one', async () => {
+    const client = await connectAndHandshake();
+    client.joinVoiceChannel('general', 'Ana', 'secret');
+
+    expect(socket.lastSentMessage()).toMatchObject({
+      type: 'voice:join',
+      channelId: 'general',
+      displayName: 'Ana',
+      password: 'secret',
+    });
+  });
+
+  it('joinVoiceChannel returns the generated request id', async () => {
+    const client = await connectAndHandshake();
+    const id = client.joinVoiceChannel('general', 'Ana');
+
+    expect(typeof id).toBe('string');
+    expect(socket.lastSentMessage()['id']).toBe(id);
+  });
+
+  it('sends channel admin messages and returns the generated request id for correlation', async () => {
+    const client = await connectAndHandshake();
+
+    const createId = client.createChannelCategory('Officers');
+    expect(socket.lastSentMessage()).toMatchObject({
+      type: 'client:channel-create-category',
+      id: createId,
+      name: 'Officers',
+    });
+
+    const updateId = client.updateChannelNode('general', { userLimit: null });
+    expect(socket.lastSentMessage()).toMatchObject({
+      type: 'client:channel-update',
+      id: updateId,
+      nodeId: 'general',
+      userLimit: null,
+    });
+
+    const deleteId = client.deleteChannelNode('general');
+    expect(socket.lastSentMessage()).toMatchObject({
+      type: 'client:channel-delete',
+      id: deleteId,
+      nodeId: 'general',
+    });
+  });
+
+  it('dispatches server:channel-created/ack/editable-node and server:voice-removed-by-policy to their own listeners', async () => {
+    const client = await connectAndHandshake();
+    const created: unknown[] = [];
+    const acks: unknown[] = [];
+    const editableNodes: unknown[] = [];
+    const removedByPolicy: unknown[] = [];
+    client.on('channelCreated', (m) => created.push(m));
+    client.on('channelAck', (m) => acks.push(m));
+    client.on('channelEditableNode', (m) => editableNodes.push(m));
+    client.on('voiceRemovedByPolicy', (m) => removedByPolicy.push(m));
+
+    const adminNode = {
+      nodeId: 'raid-planning',
+      kind: 'voice',
+      name: 'Raid Planning',
+      sortOrder: 0,
+      visibilityPolicy: 'inherit',
+      visibilityGroupIds: [],
+      joinPolicy: 'inherit',
+      joinGroupIds: [],
+      managePolicy: 'inherit',
+      manageGroupIds: [],
+      hasPassword: false,
+      temporary: false,
+    };
+    socket.simulateMessage(
+      JSON.stringify({ type: 'server:channel-created', id: 'r1', node: adminNode }),
+    );
+    socket.simulateMessage(JSON.stringify({ type: 'server:channel-ack', id: 'r2' }));
+    socket.simulateMessage(
+      JSON.stringify({ type: 'server:channel-editable-node', id: 'r3', node: adminNode }),
+    );
+    socket.simulateMessage(
+      JSON.stringify({
+        type: 'server:voice-removed-by-policy',
+        id: 'r4',
+        channelId: 'general',
+        reason: 'access-revoked',
+      }),
+    );
+
+    expect(created).toHaveLength(1);
+    expect(acks).toHaveLength(1);
+    expect(editableNodes).toHaveLength(1);
+    expect(removedByPolicy).toHaveLength(1);
   });
 });

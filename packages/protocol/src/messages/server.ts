@@ -10,6 +10,7 @@ import {
 } from '../identity.js';
 import { serverCapabilitiesSchema, serverNameSchema } from '../server-metadata.js';
 import { serverAuthorizationMessageSchema } from './authorization.js';
+import { serverChannelMessageSchema } from './channels.js';
 import { serverChatMessageSchema } from './chat.js';
 import { serverMediaTrackSourceMessageSchema } from './media.js';
 import {
@@ -18,7 +19,6 @@ import {
   serverWebrtcOfferMessageSchema,
 } from './webrtc.js';
 import {
-  serverVoiceCatalogMessageSchema,
   serverVoiceJoinedMessageSchema,
   serverVoiceLeftMessageSchema,
   serverVoiceParticipantJoinedMessageSchema,
@@ -104,7 +104,6 @@ export const serverMessageSchema = z.discriminatedUnion('type', [
   serverIdentityChallengeMessageSchema,
   serverPongMessageSchema,
   serverErrorMessageSchema,
-  serverVoiceCatalogMessageSchema,
   serverVoiceJoinedMessageSchema,
   serverVoiceLeftMessageSchema,
   serverVoiceParticipantJoinedMessageSchema,
@@ -115,6 +114,7 @@ export const serverMessageSchema = z.discriminatedUnion('type', [
   serverMediaTrackSourceMessageSchema,
   ...serverAuthorizationMessageSchema.options,
   ...serverChatMessageSchema.options,
+  ...serverChannelMessageSchema.options,
 ]);
 
 export type ServerMessage = z.infer<typeof serverMessageSchema>;

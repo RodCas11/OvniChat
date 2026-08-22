@@ -66,6 +66,14 @@
   flex-shrink: 0;
 }
 
+/* T13.2 — password/temporary markers next to the channel name. Icon-only is intentional: both
+   already carry a `<title>` for a native tooltip and a `data-testid` for assertions; a text label
+   would compete with the name in the already-tight sidebar column. */
+.badgeIcon {
+  color: var(--ovni-text-tertiary);
+  flex-shrink: 0;
+}
+
 .actions {
   display: flex;
   align-items: center;

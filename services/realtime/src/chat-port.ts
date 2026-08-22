@@ -58,6 +58,21 @@ export interface ChatPort {
     readonly limit: number;
   }): ChatHistoryPage;
 
+  /** T13.2 — deletes every `scope: 'channel'` row for `channelId`. Only ever called for a channel
+   * id that was never persisted anywhere else (a temporary channel, `TemporaryChannelRegistry`) at
+   * the exact moment its last participant leaves — never usable to purge a permanent channel's
+   * history, since permanent channel deletion is always a tombstone in `channels.sqlite`, never a
+   * delete of chat rows (see `ChannelPort.deleteNode`'s own doc comment). */
+  deleteChannelHistory(channelId: string): void;
+
+  /** T13.2 — best-effort startup hygiene, not a safety mechanism (the safety mechanism is
+   * `ChannelPort.getVisibleNode` rejecting any request for a channel id that no longer resolves to
+   * a catalog entry — this method exists only to bound disk growth from a server that crashed
+   * before a temporary channel's last participant left). Deletes every `scope: 'channel'` row whose
+   * `channelId` is not in `keepChannelIds`. Called at most once, at composition time, in
+   * `create-dedicated-server.ts`, passing `ChannelPort.listActiveNodeIds()`. */
+  pruneOrphanedChannelHistory(keepChannelIds: readonly string[]): void;
+
   /** Releases any held resources (e.g. closes the underlying database handle). */
   close(): void;
 }
@@ -77,6 +92,8 @@ export function createNoopChatPort(): ChatPort {
       message: 'No chat store configured',
     }),
     getHistory: () => ({ messages: [], hasMore: false, nextCursor: undefined }),
+    deleteChannelHistory: () => {},
+    pruneOrphanedChannelHistory: () => {},
     close: () => {},
   };
 }

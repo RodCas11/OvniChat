@@ -10,13 +10,22 @@ import {
 import type { RawData, WebSocket } from 'ws';
 
 import type { AuthorizationPort } from './authorization-port.js';
+import type { ChannelPort } from './channel-port.js';
 import type { ChatPort } from './chat-port.js';
 import type { RealtimeConfig } from './config.js';
 import type { ConnectionState } from './connection-state.js';
 import type { Logger } from './logging.js';
 import { HeartbeatMonitor } from './heartbeat.js';
-import { routeClientMessage, type PendingIdentityChallenge } from './protocol-handlers.js';
+import {
+  buildFilteredVoiceCatalogMessage,
+  routeClientMessage,
+  type PendingIdentityChallenge,
+} from './protocol-handlers.js';
 import { RateLimiter } from './rate-limiter.js';
+import {
+  maybeDestroyEmptyTemporaryChannel,
+  type TemporaryChannelRegistry,
+} from './voice/temporary-channels.js';
 import type { VoiceRegistry } from './voice/registry.js';
 
 /**
@@ -81,6 +90,10 @@ export class Connection {
    * `Connection`, the handler layer stays pure" split the generic rate limiter already uses. */
   private readonly chatSendRateLimiter: RateLimiter;
   private readonly chatHistoryRateLimiter: RateLimiter;
+  /** T13.2 — per-connection rate limiter for `voice:join` attempts against a password-protected
+   * channel (see `HandlerContext.channelPasswordRateLimiter`'s own doc comment in
+   * `protocol-handlers.ts`). */
+  private readonly channelPasswordRateLimiter: RateLimiter;
   private readonly heartbeat: HeartbeatMonitor;
   private handshakeTimer: NodeJS.Timeout | undefined;
   private forceCloseTimer: NodeJS.Timeout | undefined;
@@ -105,6 +118,13 @@ export class Connection {
     /** T10 — server-local persistent chat (see `chat-port.ts`). Composition config, shared across
      * every connection this server accepts. */
     private readonly chat: ChatPort,
+    /** T13.2 — server-local persistent channel/category tree (see `channel-port.ts`). Composition
+     * config, shared across every connection this server accepts. */
+    private readonly channels: ChannelPort,
+    /** T13.2 — in-memory, non-persistent "quick channel" registry (see
+     * `voice/temporary-channels.ts`). Shared across every connection this server accepts (a single
+     * process-wide registry, exactly like `voiceRegistry`). */
+    private readonly temporaryChannels: TemporaryChannelRegistry,
     /** Sends a message to a *different* connection, looked up by id, if it still exists. */
     private readonly deliverToConnection: (connectionId: string, message: ServerMessage) => void,
     /** T9 — forcibly closes a *different* connection, looked up by id, with a `server:error` +
@@ -117,6 +137,15 @@ export class Connection {
     /** T10 — pushes a message to every currently-`ready` connection (server-wide chat broadcast;
      * see `protocol-handlers.ts`'s `'broadcast-ready'` `OutgoingAction`). */
     private readonly broadcastToReadyConnections: (message: ServerMessage) => void,
+    /** T13.2 — pushes a *personalized* message (one `buildMessage` call per recipient) to every
+     * currently-`ready` connection with a known `identityId` (see `protocol-handlers.ts`'s
+     * `'broadcast-ready-personalized'` `OutgoingAction`). Also called directly from
+     * `cleanupVoiceMembership` below — an abrupt disconnect that empties a temporary channel
+     * triggers the same personalized catalog refresh outside of `routeClientMessage`'s own action
+     * pipeline. */
+    private readonly broadcastToReadyPersonalized: (
+      buildMessage: (identityId: string) => ServerMessage | undefined,
+    ) => void,
     private readonly onClosed: (connection: Connection) => void,
     private readonly now: () => Date = () => new Date(),
   ) {
@@ -127,6 +156,7 @@ export class Connection {
     this.rateLimiter = new RateLimiter(config.rateLimit);
     this.chatSendRateLimiter = new RateLimiter(config.chatSendRateLimit);
     this.chatHistoryRateLimiter = new RateLimiter(config.chatHistoryRateLimit);
+    this.channelPasswordRateLimiter = new RateLimiter(config.channelPasswordRateLimit);
     this.heartbeat = new HeartbeatMonitor(config.heartbeatIntervalMs, config.heartbeatTimeoutMs, {
       sendPing: () => {
         // Not currently reachable with a throw in `ws@8.21.3` (`ping()` only throws while
@@ -267,6 +297,9 @@ export class Connection {
         serverMetadata: this.serverMetadata,
         authorization: this.authorization,
         chat: this.chat,
+        channels: this.channels,
+        temporaryChannels: this.temporaryChannels,
+        channelPasswordRateLimiter: this.channelPasswordRateLimiter,
         identityId: this._identityId,
         nickname: this._nickname,
       });
@@ -295,6 +328,8 @@ export class Connection {
           this.deliverToConnection(action.connectionId, action.message);
         } else if (action.kind === 'broadcast-ready') {
           this.broadcastToReadyConnections(action.message);
+        } else if (action.kind === 'broadcast-ready-personalized') {
+          this.broadcastToReadyPersonalized(action.buildMessage);
         } else {
           this.closeOtherConnection(action.connectionId, action.code, action.message);
         }
@@ -404,6 +439,32 @@ export class Connection {
         channelId: left.channelId,
         participantId: left.participantId,
       });
+    }
+
+    // T13.2 — an abrupt disconnect is the second of the two call sites that can empty a temporary
+    // channel (`handleVoiceLeave` in `protocol-handlers.ts` is the other) — see
+    // `voice/temporary-channels.ts`'s `maybeDestroyEmptyTemporaryChannel` doc comment for why this
+    // one shared helper must be used at both, never duplicated.
+    const destroyed = maybeDestroyEmptyTemporaryChannel(
+      left.channelId,
+      this.temporaryChannels,
+      this.voiceRegistry,
+      this.chat,
+    );
+    if (destroyed.destroyed) {
+      this.broadcastToReadyPersonalized((identityId) =>
+        buildFilteredVoiceCatalogMessage(
+          {
+            authorization: this.authorization,
+            channels: this.channels,
+            temporaryChannels: this.temporaryChannels,
+            voiceRegistry: this.voiceRegistry,
+            chat: this.chat,
+            now: this.now,
+          },
+          identityId,
+        ),
+      );
     }
   }
 

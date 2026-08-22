@@ -55,6 +55,11 @@ const isE2ETextChat = process.env['DISCO_VOADOR_E2E_TEXT_CHAT'] === '1' && !app.
 const isE2ESettingsPersistence = config.e2eSettingsPersistence !== undefined && !app.isPackaged;
 const isE2EReconnectSmoke =
   process.env['DISCO_VOADOR_E2E_RECONNECT_SMOKE'] === '1' && !app.isPackaged;
+// T13.2 — see `armE2EChannelAdminExit`'s own doc comment.
+const isE2EChannelAdmin = process.env['DISCO_VOADOR_E2E_CHANNEL_ADMIN'] === '1' && !app.isPackaged;
+const e2eChannelAdminExitMarker = isE2EChannelAdmin
+  ? process.env['DISCO_VOADOR_E2E_EXIT_ON_MARKER']
+  : undefined;
 // T12: derived from `config.e2eVoiceAutoJoin` (like `isE2ESettingsPersistence`) rather than its own
 // single flag — any of the three process-audio E2E fields being present means
 // `e2e-process-audio-smoke.mjs` is driving this instance (publisher, viewer, or both, depending on
@@ -179,6 +184,37 @@ function armE2EAuthorizationExit(window: BrowserWindow): void {
   window.webContents.on('console-message', (_event, _level, message) => {
     console.info(`[renderer] ${message}`);
     if (!e2eAuthorizationExitMarker || !message.includes(e2eAuthorizationExitMarker)) return;
+    if (timeout) clearTimeout(timeout);
+    setTimeout(() => app.exit(0), 250);
+  });
+}
+
+/**
+ * Drives `apps/desktop/scripts/e2e-channel-admin-smoke.mjs` (T13.2). Mirrors
+ * `armE2EAuthorizationExit` exactly, for the identical reason: that script's wrong-password/
+ * right-password proof relaunches this *same* `--user-data-dir` twice (so the granted "member"
+ * group and the persistent identity survive between attempts — see
+ * `docs/architecture/SERVER_AUTHORIZATION.md` — without needing a live in-process retry
+ * mechanism), and each launch must wait for a *different* marker (an access-denied/password-
+ * required/password-invalid rejection, or a successful join) before exiting — so, like T9's own
+ * script, the marker string comes from `DISCO_VOADOR_E2E_EXIT_ON_MARKER` rather than being fixed at
+ * build time. Exits via `app.exit()` for the same documented reason `armE2EAuthorizationExit` does:
+ * relaunching the same profile shortly after an externally-`kill()`-ed (not self-exited) instance
+ * reproduces a real, reproducible `safeStorage`/DPAPI `decryptString` failure on the *next* launch.
+ */
+function armE2EChannelAdminExit(window: BrowserWindow): void {
+  if (!isE2EChannelAdmin) return;
+
+  const timeout = e2eChannelAdminExitMarker
+    ? setTimeout(() => {
+        console.error('E2E_CHANNEL_ADMIN_TIMEOUT: configured marker never appeared');
+        app.exit(1);
+      }, 30_000)
+    : undefined;
+
+  window.webContents.on('console-message', (_event, _level, message) => {
+    console.info(`[renderer] ${message}`);
+    if (!e2eChannelAdminExitMarker || !message.includes(e2eChannelAdminExitMarker)) return;
     if (timeout) clearTimeout(timeout);
     setTimeout(() => app.exit(0), 250);
   });
@@ -884,6 +920,364 @@ function armE2EScreenshotWorkspaceCapture(window: BrowserWindow): void {
   });
 }
 
+/**
+ * T13.2 Definition-of-Done screenshot evidence tool only — throwaway automation added solely to
+ * produce `apps/desktop/scripts/e2e-screenshot-capture-t13-2.mjs`'s evidence, never a permanent
+ * regression test and never reachable in a packaged build (`!app.isPackaged`, same as every other
+ * `armE2E*` function here). Mirrors `armE2EScreenshotWorkspaceCapture`'s own
+ * `webContents.executeJavaScript`-drives-real-testids technique exactly, but for the T13.2 Channels
+ * & Server Administration surfaces (context menu, Create/Edit Channel/Category, Move Channel, the
+ * password-join prompt, and the Server Settings "Channels"/"Groups & Permissions" pages) rather than
+ * T13.1's workspace chrome.
+ *
+ * Deliberately independent of `armE2EScreenshotHomeCapture`/`armE2EScreenshotWorkspaceCapture`'s own
+ * env vars (`DISCO_VOADOR_E2E_SCREENSHOT_CAPTURE_DIR`) — this reads its own, distinctly-named
+ * `DISCO_VOADOR_E2E_T132_SCREENSHOT_ADMIN_DIR`/`_ADMIN_GROUP_ID`/`_POE_ENDGAME_ID`/`_BOSSING_ID`/
+ * `_MAPPING_ID`/`_VIP_LOUNGE_ID` variables directly (never through the shared zod-validated
+ * `desktop-config.ts` schema, matching that function's own precedent for a capture-directory path),
+ * so the two tools can never accidentally arm each other. The node-id/group-id variables identify
+ * real nodes/groups the orchestrating script already created via a raw-WS admin connection
+ * (`scripts/lib/raw-protocol-client.mjs`) before this instance ever launches — Main has no way to
+ * know a server-generated id any other way.
+ *
+ * This instance is expected to auto-join a real, already-populated voice channel
+ * (`config.e2eVoiceAutoJoin`, e.g. "Lobby") as an ordinary participant with no special rights at
+ * connect time, then have the orchestrating script's raw-WS admin connection observe its
+ * `voice:participant-joined` and grant it a real, custom, near-omnipotent group
+ * (`DISCO_VOADOR_E2E_T132_SCREENSHOT_ADMIN_GROUP_ID`, e.g. "Owner" — deliberately *not* the built-in
+ * `server-admin` group, whose permission set always includes `channels.password.bypass`, which would
+ * make this instance's own attempt to join the password-protected "VIP Lounge" succeed silently
+ * instead of producing the real password prompt screenshot 08 needs) live — proving (like
+ * `e2e-channel-admin-smoke.mjs`'s own live-grant scenario) that a real, already-connected UI session
+ * picks up full admin rights with no reconnect. This function therefore waits for BOTH the real join
+ * marker (`disco-voador:voice-joined:<channelId>`) AND the unconditional
+ * `disco-voador:my-groups:<...>` marker (already logged by `use-voice-channel.ts` on every
+ * `server:authorization-state`) actually containing that group id before driving any admin UI —
+ * never a blind timeout guessing when the live grant has landed.
+ */
+function armE2EChannelAdminScreenshotCapture(window: BrowserWindow): void {
+  const captureDirEnv = process.env['DISCO_VOADOR_E2E_T132_SCREENSHOT_ADMIN_DIR'];
+  const channelIdEnv = config.e2eVoiceAutoJoin?.channelId;
+  const adminGroupIdEnv = process.env['DISCO_VOADOR_E2E_T132_SCREENSHOT_ADMIN_GROUP_ID'];
+  const poeEndgameIdEnv = process.env['DISCO_VOADOR_E2E_T132_SCREENSHOT_POE_ENDGAME_ID'];
+  const bossingIdEnv = process.env['DISCO_VOADOR_E2E_T132_SCREENSHOT_BOSSING_ID'];
+  const mappingIdEnv = process.env['DISCO_VOADOR_E2E_T132_SCREENSHOT_MAPPING_ID'];
+  const vipLoungeIdEnv = process.env['DISCO_VOADOR_E2E_T132_SCREENSHOT_VIP_LOUNGE_ID'];
+  if (
+    !captureDirEnv ||
+    !channelIdEnv ||
+    !adminGroupIdEnv ||
+    !poeEndgameIdEnv ||
+    !bossingIdEnv ||
+    !mappingIdEnv ||
+    !vipLoungeIdEnv ||
+    app.isPackaged
+  ) {
+    return;
+  }
+  // Re-bound to fresh, non-optional `const`s: TypeScript's control-flow narrowing from the guard
+  // clause above does not persist into the closures defined below (they may run long after this
+  // function returns), so every closure here captures these instead of the `Env`-suffixed originals.
+  const captureDir = captureDirEnv;
+  const channelId = channelIdEnv;
+  const adminGroupId = adminGroupIdEnv;
+  const poeEndgameId = poeEndgameIdEnv;
+  const bossingId = bossingIdEnv;
+  const mappingId = mappingIdEnv;
+  const vipLoungeId = vipLoungeIdEnv;
+
+  const wait = (ms: number): Promise<void> =>
+    new Promise((resolve) => {
+      setTimeout(resolve, ms);
+    });
+
+  /** Polls a boolean JS expression (evaluated in the Renderer) until it is truthy — used throughout
+   * this function instead of a blind `setTimeout` wherever a real, observable DOM condition exists
+   * (a modal actually finished loading, a checkbox actually rendered once `state.groups` arrived,
+   * etc.), matching this task's own "real, observable signal, never a blind setTimeout" rule. */
+  async function waitForCondition(expression: string, timeoutMs = 5000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const ok = (await window.webContents.executeJavaScript(`Boolean(${expression})`)) as boolean;
+      if (ok) return;
+      if (Date.now() >= deadline) {
+        throw new Error(`E2E channel-admin screenshot: timed out waiting for: ${expression}`);
+      }
+      await wait(100);
+    }
+  }
+
+  async function click(selector: string): Promise<void> {
+    await window.webContents.executeJavaScript(
+      `document.querySelector(${JSON.stringify(selector)})?.click();`,
+    );
+  }
+
+  /** Sets a real, controlled React input/select's value the same way `e2e-screenshot-capture.mjs`'s
+   * own `sendRealMessage` helper does — the native prototype value setter, then a real `input`
+   * event — so React actually observes the change rather than silently ignoring a bare `.value =`
+   * assignment. */
+  async function setValue(selector: string, value: string): Promise<void> {
+    await window.webContents.executeJavaScript(`
+      (function () {
+        const el = document.querySelector(${JSON.stringify(selector)});
+        if (!el) return;
+        const proto = el.tagName === 'SELECT' ? window.HTMLSelectElement.prototype
+          : el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype
+          : window.HTMLInputElement.prototype;
+        const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+        setter.call(el, ${JSON.stringify(value)});
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+      })();
+    `);
+  }
+
+  /** Picks a `<select>` option by its real, visible label text (exactly what a human reads before
+   * picking one) rather than a guessed internal id. */
+  async function selectOptionByLabel(selector: string, optionLabel: string): Promise<void> {
+    await window.webContents.executeJavaScript(`
+      (function () {
+        const select = document.querySelector(${JSON.stringify(selector)});
+        if (!select) return;
+        const option = Array.from(select.options).find(
+          (o) => o.textContent && o.textContent.trim() === ${JSON.stringify(optionLabel)},
+        );
+        if (!option) return;
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
+        setter.call(select, option.value);
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+      })();
+    `);
+  }
+
+  /** `ChannelAclEditor`'s `GroupCheckboxList` renders one real `<label>` per real server group with
+   * no per-checkbox testid — this finds it by the same real, visible group name a human reads. */
+  async function clickGroupCheckboxByName(scopeSelector: string, groupName: string): Promise<void> {
+    await window.webContents.executeJavaScript(`
+      (function () {
+        const scope = document.querySelector(${JSON.stringify(scopeSelector)});
+        if (!scope) return;
+        const label = Array.from(scope.querySelectorAll('label')).find(
+          (el) => el.textContent && el.textContent.includes(${JSON.stringify(groupName)}),
+        );
+        label?.querySelector('input[type="checkbox"]')?.click();
+      })();
+    `);
+  }
+
+  async function dispatchContextMenu(selector: string): Promise<void> {
+    await window.webContents.executeJavaScript(`
+      (function () {
+        const el = document.querySelector(${JSON.stringify(selector)});
+        if (!el) return;
+        const rect = el.getBoundingClientRect();
+        el.dispatchEvent(new MouseEvent('contextmenu', {
+          bubbles: true,
+          clientX: rect.left + 24,
+          clientY: rect.top + rect.height / 2,
+        }));
+      })();
+    `);
+  }
+
+  /** `ContextMenu.tsx` closes on an outside `pointerdown` (see its own `handlePointerDown`) — a real
+   * dispatch of that same event on `document.body`, never a synthetic `onClose()` call. */
+  async function dismissContextMenu(): Promise<void> {
+    await window.webContents.executeJavaScript(
+      `document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));`,
+    );
+  }
+
+  /** Closes exactly one open `<Modal>`, scoped by its own `testId` — never a bare
+   * `[aria-label="Close"]` query, which would match whichever `Modal` happens to appear first in DOM
+   * order when more than one is stacked (e.g. `ChannelModal` opened from inside `ServerSettingsModal`)
+   * and could close the wrong one. */
+  async function closeModal(testId: string): Promise<void> {
+    await click(`[data-testid="${testId}"] [aria-label="Close"]`);
+  }
+
+  async function saveCapture(name: string): Promise<void> {
+    const image = await window.webContents.capturePage();
+    await fsPromises.writeFile(path.join(captureDir, name), image.toPNG());
+    console.info(`E2E_SCREENSHOT_SAVED:${name}`);
+  }
+
+  let joinedChannel = false;
+  let grantedAdmin = false;
+  let started = false;
+  const joinedMarker = `disco-voador:voice-joined:${channelId}`;
+
+  window.webContents.on('console-message', (_event, _level, message) => {
+    if (message.startsWith(joinedMarker)) joinedChannel = true;
+    if (message.startsWith('disco-voador:my-groups:') && message.includes(adminGroupId)) {
+      grantedAdmin = true;
+    }
+    if (started || !joinedChannel || !grantedAdmin) return;
+    started = true;
+
+    void (async () => {
+      try {
+        // Let the live-granted admin UI chrome (Server Settings gear, context-menu admin items) and
+        // the joined roster actually render before the first capture — including the orchestrating
+        // script's own transient "Setup" participant leaving Lobby again right after granting (see
+        // `e2e-screenshot-capture-t13-2.mjs`), so this capture shows only the real participants.
+        await wait(1500);
+        window.setBounds({ width: 1920, height: 1080 });
+        await wait(500);
+
+        await saveCapture('01-channel-hierarchy-admin-1920x1080.png');
+        // Same real, already-rendered frame — the temporary channel's timer badge is already
+        // visible in it (see this task's own "don't over-engineer forcing a tooltip" guidance).
+        await saveCapture('09-temporary-channel.png');
+
+        await dispatchContextMenu(`[data-testid="channel-row-${poeEndgameId}"]`);
+        await waitForCondition('document.querySelector(\'[role="menu"]\')');
+        await wait(200);
+        await saveCapture('02-channel-context-menu-admin.png');
+        await dismissContextMenu();
+        await wait(300);
+
+        await click(`[data-testid="channel-row-join-${vipLoungeId}"]`);
+        await waitForCondition('document.querySelector(\'[data-testid="password-join-input"]\')');
+        await wait(300);
+        await saveCapture('08-channel-password-prompt.png');
+        await closeModal('password-join-dialog');
+        await wait(300);
+
+        await click('[data-testid="open-server-settings"]');
+        await waitForCondition(
+          'document.querySelector(\'[data-testid="channels-admin-create-category"]\')',
+        );
+        await wait(400);
+        await saveCapture('10-server-settings-channels.png');
+
+        await click('[data-testid="channels-admin-create-category"]');
+        await waitForCondition('document.querySelector(\'[data-testid="category-modal-name"]\')');
+        await setValue('[data-testid="category-modal-name"]', 'EVENTS');
+        await wait(200);
+        await saveCapture('04-create-category.png');
+        await closeModal('category-modal');
+        await wait(300);
+
+        await click('[data-testid="channels-admin-create-channel"]');
+        await waitForCondition('document.querySelector(\'[data-testid="channel-modal-name"]\')');
+        await setValue('[data-testid="channel-modal-name"]', 'Arena PvP');
+        await selectOptionByLabel('[data-testid="channel-modal-parent"]', 'GAMES');
+        await click('[data-testid="channel-modal-password-enable"]');
+        await setValue('[data-testid="channel-modal-password"]', 'arena-secret-99');
+        await setValue('[data-testid="channel-modal-password-confirm"]', 'arena-secret-99');
+        await wait(300);
+        await saveCapture('03-create-channel.png');
+        await closeModal('channel-modal');
+        await wait(300);
+
+        await click(`[data-testid="channels-admin-edit-${bossingId}"]`);
+        await waitForCondition(
+          `document.querySelector('[data-testid="channel-modal-name"]')?.value === 'Bossing'`,
+        );
+        await wait(400);
+        await saveCapture('05-edit-channel.png');
+
+        await click('input[name="managePolicy"][value="selected-groups"]');
+        await waitForCondition(
+          `Array.from(document.querySelectorAll('[data-testid="channel-modal"] label')).some(
+            (el) => el.textContent && el.textContent.includes('Moderator'),
+          )`,
+        );
+        await clickGroupCheckboxByName('[data-testid="channel-modal"]', 'Moderator');
+        await wait(200);
+        await window.webContents.executeJavaScript(`
+          document
+            .querySelector('[data-testid="channel-modal"] input[name="managePolicy"]')
+            ?.closest('fieldset')
+            ?.scrollIntoView({ block: 'center' });
+        `);
+        await wait(300);
+        await saveCapture('07-channel-permissions.png');
+        // Never submitted — this is a live, in-progress edit shown for evidence only (matches
+        // screenshot 03/04's own "populated but unsubmitted" framing).
+        await closeModal('channel-modal');
+        await wait(300);
+
+        await click(`[data-testid="channels-admin-move-${mappingId}"]`);
+        await waitForCondition('document.querySelector(\'[data-testid="move-channel-target"]\')');
+        await wait(300);
+        await saveCapture('06-move-channel.png');
+        await closeModal('move-channel-dialog');
+        await wait(300);
+
+        await click('[data-testid="server-settings-nav-groups"]');
+        await wait(500);
+        await saveCapture('11-server-settings-permissions.png');
+
+        await closeModal('server-settings-modal');
+        await wait(400);
+
+        window.setBounds({ width: 1366, height: 768 });
+        await wait(600);
+        await saveCapture('13-admin-1366x768.png');
+
+        console.info('E2E_CHANNEL_ADMIN_SCREENSHOT_CAPTURE_DONE');
+        setTimeout(() => app.exit(0), 250);
+      } catch (error) {
+        console.error('E2E channel-admin screenshot capture failed', error);
+        setTimeout(() => app.exit(1), 250);
+      }
+    })();
+  });
+}
+
+/**
+ * T13.2 screenshot-capture tooling only — the second, independent Electron instance
+ * `e2e-screenshot-capture-t13-2.mjs` launches: a genuine Guest (no token ever redeemed, no special
+ * group), auto-joining a real, already-populated open channel (e.g. "AFK") purely to reach a
+ * connected, catalog-populated state — capturing the one screenshot proving zero admin chrome leaks
+ * to a Guest (`12-channel-sidebar-normal-user.png`). See `armE2EChannelAdminScreenshotCapture`'s own
+ * doc comment for why this reads its own env vars directly rather than through `desktop-config.ts`.
+ */
+function armE2EChannelGuestScreenshotCapture(window: BrowserWindow): void {
+  const captureDirEnv = process.env['DISCO_VOADOR_E2E_T132_SCREENSHOT_GUEST_DIR'];
+  const channelIdEnv = config.e2eVoiceAutoJoin?.channelId;
+  if (!captureDirEnv || !channelIdEnv || app.isPackaged) return;
+  // See `armE2EChannelAdminScreenshotCapture`'s identical comment: re-bound so the closures below
+  // capture a `string`, not `string | undefined`.
+  const captureDir = captureDirEnv;
+  const channelId = channelIdEnv;
+
+  const wait = (ms: number): Promise<void> =>
+    new Promise((resolve) => {
+      setTimeout(resolve, ms);
+    });
+
+  let started = false;
+  const joinedMarker = `disco-voador:voice-joined:${channelId}`;
+
+  window.webContents.on('console-message', (_event, _level, message) => {
+    if (started || !message.startsWith(joinedMarker)) return;
+    started = true;
+
+    void (async () => {
+      try {
+        await wait(1000);
+        window.setBounds({ width: 1920, height: 1080 });
+        await wait(500);
+        const image = await window.webContents.capturePage();
+        await fsPromises.writeFile(
+          path.join(captureDir, '12-channel-sidebar-normal-user.png'),
+          image.toPNG(),
+        );
+        console.info('E2E_SCREENSHOT_SAVED:12-channel-sidebar-normal-user.png');
+        console.info('E2E_CHANNEL_GUEST_SCREENSHOT_CAPTURE_DONE');
+        setTimeout(() => app.exit(0), 250);
+      } catch (error) {
+        console.error('E2E channel-guest screenshot capture failed', error);
+        setTimeout(() => app.exit(1), 250);
+      }
+    })();
+  });
+}
+
 async function bootstrap(): Promise<void> {
   await app.whenReady();
 
@@ -906,6 +1300,7 @@ async function bootstrap(): Promise<void> {
   armE2EIdentityPersistenceExit(window);
   armE2EConnectionSmokeExit(window);
   armE2EAuthorizationExit(window);
+  armE2EChannelAdminExit(window);
   armE2ETextChatRelay(window);
   armE2EReconnectSmokeRelay(window);
   armE2EProcessAudioSmokeRelay(window);
@@ -913,6 +1308,8 @@ async function bootstrap(): Promise<void> {
   armE2EProductShellSmokeRelay(window);
   armE2EScreenshotHomeCapture(window);
   armE2EScreenshotWorkspaceCapture(window);
+  armE2EChannelAdminScreenshotCapture(window);
+  armE2EChannelGuestScreenshotCapture(window);
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

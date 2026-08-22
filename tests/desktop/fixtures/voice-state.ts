@@ -11,10 +11,11 @@ import type {
   BanSummary,
   ChatMessageView,
   ChatScope,
+  ChannelNodeAdminView,
+  ChannelNodeView,
   GroupBadge,
   GroupSummary,
   PermissionKey,
-  VoiceChannelSummary,
 } from '@disco-voador/protocol';
 
 import type { ServerInfo } from '../../../apps/desktop/src/renderer/realtime/realtime-client.js';
@@ -25,8 +26,45 @@ import type {
   VoiceParticipantView,
 } from '../../../apps/desktop/src/renderer/voice/use-voice-channel.js';
 
-export function createChannel(overrides: Partial<VoiceChannelSummary> = {}): VoiceChannelSummary {
-  return { channelId: 'general', name: 'General', ...overrides };
+export function createChannel(overrides: Partial<ChannelNodeView> = {}): ChannelNodeView {
+  // `parentId`/`userLimit` are optional keys under `exactOptionalPropertyTypes` — omitted here
+  // entirely rather than set to `undefined`, matching `deviceIdConstraint`'s own convention.
+  return {
+    nodeId: 'general',
+    kind: 'voice',
+    name: 'General',
+    sortOrder: 0,
+    visibilityPolicy: 'inherit',
+    joinPolicy: 'inherit',
+    managePolicy: 'inherit',
+    hasPassword: false,
+    temporary: false,
+    ...overrides,
+  };
+}
+
+/** T13.2 — the admin/manager detail view a `getEditableChannelNode` resolution carries (adds the
+ * three group-id lists the ordinary `ChannelNodeView` deliberately omits). Defaults mirror
+ * `createChannel`'s own baseline exactly, so a test only needs to override what it actually cares
+ * about. */
+export function createChannelAdminView(
+  overrides: Partial<ChannelNodeAdminView> = {},
+): ChannelNodeAdminView {
+  return {
+    nodeId: 'general',
+    kind: 'voice',
+    name: 'General',
+    sortOrder: 0,
+    visibilityPolicy: 'inherit',
+    visibilityGroupIds: [],
+    joinPolicy: 'inherit',
+    joinGroupIds: [],
+    managePolicy: 'inherit',
+    manageGroupIds: [],
+    hasPassword: false,
+    temporary: false,
+    ...overrides,
+  };
 }
 
 export function createParticipant(
@@ -87,7 +125,7 @@ export function createVoiceState(overrides: Partial<VoiceChannelState> = {}): Vo
   return {
     connectionStatus: 'connected',
     serverInfo: createServerInfo(),
-    channels: [createChannel()],
+    channelTree: [createChannel()],
     currentChannelId: undefined,
     selfParticipantId: undefined,
     participants: [],
@@ -121,6 +159,8 @@ export function createVoiceState(overrides: Partial<VoiceChannelState> = {}): Vo
     lastCreatedToken: undefined,
     lastRedeemedGroup: undefined,
     chatThreads: new Map(),
+    channelPasswordPrompt: undefined,
+    channelAccessRevokedNotice: undefined,
     ...overrides,
   };
 }
@@ -156,6 +196,18 @@ export function createVoiceActions(
     listBans: vi.fn(),
     sendChatMessage: vi.fn(),
     loadChatHistory: vi.fn(),
+    createCategory: vi.fn(),
+    createVoiceChannel: vi.fn(),
+    updateChannel: vi.fn(),
+    moveChannel: vi.fn(),
+    reorderChannels: vi.fn(),
+    deleteChannel: vi.fn(),
+    setChannelPassword: vi.fn(),
+    removeChannelPassword: vi.fn(),
+    getEditableChannelNode: vi.fn(),
+    submitChannelPassword: vi.fn(),
+    dismissChannelPasswordPrompt: vi.fn(),
+    dismissChannelAccessRevokedNotice: vi.fn(),
     ...overrides,
   };
 }

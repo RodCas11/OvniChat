@@ -4,11 +4,19 @@ import type { ScreenQualityPreset } from '@disco-voador/media-core';
 import type { DesktopE2EVoiceConfig, DesktopIdentity } from '../../shared/ipc-contract.js';
 import { Button } from '../ui/Button.js';
 import { Modal } from '../ui/Modal.js';
+import { useToast } from '../ui/ToastProvider.js';
+import { CategoryModal, type CategoryModalMode } from '../workspace/CategoryModal.js';
+import { ChannelModal, type ChannelModalMode } from '../workspace/ChannelModal.js';
 import { ChannelSidebar } from '../workspace/ChannelSidebar.js';
+import { DeleteChannelConfirmDialog } from '../workspace/DeleteChannelConfirmDialog.js';
 import { MainContent } from '../workspace/MainContent.js';
 import { MemberPanel } from '../workspace/MemberPanel.js';
+import { MoveChannelDialog } from '../workspace/MoveChannelDialog.js';
+import { PasswordJoinDialog } from '../workspace/PasswordJoinDialog.js';
+import { ServerSettingsModal } from '../workspace/ServerSettingsModal.js';
 import { UserControlBar } from '../workspace/UserControlBar.js';
-import type { ChatTarget } from '../workspace/chat-target.js';
+import type { ChannelAdminIntent } from '../workspace/channel-admin-intent.js';
+import { resolveChatTargetAfterCatalogUpdate, type ChatTarget } from '../workspace/chat-target.js';
 import { AuthorizationPanel } from './AuthorizationPanel.js';
 import { probeRemoteAudioLevel } from './e2e-audio-probe.js';
 import { probeRemoteAudioFrequency } from './e2e-frequency-probe.js';
@@ -73,6 +81,65 @@ export function VoiceChannelView({
   const [showScreenPicker, setShowScreenPicker] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showAuthorization, setShowAuthorization] = useState(false);
+  // T13.2 — the new admin surfaces, following the same "top-level modal state lives in
+  // VoiceChannelView" convention `showSettings`/`showAuthorization` already established. `channelModal`
+  // is a single discriminated-union slot (never more than one of Create Category/Create Channel/Edit
+  // Channel/Edit Category open at once — opening a new one always replaces whatever was there).
+  const [showServerSettings, setShowServerSettings] = useState(false);
+  const [channelModal, setChannelModal] = useState<
+    | { readonly kind: 'category'; readonly mode: CategoryModalMode }
+    | { readonly kind: 'channel'; readonly mode: ChannelModalMode }
+    | undefined
+  >(undefined);
+  const [moveChannelNodeId, setMoveChannelNodeId] = useState<string | undefined>(undefined);
+  const [deleteChannelNodeId, setDeleteChannelNodeId] = useState<string | undefined>(undefined);
+  const { showToast } = useToast();
+
+  /** T13.2 — routes every `ChannelAdminIntent` (from a context menu or the Channels admin page) to
+   * the right modal's local state — see `channel-admin-intent.ts` for the full union this switches
+   * over. */
+  const handleChannelAdminIntent = useCallback((intent: ChannelAdminIntent): void => {
+    switch (intent.type) {
+      case 'create-category':
+        setChannelModal({ kind: 'category', mode: { type: 'create' } });
+        return;
+      case 'create-channel':
+        setChannelModal({
+          kind: 'channel',
+          mode: {
+            type: 'create',
+            parentLocked: intent.parentLocked,
+            ...(intent.parentId !== undefined ? { parentId: intent.parentId } : {}),
+          },
+        });
+        return;
+      case 'edit-channel':
+        setChannelModal({ kind: 'channel', mode: { type: 'edit', nodeId: intent.nodeId } });
+        return;
+      case 'edit-category':
+        setChannelModal({ kind: 'category', mode: { type: 'edit', nodeId: intent.nodeId } });
+        return;
+      case 'move-channel':
+        setMoveChannelNodeId(intent.nodeId);
+        return;
+      case 'delete-node':
+        setDeleteChannelNodeId(intent.nodeId);
+        return;
+    }
+  }, []);
+
+  /** T13.2 — a Guest (or any identity with no relevant capability at all) must see zero UI chrome
+   * for Server Settings — this is the "is the entry point even shown" gate, deliberately independent
+   * of each individual page's own finer-grained gating (a real per-node delegated Manage right is
+   * client-unknowable synchronously, so this is only ever a reasonable proxy: does this identity hold
+   * *any* global capability the shell's pages would do something useful with). */
+  const canOpenServerSettings =
+    state.myPermissions.includes('channels.create') ||
+    state.myPermissions.includes('channels.manage') ||
+    state.myPermissions.includes('channels.delete') ||
+    state.myPermissions.includes('authorization.groups.manage') ||
+    state.myPermissions.includes('authorization.tokens.manage') ||
+    state.myPermissions.includes('moderation.ban');
   // T13.1 — which chat thread the workspace shows, entirely independent of voice-join status (see
   // `workspace/chat-target.ts`'s own doc comment for the hard "click never joins voice" rule this
   // exists to satisfy). Local, presentation-only UI state — never persisted, never affects the
@@ -102,6 +169,27 @@ export function VoiceChannelView({
       cancelled = true;
     };
   }, []);
+
+  // T13.2 — surfaces `state.channelAccessRevokedNotice` as a real toast (see
+  // `ToastProvider.tsx`'s API) the moment it appears, then immediately tells the hook it has been
+  // shown — the toast's own timed dismissal (not this effect) governs how long it stays visible.
+  useEffect(() => {
+    if (!state.channelAccessRevokedNotice) return;
+    showToast(state.channelAccessRevokedNotice, 'error');
+    actions.dismissChannelAccessRevokedNotice();
+  }, [state.channelAccessRevokedNotice, showToast, actions]);
+
+  // T13.2 — the currently-selected chat target can be invalidated by an admin action this
+  // connection had no other way to observe (deleting the selected channel, or a live ACL change
+  // that hides it from this identity's `voice:catalog` — see `ChannelNodeView`'s own "absent, never
+  // present-but-marked-hidden" privacy guarantee) — falls back to Server Chat rather than continuing
+  // to show a chat header/composer for a channel that no longer exists from this connection's point
+  // of view. Mirrors `MainContent.tsx`'s own resolution of `channelName` (a `find` against the same
+  // `state.channelTree`), so both stay consistent about what "still exists" means.
+  useEffect(() => {
+    const channelIds = new Set(state.channelTree.map((node) => node.nodeId));
+    setSelectedChatTarget((prev) => resolveChatTargetAfterCatalogUpdate(prev, channelIds));
+  }, [state.channelTree]);
 
   const canJoin =
     state.connectionStatus === 'connected' && displayName.trim().length > 0 && !state.joining;
@@ -136,18 +224,45 @@ export function VoiceChannelView({
   useEffect(() => {
     if (!e2eAutoJoin || autoJoinAttempted.current) return;
     if (state.connectionStatus !== 'connected' || state.currentChannelId || state.joining) return;
-    if (!state.channels.some((channel) => channel.channelId === e2eAutoJoin.channelId)) return;
+    if (!state.channelTree.some((node) => node.nodeId === e2eAutoJoin.channelId)) return;
 
     autoJoinAttempted.current = true;
-    actions.join(e2eAutoJoin.channelId, e2eAutoJoin.displayName);
+    actions.join(e2eAutoJoin.channelId, e2eAutoJoin.displayName, e2eAutoJoin.autoJoinPassword);
   }, [
     e2eAutoJoin,
     state.connectionStatus,
     state.currentChannelId,
     state.joining,
-    state.channels,
+    state.channelTree,
     actions,
   ]);
+
+  // T13.2 — `apps/desktop/scripts/e2e-channel-admin-smoke.mjs` only: two further scripted
+  // `voice:join` attempts against `channelAdminRetry.channelId`, fired by fixed timers once the
+  // initial auto-join above has landed — mirrors `autoCameraOffAfterMs`'s own "config-driven timer
+  // calling a real production action" pattern exactly, never a second Electron instance or a DOM
+  // click. The first attempt is expected to fail (this identity does not yet hold the channel's
+  // required group); the orchestrating script grants that group live, server-side, between the two
+  // fixed delays; the second attempt is expected to observe a *different* rejection (or success),
+  // proving the live grant took effect on this same already-open connection with no reconnect.
+  const channelAdminRetryScheduled = useRef(false);
+  useEffect(() => {
+    const retry = e2eAutoJoin?.channelAdminRetry;
+    if (!retry || channelAdminRetryScheduled.current) return;
+    if (state.currentChannelId !== e2eAutoJoin.channelId) return;
+    channelAdminRetryScheduled.current = true;
+
+    const timer1 = setTimeout(() => {
+      actions.join(retry.channelId, e2eAutoJoin.displayName);
+    }, retry.retry1AfterMs);
+    const timer2 = setTimeout(() => {
+      actions.join(retry.channelId, e2eAutoJoin.displayName);
+    }, retry.retry2AfterMs);
+    return () => {
+      clearTimeout(timer1);
+      clearTimeout(timer2);
+    };
+  }, [e2eAutoJoin, state.currentChannelId, actions]);
 
   /**
    * T13.1 product-shell-smoke only (`e2e-product-shell-smoke.mjs`) — proves a fresh `VoiceChannelView`
@@ -184,12 +299,12 @@ export function VoiceChannelView({
   useEffect(() => {
     if (!e2eAutoJoin?.productShellSmoke || pssChatTargetSelected.current) return;
     if (state.connectionStatus !== 'connected') return;
-    if (!state.channels.some((channel) => channel.channelId === e2eAutoJoin.channelId)) return;
+    if (!state.channelTree.some((node) => node.nodeId === e2eAutoJoin.channelId)) return;
 
     pssChatTargetSelected.current = true;
     setSelectedChatTarget({ scope: 'channel', channelId: e2eAutoJoin.channelId });
     console.info(`E2E_PRODUCT_SHELL_CHAT_TARGET_SELECTED:${e2eAutoJoin.channelId}`);
-  }, [e2eAutoJoin, state.connectionStatus, state.channels]);
+  }, [e2eAutoJoin, state.connectionStatus, state.channelTree]);
 
   /**
    * T13.1 product-shell-smoke only — once actually joined (the real `autoJoinAttempted` effect
@@ -983,7 +1098,7 @@ export function VoiceChannelView({
         <>
           <ChannelSidebar
             serverName={state.serverInfo?.serverName}
-            channels={state.channels}
+            channelTree={state.channelTree}
             participants={participantsWithSelf}
             currentChannelId={state.currentChannelId}
             selfParticipantId={state.selfParticipantId}
@@ -997,17 +1112,27 @@ export function VoiceChannelView({
             onSelectChatTarget={setSelectedChatTarget}
             onJoinChannel={handleJoinChannel}
             onLeaveChannel={actions.leave}
+            state={state}
+            actions={actions}
+            onChannelAdminIntent={handleChannelAdminIntent}
           />
 
           <div className={styles.center}>
             <MainContent
               state={state}
               actions={actions}
-              channels={state.channels}
+              channelTree={state.channelTree}
               selectedChatTarget={selectedChatTarget}
               onOpenAuthorization={() => {
                 setShowAuthorization(true);
               }}
+              onOpenServerSettings={
+                canOpenServerSettings
+                  ? () => {
+                      setShowServerSettings(true);
+                    }
+                  : undefined
+              }
             />
             <UserControlBar
               state={state}
@@ -1091,6 +1216,74 @@ export function VoiceChannelView({
           <AuthorizationPanel state={state} actions={actions} />
         </Modal>
       )}
+
+      {showServerSettings && (
+        <Modal
+          open
+          onClose={() => {
+            setShowServerSettings(false);
+          }}
+          title="Server Settings"
+          size="xlarge"
+          testId="server-settings-modal"
+        >
+          <ServerSettingsModal
+            state={state}
+            actions={actions}
+            onAdminIntent={handleChannelAdminIntent}
+          />
+        </Modal>
+      )}
+
+      {channelModal?.kind === 'category' && (
+        <CategoryModal
+          open
+          onClose={() => {
+            setChannelModal(undefined);
+          }}
+          state={state}
+          actions={actions}
+          mode={channelModal.mode}
+        />
+      )}
+
+      {channelModal?.kind === 'channel' && (
+        <ChannelModal
+          open
+          onClose={() => {
+            setChannelModal(undefined);
+          }}
+          state={state}
+          actions={actions}
+          mode={channelModal.mode}
+        />
+      )}
+
+      {moveChannelNodeId && (
+        <MoveChannelDialog
+          open
+          onClose={() => {
+            setMoveChannelNodeId(undefined);
+          }}
+          state={state}
+          actions={actions}
+          nodeId={moveChannelNodeId}
+        />
+      )}
+
+      {deleteChannelNodeId && (
+        <DeleteChannelConfirmDialog
+          open
+          onClose={() => {
+            setDeleteChannelNodeId(undefined);
+          }}
+          state={state}
+          actions={actions}
+          nodeId={deleteChannelNodeId}
+        />
+      )}
+
+      <PasswordJoinDialog state={state} actions={actions} />
 
       {[...state.remoteAudioStreams.entries()].map(([participantId, stream]) => (
         <RemoteAudio

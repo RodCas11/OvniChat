@@ -35,10 +35,17 @@
  * existing message's required shape. This is the first task to actually exercise the "new message
  * types, new optional fields" half of the evolution policy rather than the "required field" half
  * T7 and T8 both needed.
+ *
+ * Bumped to 4 for T13.2 (channels & server administration): `voice:catalog` changed shape from a
+ * flat `channels: VoiceChannelSummary[]` to a per-connection-filtered `nodes: ChannelNodeView[]`
+ * tree, with no parallel old field kept alongside it — an old client's `.strict()` parser would
+ * reject the new shape outright (`channels` is gone), so this is a genuine breaking change, not an
+ * additive one, exactly like T7's v1->v2 bump. v3 support was dropped rather than kept as a
+ * parallel codepath, matching that same precedent.
  */
-export const CURRENT_PROTOCOL_VERSION = 3;
+export const CURRENT_PROTOCOL_VERSION = 4;
 
-export const SUPPORTED_PROTOCOL_VERSIONS: readonly number[] = [3];
+export const SUPPORTED_PROTOCOL_VERSIONS: readonly number[] = [4];
 
 export function isSupportedProtocolVersion(version: number): boolean {
   return SUPPORTED_PROTOCOL_VERSIONS.includes(version);

@@ -162,6 +162,26 @@ export interface DesktopE2EVoiceConfig {
    */
   readonly autoChatSendChannelBody: string | undefined;
   /**
+   * T13.2 — attaches a password to the initial auto-join attempt (`channelId`/`displayName` above) —
+   * the same optional `voice:join.password` field a real `PasswordJoinDialog` submission drives.
+   * See `apps/desktop/scripts/e2e-channel-admin-smoke.mjs`.
+   */
+  readonly autoJoinPassword: string | undefined;
+  /**
+   * T13.2 — schedules up to two further scripted `voice:join` attempts (real production
+   * `actions.join()` calls, fired by a fixed timer — mirrors `autoCameraOffAfterMs`'s own
+   * config-driven-timer pattern) against `channelId` below, after the initial auto-join above lands.
+   * Proves a live server-side ACL/group change takes effect on an already-open connection with no
+   * reconnect. See `apps/desktop/scripts/e2e-channel-admin-smoke.mjs`.
+   */
+  readonly channelAdminRetry:
+    | {
+        readonly channelId: string;
+        readonly retry1AfterMs: number;
+        readonly retry2AfterMs: number;
+      }
+    | undefined;
+  /**
    * T13.1 — arms `apps/desktop/scripts/e2e-product-shell-smoke.mjs`'s bookmark-seeding and
    * server-switch/disconnect automation in `App.tsx`, plus the chat-target-selection and
    * settings-open/close automation in `VoiceChannelView.tsx` (both purely additive new effects —

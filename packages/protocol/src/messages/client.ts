@@ -5,6 +5,7 @@ import { serverTokenSchema } from '../authorization.js';
 import { displayNameSchema } from '../identifiers.js';
 import { identityPublicKeySchema, identitySignatureSchema } from '../identity.js';
 import { clientAuthorizationMessageSchema } from './authorization.js';
+import { clientChannelMessageSchema } from './channels.js';
 import { clientChatMessageSchema } from './chat.js';
 import { clientMediaTrackSourceMessageSchema } from './media.js';
 import {
@@ -95,6 +96,7 @@ export const clientMessageSchema = z.discriminatedUnion('type', [
   clientMediaTrackSourceMessageSchema,
   ...clientAuthorizationMessageSchema.options,
   ...clientChatMessageSchema.options,
+  ...clientChannelMessageSchema.options,
 ]);
 
 export type ClientMessage = z.infer<typeof clientMessageSchema>;

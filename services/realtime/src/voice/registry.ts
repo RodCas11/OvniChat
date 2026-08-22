@@ -1,7 +1,5 @@
 import { randomUUID } from 'node:crypto';
 
-import { MAX_CHANNEL_PARTICIPANTS, type VoiceChannelSummary } from '@disco-voador/protocol';
-
 export interface VoiceParticipantRecord {
   readonly connectionId: string;
   readonly participantId: string;
@@ -39,7 +37,7 @@ export type JoinOutcome =
     }
   | {
       readonly ok: false;
-      readonly code: 'CHANNEL_NOT_FOUND' | 'CHANNEL_FULL';
+      readonly code: 'CHANNEL_FULL';
       readonly reason: string;
     };
 
@@ -57,25 +55,18 @@ export type ResolveSignalingTargetOutcome =
  * switch/isolation matrix (`docs/tasks/T3_VOICE_WEBRTC.md`'s required tests) is unit-testable
  * without any real socket. A connection belongs to zero or one channel at a time; joining a new
  * one cleanly leaves the old one first (see `join`).
+ *
+ * T13.2 — this class no longer owns any channel *catalog* at all: whether a channel exists, is
+ * visible, or is joinable is entirely `ChannelPort`'s concern now (see `channel-port.ts`), and a
+ * voice channel's occupancy ceiling is no longer a single hardcoded constant — it is computed by
+ * the caller (`handleVoiceJoin` in `protocol-handlers.ts`) per-channel from `ChannelNodeView.
+ * userLimit`, and passed into {@link join} as `capacityLimit`. `MAX_CHANNEL_PARTICIPANTS` remains
+ * the one hard technical ceiling no channel can ever exceed (also the wire-schema array-size bound
+ * for a join snapshot) — the caller is responsible for never passing a `capacityLimit` above it.
  */
 export class VoiceRegistry {
-  private readonly channelsById = new Map<string, VoiceChannelSummary>();
   private readonly participantsByConnection = new Map<string, VoiceParticipantRecord>();
   private readonly membersByChannel = new Map<string, Set<string>>();
-
-  constructor(channels: readonly VoiceChannelSummary[]) {
-    for (const channel of channels) {
-      this.channelsById.set(channel.channelId, channel);
-    }
-  }
-
-  listChannels(): readonly VoiceChannelSummary[] {
-    return [...this.channelsById.values()];
-  }
-
-  isKnownChannel(channelId: string): boolean {
-    return this.channelsById.has(channelId);
-  }
 
   getParticipant(connectionId: string): VoiceParticipantRecord | undefined {
     return this.participantsByConnection.get(connectionId);
@@ -124,24 +115,28 @@ export class VoiceRegistry {
     return members;
   }
 
+  /**
+   * `capacityLimit` is computed by the caller (never this class) as
+   * `Math.min(node.userLimit ?? MAX_CHANNEL_PARTICIPANTS, MAX_CHANNEL_PARTICIPANTS)` — see this
+   * class's own doc comment. Existence/visibility/join-policy/password checks have already
+   * happened by the time this is called (`ChannelPort.checkJoin`, evaluated by `handleVoiceJoin`
+   * before ever reaching here) — this method only enforces membership bookkeeping and the numeric
+   * capacity ceiling, so it never returns `CHANNEL_NOT_FOUND` itself anymore.
+   */
   join(
     connectionId: string,
     channelId: string,
     displayName: string,
     identityId: string,
+    capacityLimit: number,
   ): JoinOutcome {
-    if (!this.channelsById.has(channelId)) {
-      return {
-        ok: false,
-        code: 'CHANNEL_NOT_FOUND',
-        reason: `Unknown voice channel "${channelId}"`,
-      };
-    }
-
     // Checked before leaving any previous channel: a switch that would only succeed by first
-    // vacating the old channel is still a rejection, not a partial state change.
+    // vacating the old channel is still a rejection, not a partial state change. Someone already a
+    // member of this exact channel is never blocked by a newly-lowered limit (T13.2: decreasing a
+    // limit below current occupancy must never kick existing occupants) — this exemption is
+    // unchanged from pre-T13.2 behavior.
     const alreadyMember = this.membersOf(channelId).has(connectionId);
-    if (!alreadyMember && this.membersOf(channelId).size >= MAX_CHANNEL_PARTICIPANTS) {
+    if (!alreadyMember && this.membersOf(channelId).size >= capacityLimit) {
       return {
         ok: false,
         code: 'CHANNEL_FULL',

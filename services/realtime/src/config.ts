@@ -46,6 +46,13 @@ const realtimeConfigSchema = z.object({
   REALTIME_CHAT_SEND_RATE_LIMIT_WINDOW_MS: envPositiveInt().default(10_000),
   REALTIME_CHAT_HISTORY_RATE_LIMIT_MAX_MESSAGES: envPositiveInt().default(20),
   REALTIME_CHAT_HISTORY_RATE_LIMIT_WINDOW_MS: envPositiveInt().default(10_000),
+  // T13.2 — a separate, smaller bucket specifically for `voice:join` attempts against a
+  // password-protected channel, consulted only in that branch before the `scryptSync`-backed check
+  // (see `channel-port.ts`'s doc comment on the accepted ~30-80ms blocking cost this mitigates).
+  // Deliberately non-fatal when exceeded (`CHANNEL_PASSWORD_RATE_LIMITED`), matching
+  // `CHAT_RATE_LIMITED`'s own precedent.
+  REALTIME_CHANNEL_PASSWORD_RATE_LIMIT_MAX_MESSAGES: envPositiveInt().default(5),
+  REALTIME_CHANNEL_PASSWORD_RATE_LIMIT_WINDOW_MS: envPositiveInt().default(60_000),
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
 });
 
@@ -69,6 +76,11 @@ export interface RealtimeConfig {
     readonly windowMs: number;
   };
   readonly chatHistoryRateLimit: {
+    readonly maxMessages: number;
+    readonly windowMs: number;
+  };
+  /** T13.2 — see the schema's own doc comment above. */
+  readonly channelPasswordRateLimit: {
     readonly maxMessages: number;
     readonly windowMs: number;
   };
@@ -100,6 +112,10 @@ export function loadRealtimeConfig(
     chatHistoryRateLimit: {
       maxMessages: parsed.REALTIME_CHAT_HISTORY_RATE_LIMIT_MAX_MESSAGES,
       windowMs: parsed.REALTIME_CHAT_HISTORY_RATE_LIMIT_WINDOW_MS,
+    },
+    channelPasswordRateLimit: {
+      maxMessages: parsed.REALTIME_CHANNEL_PASSWORD_RATE_LIMIT_MAX_MESSAGES,
+      windowMs: parsed.REALTIME_CHANNEL_PASSWORD_RATE_LIMIT_WINDOW_MS,
     },
     logLevel: parsed.LOG_LEVEL,
   };

@@ -2,7 +2,17 @@ import { z } from 'zod';
 
 import { messageIdSchema } from '../envelope.js';
 import { groupBadgeListSchema } from '../authorization.js';
-import { channelIdSchema, displayNameSchema, participantIdSchema } from '../identifiers.js';
+import {
+  MAX_CHANNEL_PARTICIPANTS,
+  channelIdSchema,
+  displayNameSchema,
+  participantIdSchema,
+} from '../identifiers.js';
+
+// Reused here purely so a password may be attached to `voice:join` without an import cycle against
+// `channels.ts` (which itself imports `MAX_CHANNEL_PARTICIPANTS` from `identifiers.ts` below) —
+// identical shape to `channels.ts`'s own `channelPasswordSchema`.
+const channelPasswordSchema = z.string().min(1).max(128);
 
 /**
  * `voice:join` requests membership in a voice channel. A connection belongs to zero or one voice
@@ -10,6 +20,11 @@ import { channelIdSchema, displayNameSchema, participantIdSchema } from '../iden
  * processing this message (see `VoiceRegistry.join` in `services/realtime`). `displayName` is
  * resent on every join (not sticky across channel switches) since T3 has no account/session to
  * persist it against.
+ *
+ * T13.2: `password` is optional and only meaningful against a channel with
+ * `ChannelNodeView.hasPassword === true` — see `ChannelPort.checkJoin`'s check ordering (password
+ * is the last check, after visibility/join/capacity, so a Guest denied by group policy never
+ * reaches the password step at all).
  */
 export const clientVoiceJoinMessageSchema = z
   .object({
@@ -17,6 +32,7 @@ export const clientVoiceJoinMessageSchema = z
     id: messageIdSchema,
     channelId: channelIdSchema,
     displayName: displayNameSchema,
+    password: channelPasswordSchema.optional(),
   })
   .strict();
 
@@ -50,13 +66,11 @@ export const voiceParticipantSchema = z
 
 export type VoiceParticipant = z.infer<typeof voiceParticipantSchema>;
 
-/**
- * Also the maximum membership `VoiceRegistry.join` enforces per channel (see
- * `services/realtime/src/voice/registry.ts`) — a single source of truth, since a channel that
- * could exceed this could never actually send a valid `voice:joined` snapshot to its own newest
- * member.
- */
-export const MAX_CHANNEL_PARTICIPANTS = 64;
+// `MAX_CHANNEL_PARTICIPANTS` itself now lives in `identifiers.ts` (see that file's doc comment on
+// why — breaking the `channels.ts` <-> `messages/voice.ts` import cycle); re-exported here so every
+// existing import site (`services/realtime/src/voice/registry.ts`, this package's own tests, etc.)
+// keeps working unchanged.
+export { MAX_CHANNEL_PARTICIPANTS } from '../identifiers.js';
 
 /** Confirms a successful `voice:join`; `id` echoes the join request's `id`. */
 export const serverVoiceJoinedMessageSchema = z
@@ -113,6 +127,13 @@ export type ServerVoiceParticipantLeftMessage = z.infer<
   typeof serverVoiceParticipantLeftMessageSchema
 >;
 
+/**
+ * A minimal seed shape (id + display name only) — no longer the wire catalog shape (see
+ * `messages/channels.ts`'s `serverVoiceCatalogMessageSchema`/`channelNodeSchema`, which replaced it
+ * for T13.2). Retained only as the shape a Dedicated Server operator's config file/`ChannelStore`
+ * bootstrap seed (`DEFAULT_VOICE_CHANNELS`) uses to describe the three legacy-preserved channels at
+ * first-ever database initialization.
+ */
 export const voiceChannelSummarySchema = z
   .object({
     channelId: channelIdSchema,
@@ -121,18 +142,3 @@ export const voiceChannelSummarySchema = z
   .strict();
 
 export type VoiceChannelSummary = z.infer<typeof voiceChannelSummarySchema>;
-
-/**
- * The server's predefined channel catalog, sent once automatically as soon as the connection
- * reaches `ready` (immediately after `server:hello`) — the client never has to ask for it, and
- * there is no server-management UI to change it at runtime in T3.
- */
-export const serverVoiceCatalogMessageSchema = z
-  .object({
-    type: z.literal('voice:catalog'),
-    id: messageIdSchema,
-    channels: z.array(voiceChannelSummarySchema).max(64),
-  })
-  .strict();
-
-export type ServerVoiceCatalogMessage = z.infer<typeof serverVoiceCatalogMessageSchema>;

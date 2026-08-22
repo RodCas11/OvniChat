@@ -80,8 +80,8 @@ an optional `replyTo` when the offending message's `id` could be recovered.
 ## Versioning
 
 ```ts
-CURRENT_PROTOCOL_VERSION = 3;
-SUPPORTED_PROTOCOL_VERSIONS = [3];
+CURRENT_PROTOCOL_VERSION = 4;
+SUPPORTED_PROTOCOL_VERSIONS = [4];
 ```
 
 Bumped 1 → 2 for T7: `client:hello` gained required `nickname`/`publicKey` fields and the
@@ -114,6 +114,15 @@ a protocol-version mismatch.
 (`client:chat-send`/`client:chat-history-request`, `server:chat-message`/`server:chat-history-page`)
 is a set of brand-new message types, and `serverCapabilitySchema` gained an additive `'text-chat'`
 enum member. No existing message's required shape changed.
+
+Bumped 3 → 4 for T13.2: `voice:catalog` changed shape from a flat `channels: VoiceChannelSummary[]` to
+a per-connection-filtered `nodes: ChannelNodeView[]` tree, with no parallel old field kept alongside
+it — an old client's `.strict()` parser would reject the new shape outright (`channels` is gone), so
+this is a genuine breaking change, not additive, exactly like T7's v1→v2 bump. v3 support was dropped
+rather than kept as a parallel codepath, matching that same precedent. Every other T13.2 wire change
+(the full `client:channel-*`/`server:channel-*` message family, `server:voice-removed-by-policy`) is a
+brand-new message type added to the existing discriminated unions and needed no bump of its own — see
+[`CHANNELS_AND_SERVER_ADMINISTRATION.md`](CHANNELS_AND_SERVER_ADMINISTRATION.md) for the full design.
 
 A WebSocket connection's protocol version cannot change mid-connection, so it is negotiated exactly
 once during the handshake rather than repeated on every message. `client:hello.protocolVersion` is
@@ -273,6 +282,16 @@ T10 added one more **non-fatal** code, `CHAT_RATE_LIMITED` — a connection exce
 chat-specific send/history-request rate-limit buckets (separate from the generic transport-level
 `RATE_LIMITED` above) stays connected, matching every other rate-limit-shaped non-fatal condition.
 See [`PERSISTENT_TEXT_CHAT.md`](PERSISTENT_TEXT_CHAT.md) for the full chat message surface.
+
+T13.2 added seven more **non-fatal** codes the same way (`CHANNEL_ACCESS_DENIED`,
+`CHANNEL_PASSWORD_REQUIRED`, `CHANNEL_PASSWORD_INVALID`, `CHANNEL_PASSWORD_RATE_LIMITED`,
+`CHANNEL_PARENT_INVALID`, `CHANNEL_TREE_LIMIT_EXCEEDED`, `GROUP_IN_USE_BY_CHANNEL_POLICY`), plus reuse
+of the existing `CHANNEL_NOT_FOUND`/`CHANNEL_FULL` codes unchanged from their T3 meanings — a hidden
+channel and a nonexistent one are structurally indistinguishable by design, so a hidden channel
+returns the same `CHANNEL_NOT_FOUND` a genuinely unknown ID always has, never a new, more specific
+code that would itself leak the channel's existence. See
+[`CHANNELS_AND_SERVER_ADMINISTRATION.md`](CHANNELS_AND_SERVER_ADMINISTRATION.md) for the full channel
+message surface and ACL/password semantics.
 
 The four `IDENTITY_*` codes are deliberately coarse (see [`CLIENT_IDENTITY.md`](CLIENT_IDENTITY.md)
 for the reasoning): a replayed challenge and a signature from the wrong key both surface as

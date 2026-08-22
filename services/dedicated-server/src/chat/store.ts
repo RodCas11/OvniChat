@@ -56,6 +56,8 @@ export class ChatStore implements ChatPort {
   private readonly selectServerHistoryBeforeStmt;
   private readonly selectChannelHistoryStmt;
   private readonly selectChannelHistoryBeforeStmt;
+  private readonly deleteChannelHistoryStmt;
+  private readonly selectDistinctChannelIdsStmt;
 
   constructor(path: string, options: ChatStoreOptions = {}) {
     this.now = options.now ?? (() => Date.now());
@@ -85,6 +87,12 @@ export class ChatStore implements ChatPort {
     this.selectChannelHistoryBeforeStmt = this.db.prepare(
       `SELECT * FROM chat_messages WHERE scope = 'channel' AND channel_id = ? AND message_id < ?
        ORDER BY message_id DESC LIMIT ?`,
+    );
+    this.deleteChannelHistoryStmt = this.db.prepare(
+      `DELETE FROM chat_messages WHERE scope = 'channel' AND channel_id = ?`,
+    );
+    this.selectDistinctChannelIdsStmt = this.db.prepare(
+      `SELECT DISTINCT channel_id FROM chat_messages WHERE scope = 'channel' AND channel_id IS NOT NULL`,
     );
   }
 
@@ -168,6 +176,22 @@ export class ChatStore implements ChatPort {
       hasMore,
       nextCursor: hasMore ? messages[0]?.messageId : undefined,
     };
+  }
+
+  /** T13.2 — see `ChatPort.deleteChannelHistory`'s own doc comment for the exact contract (only
+   * ever called for a channel id that was never persisted anywhere else — a temporary channel). */
+  deleteChannelHistory(channelId: string): void {
+    this.deleteChannelHistoryStmt.run(channelId);
+  }
+
+  /** T13.2 — best-effort startup hygiene only; see `ChatPort.pruneOrphanedChannelHistory`'s own doc
+   * comment for why this is not the actual safety mechanism. */
+  pruneOrphanedChannelHistory(keepChannelIds: readonly string[]): void {
+    const keep = new Set(keepChannelIds);
+    const rows = this.selectDistinctChannelIdsStmt.all() as unknown as { channel_id: string }[];
+    for (const row of rows) {
+      if (!keep.has(row.channel_id)) this.deleteChannelHistoryStmt.run(row.channel_id);
+    }
   }
 
   close(): void {

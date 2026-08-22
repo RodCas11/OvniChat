@@ -1,8 +1,10 @@
 import {
   CURRENT_PROTOCOL_VERSION,
   parseServerMessage,
+  type AclPolicyKind,
   type ChatScope,
   type ClientMessage,
+  type ManagePolicyKind,
   type PermissionKey,
   type ServerAuthorizationAckMessage,
   type ServerAuthorizationBansMessage,
@@ -11,6 +13,9 @@ import {
   type ServerAuthorizationTokenCreatedMessage,
   type ServerAuthorizationTokenRedeemedMessage,
   type ServerCapability,
+  type ServerChannelAckMessage,
+  type ServerChannelCreatedMessage,
+  type ServerChannelEditableNodeMessage,
   type ServerChatHistoryPageMessage,
   type ServerChatMessageMessage,
   type ServerErrorMessage,
@@ -22,6 +27,7 @@ import {
   type ServerVoiceLeftMessage,
   type ServerVoiceParticipantJoinedMessage,
   type ServerVoiceParticipantLeftMessage,
+  type ServerVoiceRemovedByPolicyMessage,
   type ServerWebrtcAnswerMessage,
   type ServerWebrtcIceCandidateMessage,
   type ServerWebrtcOfferMessage,
@@ -92,6 +98,29 @@ interface RealtimeClientEvents {
   chatMessage: (message: ServerChatMessageMessage) => void;
   /** T10 — a bounded, paginated history page, in reply to `requestChatHistory`. */
   chatHistoryPage: (message: ServerChatHistoryPageMessage) => void;
+  /** T13.2 — reply to `client:channel-create-category`/`client:channel-create-voice`. */
+  channelCreated: (message: ServerChannelCreatedMessage) => void;
+  /** T13.2 — generic success ack for update/move/reorder/delete/set-password/remove-password. */
+  channelAck: (message: ServerChannelAckMessage) => void;
+  /** T13.2 — reply to `client:channel-get-editable-node`. */
+  channelEditableNode: (message: ServerChannelEditableNodeMessage) => void;
+  /** T13.2 — this connection was force-removed from a voice channel by a live ACL/group change,
+   * distinct from a self-initiated leave or a moderation kick/ban. */
+  voiceRemovedByPolicy: (message: ServerVoiceRemovedByPolicyMessage) => void;
+}
+
+/** T13.2 — a leave-unchanged/set/clear-shaped patch for `client:channel-update`, mirroring that
+ * message's own field semantics exactly (`undefined` = leave unchanged everywhere, except
+ * `userLimit` where `null` also means "clear back to no explicit limit"). */
+export interface ChannelUpdatePatch {
+  readonly name?: string;
+  readonly visibilityPolicy?: AclPolicyKind;
+  readonly visibilityGroupIds?: readonly string[];
+  readonly joinPolicy?: AclPolicyKind;
+  readonly joinGroupIds?: readonly string[];
+  readonly managePolicy?: ManagePolicyKind;
+  readonly manageGroupIds?: readonly string[];
+  readonly userLimit?: number | null;
 }
 
 function generateMessageId(): string {
@@ -144,6 +173,10 @@ export class RealtimeClient implements SignalingPort {
       authorizationBans: new Set(),
       chatMessage: new Set(),
       chatHistoryPage: new Set(),
+      channelCreated: new Set(),
+      channelAck: new Set(),
+      channelEditableNode: new Set(),
+      voiceRemovedByPolicy: new Set(),
     };
 
   constructor(
@@ -259,8 +292,21 @@ export class RealtimeClient implements SignalingPort {
     this.socket?.close(1000, 'client disconnect');
   }
 
-  joinVoiceChannel(channelId: string, displayName: string): void {
-    this.send({ type: 'voice:join', id: generateMessageId(), channelId, displayName });
+  /** T13.2 — `password` is only meaningful against a channel with `hasPassword === true`; never
+   * cached/reused by this class — the caller (`use-voice-channel.ts`) is responsible for never
+   * persisting it past this one call. Returns the generated request `id` so the caller can
+   * correlate the eventual `voice:joined`/`server:error` reply back to this specific attempt (see
+   * `use-voice-channel.ts`'s join-error/restore handling). */
+  joinVoiceChannel(channelId: string, displayName: string, password?: string): string {
+    const id = generateMessageId();
+    this.send({
+      type: 'voice:join',
+      id,
+      channelId,
+      displayName,
+      ...(password !== undefined ? { password } : {}),
+    });
+    return id;
   }
 
   leaveVoiceChannel(): void {
@@ -440,6 +486,102 @@ export class RealtimeClient implements SignalingPort {
     return id;
   }
 
+  // --- T13.2 channel/category tree administration --------------------------------------------
+  // Every method returns the generated request `id` so the caller can correlate the eventual
+  // `server:channel-created`/`server:channel-ack`/`server:channel-editable-node`/`server:error`
+  // reply back to this specific request (mirroring `requestChatHistory`'s own id-return
+  // convention) — the server is the sole authority on whether the request succeeds; a denial
+  // arrives as an ordinary `server:error` with `replyTo` set to this id.
+
+  createChannelCategory(name: string, parentId?: string): string {
+    const id = generateMessageId();
+    this.send({
+      type: 'client:channel-create-category',
+      id,
+      name,
+      ...(parentId !== undefined ? { parentId } : {}),
+    });
+    return id;
+  }
+
+  createVoiceChannelNode(name: string, parentId?: string, temporary?: boolean): string {
+    const id = generateMessageId();
+    this.send({
+      type: 'client:channel-create-voice',
+      id,
+      name,
+      ...(parentId !== undefined ? { parentId } : {}),
+      ...(temporary !== undefined ? { temporary } : {}),
+    });
+    return id;
+  }
+
+  updateChannelNode(nodeId: string, patch: ChannelUpdatePatch): string {
+    const id = generateMessageId();
+    this.send({
+      type: 'client:channel-update',
+      id,
+      nodeId,
+      ...(patch.name !== undefined ? { name: patch.name } : {}),
+      ...(patch.visibilityPolicy !== undefined ? { visibilityPolicy: patch.visibilityPolicy } : {}),
+      ...(patch.visibilityGroupIds !== undefined
+        ? { visibilityGroupIds: [...patch.visibilityGroupIds] }
+        : {}),
+      ...(patch.joinPolicy !== undefined ? { joinPolicy: patch.joinPolicy } : {}),
+      ...(patch.joinGroupIds !== undefined ? { joinGroupIds: [...patch.joinGroupIds] } : {}),
+      ...(patch.managePolicy !== undefined ? { managePolicy: patch.managePolicy } : {}),
+      ...(patch.manageGroupIds !== undefined ? { manageGroupIds: [...patch.manageGroupIds] } : {}),
+      ...(patch.userLimit !== undefined ? { userLimit: patch.userLimit } : {}),
+    });
+    return id;
+  }
+
+  moveChannelNode(nodeId: string, newParentId: string | undefined): string {
+    const id = generateMessageId();
+    this.send({
+      type: 'client:channel-move',
+      id,
+      nodeId,
+      ...(newParentId !== undefined ? { newParentId } : {}),
+    });
+    return id;
+  }
+
+  reorderChannelNodes(parentId: string | undefined, orderedNodeIds: readonly string[]): string {
+    const id = generateMessageId();
+    this.send({
+      type: 'client:channel-reorder',
+      id,
+      ...(parentId !== undefined ? { parentId } : {}),
+      orderedNodeIds: [...orderedNodeIds],
+    });
+    return id;
+  }
+
+  deleteChannelNode(nodeId: string): string {
+    const id = generateMessageId();
+    this.send({ type: 'client:channel-delete', id, nodeId });
+    return id;
+  }
+
+  setChannelPassword(nodeId: string, password: string): string {
+    const id = generateMessageId();
+    this.send({ type: 'client:channel-set-password', id, nodeId, password });
+    return id;
+  }
+
+  removeChannelPassword(nodeId: string): string {
+    const id = generateMessageId();
+    this.send({ type: 'client:channel-remove-password', id, nodeId });
+    return id;
+  }
+
+  getEditableChannelNode(nodeId: string): string {
+    const id = generateMessageId();
+    this.send({ type: 'client:channel-get-editable-node', id, nodeId });
+    return id;
+  }
+
   private send(message: ClientMessage): void {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
       console.error('realtime-client: dropped a message because the socket is not open', {
@@ -544,6 +686,18 @@ export class RealtimeClient implements SignalingPort {
         return;
       case 'server:chat-history-page':
         this.emit('chatHistoryPage', message);
+        return;
+      case 'server:channel-created':
+        this.emit('channelCreated', message);
+        return;
+      case 'server:channel-ack':
+        this.emit('channelAck', message);
+        return;
+      case 'server:channel-editable-node':
+        this.emit('channelEditableNode', message);
+        return;
+      case 'server:voice-removed-by-policy':
+        this.emit('voiceRemovedByPolicy', message);
         return;
     }
   }

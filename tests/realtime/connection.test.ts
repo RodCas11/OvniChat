@@ -5,11 +5,12 @@ import { describe, expect, it } from 'vitest';
 import type { WebSocket } from 'ws';
 
 import { createNoopAuthorizationPort } from '../../services/realtime/src/authorization-port.js';
+import { createNoopChannelPort } from '../../services/realtime/src/channel-port.js';
 import { createNoopChatPort } from '../../services/realtime/src/chat-port.js';
 import type { RealtimeConfig } from '../../services/realtime/src/config.js';
 import { Connection } from '../../services/realtime/src/connection.js';
 import { createNoopLogger } from '../../services/realtime/src/logging.js';
-import { DEFAULT_VOICE_CHANNELS } from '../../services/realtime/src/voice/catalog.js';
+import { TemporaryChannelRegistry } from '../../services/realtime/src/voice/temporary-channels.js';
 import { VoiceRegistry } from '../../services/realtime/src/voice/registry.js';
 
 /**
@@ -55,6 +56,7 @@ const TEST_CONFIG: RealtimeConfig = {
   rateLimit: { maxMessages: 100, windowMs: 10_000 },
   chatSendRateLimit: { maxMessages: 100, windowMs: 10_000 },
   chatHistoryRateLimit: { maxMessages: 100, windowMs: 10_000 },
+  channelPasswordRateLimit: { maxMessages: 100, windowMs: 10_000 },
   logLevel: 'error',
 };
 
@@ -75,10 +77,13 @@ describe('Connection — unexpected handler failure containment', () => {
       socket as unknown as WebSocket,
       TEST_CONFIG,
       createNoopLogger(),
-      new VoiceRegistry(DEFAULT_VOICE_CHANNELS),
+      new VoiceRegistry(),
       { name: 'Test Server', capabilities: [] },
       createNoopAuthorizationPort(),
       createNoopChatPort(),
+      createNoopChannelPort(),
+      new TemporaryChannelRegistry(),
+      () => {},
       () => {},
       () => {},
       () => {},

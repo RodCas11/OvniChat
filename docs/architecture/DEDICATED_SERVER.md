@@ -368,7 +368,16 @@ timestamp) for both Server Chat and per-voice-channel chat. This is the Dedicate
 persistent runtime state, and the first that is expected to grow without bound under ordinary use —
 a real, documented difference from T9's small, low-growth authorization store.
 
-**Not introduced by T8, T9, or T10:** a central account database, `server-users.json`/`users.db`/
+**Dedicated Server persistent channel storage (T13.2, new — see
+[`CHANNELS_AND_SERVER_ADMINISTRATION.md`](CHANNELS_AND_SERVER_ADMINISTRATION.md) for the complete
+design):** a third, separate SQLite file under `config.dataDir` (`channels.sqlite`, never merged into
+T9's or T10's stores), holding the dynamic category/voice-channel hierarchy, per-node access-control
+policy (referencing T9 groups by plain string ID, never a foreign key), and scrypt password verifiers.
+This is the Dedicated Server's third persistent runtime state, and the first whose structure itself —
+not just its rows — is administered live from the Client rather than fixed at startup by a config
+file.
+
+**Not introduced by T8, T9, T10, or T13.2:** a central account database, `server-users.json`/`users.db`/
 `accounts.sqlite`-as-a-_profile_-store or any equivalent, cross-server tracking, a global server
 directory, central message history (each server's `chat.sqlite` is its own, unrelated to any other
 server's), central analytics/telemetry, email, password, phone number, or any concept of "this human

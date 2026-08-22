@@ -8,8 +8,12 @@ import {
 import {
   CHAT_HISTORY_DEFAULT_PAGE_SIZE,
   CURRENT_PROTOCOL_VERSION,
+  MAX_CHANNEL_DEPTH,
+  MAX_CHANNEL_PARTICIPANTS,
   buildIdentityAuthPayload,
   isSupportedProtocolVersion,
+  type ChannelNodeAdminView,
+  type ChannelNodeView,
   type ChatMessageView,
   type ClientAuthorizationBanMessage,
   type ClientAuthorizationCreateGroupMessage,
@@ -23,6 +27,15 @@ import {
   type ClientAuthorizationRevokeGroupMessage,
   type ClientAuthorizationUnbanMessage,
   type ClientAuthorizationUpdateGroupMessage,
+  type ClientChannelCreateCategoryMessage,
+  type ClientChannelCreateVoiceMessage,
+  type ClientChannelDeleteMessage,
+  type ClientChannelGetEditableNodeMessage,
+  type ClientChannelMoveMessage,
+  type ClientChannelRemovePasswordMessage,
+  type ClientChannelReorderMessage,
+  type ClientChannelSetPasswordMessage,
+  type ClientChannelUpdateMessage,
   type ClientChatHistoryRequestMessage,
   type ClientChatSendMessage,
   type ClientHelloMessage,
@@ -39,8 +52,14 @@ import {
 } from '@disco-voador/protocol';
 
 import type { AuthorizationPort, AuthorizationSnapshot } from './authorization-port.js';
+import type { ChannelPort } from './channel-port.js';
 import type { ChatPort } from './chat-port.js';
 import type { ConnectionState } from './connection-state.js';
+import type { RateLimiter } from './rate-limiter.js';
+import {
+  maybeDestroyEmptyTemporaryChannel,
+  type TemporaryChannelRegistry,
+} from './voice/temporary-channels.js';
 import type { VoiceParticipantRecord, VoiceRegistry } from './voice/registry.js';
 
 /**
@@ -79,6 +98,15 @@ export interface HandlerContext {
   readonly authorization: AuthorizationPort;
   /** T10 — the server-local persistent chat port (see `chat-port.ts`). */
   readonly chat: ChatPort;
+  /** T13.2 — the server-local persistent channel/category tree port (see `channel-port.ts`). */
+  readonly channels: ChannelPort;
+  /** T13.2 — in-memory, non-persistent "quick channel" registry (see `voice/temporary-channels.ts`). */
+  readonly temporaryChannels: TemporaryChannelRegistry;
+  /** T13.2 — per-connection rate limiter for `voice:join` attempts against a password-protected
+   * channel, consulted only in that branch, before the `scryptSync`-backed check (see
+   * `channel-port.ts`'s doc comment on the accepted blocking-cost tradeoff). Constructed once per
+   * `Connection`, mirroring `chatSendRateLimiter`/`chatHistoryRateLimiter`. */
+  readonly channelPasswordRateLimiter: RateLimiter;
   /** T9 — this connection's own server-verified identity, once known. `undefined` before the
    * identity proof succeeds; always defined for every message reachable only from `ready`
    * (enforced structurally by `routeClientMessage`'s own dispatch below, not re-checked in every
@@ -118,6 +146,18 @@ export type OutgoingAction =
        * connection roster only when the action is actually carried out. */
       readonly kind: 'broadcast-ready';
       readonly message: ServerMessage;
+    }
+  | {
+      /** T13.2 — pushes a *personalized* message to every currently-`ready` connection with a known
+       * `identityId`, one call to `buildMessage` per recipient. Used for the channel-catalog
+       * refresh: every mutating channel handler, plus the three existing group-membership handlers
+       * (`handleAuthorizationGrantGroup`/`RevokeGroup`/`DeleteGroup`), returns this alongside their
+       * other actions, since a group-membership change can change what a connection may see/join
+       * even though no channel itself changed. `buildMessage` is a pure closure over
+       * already-resolved data (never a socket) — still testable without one; a recipient for whom
+       * it returns `undefined` receives nothing. */
+      readonly kind: 'broadcast-ready-personalized';
+      readonly buildMessage: (identityId: string) => ServerMessage | undefined;
     };
 
 export type RouteResult =
@@ -156,6 +196,105 @@ function closeConnection(connectionId: string, code: ErrorCode, message: string)
 
 function broadcastToReady(message: ServerMessage): OutgoingAction {
   return { kind: 'broadcast-ready', message };
+}
+
+/** T13.2 — the caller's own effective group ids, derived the one documented way
+ * (`docs`/`channel-port.ts`'s own doc comment): `ChannelPort` never talks to `AuthorizationPort`
+ * itself, so every ACL-evaluating call site resolves this once and passes it in explicitly. */
+function effectiveGroupIdsFor(
+  identityId: string,
+  ctx: { readonly authorization: AuthorizationPort },
+): readonly string[] {
+  return ctx.authorization.getSnapshot(identityId).groups.map((group) => group.groupId);
+}
+
+/** T13.2 — a temporary channel's policy is always `'inherit'` by construction (no override field
+ * exists on `TemporaryChannelRecord`), so its visibility resolves to exactly its resolved parent's
+ * visibility (or the hardcoded root default of `'everyone'` when it has no parent) — see
+ * `channel-port.ts`'s ACL-resolution doc comment. */
+function temporaryChannelIsVisible(
+  parentId: string | undefined,
+  effectiveGroupIds: readonly string[],
+  ctx: { readonly channels: ChannelPort },
+): boolean {
+  return (
+    parentId === undefined || ctx.channels.getVisibleNode(parentId, effectiveGroupIds) !== undefined
+  );
+}
+
+/** `true` iff `channelId` currently resolves to something `effectiveGroupIds` may see — either a
+ * persisted `ChannelPort` node or a currently-visible temporary channel. Used by `handleChatSend`/
+ * `handleChatHistoryRequest`'s channel-scope existence check, which (unlike `handleVoiceJoin`) has
+ * no other reason to distinguish the two cases. */
+function isVisibleChannelId(
+  channelId: string,
+  effectiveGroupIds: readonly string[],
+  ctx: HandlerContext,
+): boolean {
+  if (ctx.channels.getVisibleNode(channelId, effectiveGroupIds)) return true;
+  const temporaryRecord = ctx.temporaryChannels.get(channelId);
+  return (
+    temporaryRecord !== undefined &&
+    temporaryChannelIsVisible(temporaryRecord.parentId, effectiveGroupIds, ctx)
+  );
+}
+
+/** The subset of {@link HandlerContext} {@link buildFilteredVoiceCatalogMessage} actually needs —
+ * narrowed so `Connection` can call it directly (abrupt-disconnect temporary-channel destruction
+ * triggers the same personalized catalog refresh outside of `routeClientMessage`'s own action
+ * pipeline — see `connection.ts`'s `cleanupVoiceMembership`) without constructing a full, mostly
+ * irrelevant `HandlerContext`. */
+export interface VoiceCatalogContext {
+  readonly authorization: AuthorizationPort;
+  readonly channels: ChannelPort;
+  readonly temporaryChannels: TemporaryChannelRegistry;
+  readonly voiceRegistry: VoiceRegistry;
+  readonly chat: ChatPort;
+  readonly now: () => Date;
+}
+
+/** Builds the full, per-connection-filtered `voice:catalog` snapshot: `ChannelPort`'s persisted
+ * tree plus every currently-visible, non-stale temporary channel, merged. Also where opportunistic
+ * temporary-channel zombie pruning happens — see `TemporaryChannelRegistry.pruneAndList`'s own doc
+ * comment for why this call site, specifically, was chosen (this function already runs on every
+ * connect/mutation/group-membership change, so pruning here piggybacks on already-frequent work
+ * instead of a new background timer). */
+export function buildFilteredVoiceCatalogMessage(
+  ctx: VoiceCatalogContext,
+  identityId: string,
+): ServerMessage {
+  const effectiveGroupIds = effectiveGroupIdsFor(identityId, ctx);
+  const persisted = ctx.channels.getFilteredTree(effectiveGroupIds);
+  const temporary: ChannelNodeView[] = [];
+  const liveTemporaryRecords = ctx.temporaryChannels.pruneAndList(
+    ctx.voiceRegistry,
+    ctx.chat,
+    ctx.now().getTime(),
+  );
+  for (const record of liveTemporaryRecords) {
+    if (!temporaryChannelIsVisible(record.parentId, effectiveGroupIds, ctx)) continue;
+    temporary.push({
+      nodeId: record.channelId,
+      kind: 'voice',
+      parentId: record.parentId,
+      name: record.name,
+      sortOrder: record.createdAt,
+      visibilityPolicy: 'inherit',
+      joinPolicy: 'inherit',
+      managePolicy: 'inherit',
+      userLimit: undefined,
+      hasPassword: false,
+      temporary: true,
+    });
+  }
+  return { type: 'voice:catalog', id: randomUUID(), nodes: [...persisted, ...temporary] };
+}
+
+function catalogRefreshAction(ctx: HandlerContext): OutgoingAction {
+  return {
+    kind: 'broadcast-ready-personalized',
+    buildMessage: (identityId: string) => buildFilteredVoiceCatalogMessage(ctx, identityId),
+  };
 }
 
 /**
@@ -291,21 +430,13 @@ function handleIdentityProof(
     actions: [
       reply(buildServerHello(message.id, identityId, ctx)),
       reply(buildAuthorizationStateMessage(admission)),
-      reply(buildVoiceCatalogMessage(ctx)),
+      reply(buildFilteredVoiceCatalogMessage(ctx, identityId)),
     ],
   };
 }
 
 export function handleClientPing(message: ClientPingMessage): ServerMessage {
   return { type: 'server:pong', id: message.id };
-}
-
-function buildVoiceCatalogMessage(ctx: HandlerContext): ServerMessage {
-  return {
-    type: 'voice:catalog',
-    id: randomUUID(),
-    channels: [...ctx.voiceRegistry.listChannels()],
-  };
 }
 
 function toWireParticipant(
@@ -334,6 +465,74 @@ function notifyParticipantLeft(
   );
 }
 
+/** T13.2 — checks only the visibility+join axes of `ChannelPort.checkJoin` (capacity/password are
+ * irrelevant to *re*-validating someone already inside), by supplying values that structurally
+ * cannot fail those two other checks (`currentMemberCount: 0`, `bypassPassword: true`) — see
+ * `revalidateChannelMembership`'s own doc comment for why this reuse is safe. */
+function stillHasChannelAccess(
+  channelId: string,
+  effectiveGroupIds: readonly string[],
+  ctx: HandlerContext,
+): boolean {
+  return ctx.channels.checkJoin({
+    nodeId: channelId,
+    effectiveGroupIds,
+    currentMemberCount: 0,
+    password: undefined,
+    bypassPassword: true,
+  }).ok;
+}
+
+/**
+ * The one shared "re-validate current members of channel X, force-leave anyone who now fails"
+ * function (T13.2), called from every trigger that can narrow a currently-joined member's
+ * visibility/join rights out from under them: `handleChannelUpdate` (policy narrowed),
+ * `handleChannelDelete` (node gone), and all three authorization group handlers (an identity's
+ * rights changed) — never duplicated across those call sites. A currently-joined member who loses
+ * access is force-left (the same leave/notify-left fan-out `handleVoiceLeave` already builds) and
+ * additionally told why via `server:voice-removed-by-policy` — distinct from a self-initiated
+ * `voice:left` or a moderation `KICKED`/`BANNED` close.
+ *
+ * Never called for a *temporary* channel (its policy is always `'inherit'`, so it is never subject
+ * to a policy-narrowing mutation) — `ChannelPort.checkJoin` on an unknown-to-it temporary
+ * `channelId` reports `NOT_FOUND`, which would incorrectly force-leave every member the very next
+ * time this ran for an unrelated reason, so this function is only ever invoked with a real
+ * `ChannelPort` node id.
+ */
+function revalidateChannelMembership(channelId: string, ctx: HandlerContext): OutgoingAction[] {
+  const actions: OutgoingAction[] = [];
+  for (const connectionId of ctx.voiceRegistry.getChannelMemberConnectionIds(channelId)) {
+    const participant = ctx.voiceRegistry.getParticipant(connectionId);
+    if (!participant) continue;
+    const effectiveGroupIds = effectiveGroupIdsFor(participant.identityId, ctx);
+    if (stillHasChannelAccess(channelId, effectiveGroupIds, ctx)) continue;
+
+    const left = ctx.voiceRegistry.leave(connectionId);
+    if (!left) continue;
+    actions.push(
+      ...notifyParticipantLeft(
+        left.channelId,
+        left.participantId,
+        left.remainingMemberConnectionIds,
+      ),
+      deliver(connectionId, {
+        type: 'server:voice-removed-by-policy',
+        id: randomUUID(),
+        channelId: left.channelId,
+        reason: 'access-revoked',
+      }),
+    );
+    const destroyed = maybeDestroyEmptyTemporaryChannel(
+      left.channelId,
+      ctx.temporaryChannels,
+      ctx.voiceRegistry,
+      ctx.chat,
+    );
+    if (destroyed.destroyed) actions.push(catalogRefreshAction(ctx));
+  }
+  return actions;
+}
+
 /** Every `ready`-state handler is only ever reached with a defined `ctx.identityId` — the
  * connection cannot be `ready` without having authenticated (see `routeClientMessage` below,
  * where every branch that can produce a ready-state message follows the identity-proof
@@ -356,6 +555,24 @@ function requireNickname(ctx: HandlerContext): string {
   return ctx.nickname;
 }
 
+/** Maps a `ChannelPort.checkJoin` failure code to the wire `ErrorCode` `handleVoiceJoin` returns. */
+function channelJoinErrorCode(
+  code: 'NOT_FOUND' | 'ACCESS_DENIED' | 'FULL' | 'PASSWORD_REQUIRED' | 'PASSWORD_INVALID',
+): ErrorCode {
+  switch (code) {
+    case 'NOT_FOUND':
+      return 'CHANNEL_NOT_FOUND';
+    case 'ACCESS_DENIED':
+      return 'CHANNEL_ACCESS_DENIED';
+    case 'FULL':
+      return 'CHANNEL_FULL';
+    case 'PASSWORD_REQUIRED':
+      return 'CHANNEL_PASSWORD_REQUIRED';
+    case 'PASSWORD_INVALID':
+      return 'CHANNEL_PASSWORD_INVALID';
+  }
+}
+
 function handleVoiceJoin(message: ClientVoiceJoinMessage, ctx: HandlerContext): RouteResult {
   const identityId = requireIdentityId(ctx);
   if (!ctx.authorization.can(identityId, 'voice.channel.join')) {
@@ -366,11 +583,74 @@ function handleVoiceJoin(message: ClientVoiceJoinMessage, ctx: HandlerContext): 
     };
   }
 
+  const effectiveGroupIds = effectiveGroupIdsFor(identityId, ctx);
+  const persistedNode = ctx.channels.getVisibleNode(message.channelId, effectiveGroupIds);
+  const temporaryRecord = persistedNode ? undefined : ctx.temporaryChannels.get(message.channelId);
+  const temporaryVisible =
+    temporaryRecord !== undefined &&
+    temporaryChannelIsVisible(temporaryRecord.parentId, effectiveGroupIds, ctx);
+
+  if (!persistedNode && !temporaryVisible) {
+    return {
+      ok: false,
+      code: 'CHANNEL_NOT_FOUND',
+      message: `Unknown voice channel "${message.channelId}"`,
+    };
+  }
+
+  const currentMemberCount = ctx.voiceRegistry.getChannelMemberConnectionIds(
+    message.channelId,
+  ).length;
+  let capacityLimit = MAX_CHANNEL_PARTICIPANTS;
+
+  if (persistedNode) {
+    capacityLimit = Math.min(
+      persistedNode.userLimit ?? MAX_CHANNEL_PARTICIPANTS,
+      MAX_CHANNEL_PARTICIPANTS,
+    );
+
+    // Rate-limited only in the branch where the target node actually has a password, before the
+    // scryptSync-backed check inside `checkJoin` — see `HandlerContext.channelPasswordRateLimiter`'s
+    // own doc comment for the accepted blocking-cost tradeoff this mitigates.
+    if (persistedNode.hasPassword && !ctx.channelPasswordRateLimiter.tryConsume()) {
+      return {
+        ok: false,
+        code: 'CHANNEL_PASSWORD_RATE_LIMITED',
+        message: 'Too many password attempts',
+      };
+    }
+
+    const bypassPassword = ctx.authorization.can(identityId, 'channels.password.bypass');
+    const joinCheck = ctx.channels.checkJoin({
+      nodeId: message.channelId,
+      effectiveGroupIds,
+      currentMemberCount,
+      password: message.password,
+      bypassPassword,
+    });
+    if (!joinCheck.ok) {
+      return {
+        ok: false,
+        code: channelJoinErrorCode(joinCheck.code),
+        message: 'Cannot join this voice channel',
+      };
+    }
+  } else if (currentMemberCount >= capacityLimit) {
+    // A temporary channel is always inherit/everyone-joinable and never password-protected — the
+    // only way to reject one is the numeric capacity ceiling.
+    return {
+      ok: false,
+      code: 'CHANNEL_FULL',
+      message: `Voice channel "${message.channelId}" is full`,
+    };
+  }
+
   const outcome = ctx.voiceRegistry.join(
     ctx.connectionId,
     message.channelId,
     message.displayName,
     identityId,
+    capacityLimit,
   );
   if (!outcome.ok) {
     return { ok: false, code: outcome.code, message: outcome.reason };
@@ -386,6 +666,15 @@ function handleVoiceJoin(message: ClientVoiceJoinMessage, ctx: HandlerContext): 
         outcome.previous.remainingMemberConnectionIds,
       ),
     );
+    // Switching out of a temporary channel can leave it empty too — same destroy-on-empty rule as
+    // an explicit `voice:leave` or an abrupt disconnect (see `temporary-channels.ts`).
+    const destroyed = maybeDestroyEmptyTemporaryChannel(
+      outcome.previous.channelId,
+      ctx.temporaryChannels,
+      ctx.voiceRegistry,
+      ctx.chat,
+    );
+    if (destroyed.destroyed) actions.push(catalogRefreshAction(ctx));
   }
 
   actions.push(
@@ -430,6 +719,14 @@ function handleVoiceLeave(message: ClientVoiceLeaveMessage, ctx: HandlerContext)
     reply({ type: 'voice:left', id: message.id, channelId: left.channelId }),
     ...notifyParticipantLeft(left.channelId, left.participantId, left.remainingMemberConnectionIds),
   ];
+
+  const destroyed = maybeDestroyEmptyTemporaryChannel(
+    left.channelId,
+    ctx.temporaryChannels,
+    ctx.voiceRegistry,
+    ctx.chat,
+  );
+  if (destroyed.destroyed) actions.push(catalogRefreshAction(ctx));
 
   return { ok: true, nextState: 'ready', actions };
 }
@@ -624,6 +921,17 @@ function handleAuthorizationDeleteGroup(
   if (!ctx.authorization.can(identityId, 'authorization.groups.manage')) {
     return { ok: false, code: 'AUTHORIZATION_DENIED', message: 'Not permitted to manage groups' };
   }
+  // T13.2 — a group currently referenced by some channel node's ACL cannot be deleted first; the
+  // operator must remove it from every channel policy that names it before the group id itself can
+  // be deleted, so a channel's ACL can never silently start referencing a group id that no longer
+  // exists. Checked *before* ever touching the authorization store.
+  if (ctx.channels.isGroupReferenced(message.groupId)) {
+    return {
+      ok: false,
+      code: 'GROUP_IN_USE_BY_CHANNEL_POLICY',
+      message: 'This group is still referenced by a channel policy',
+    };
+  }
   const result = ctx.authorization.deleteGroup(message.groupId);
   if (!result.ok) {
     return { ok: false, code: result.code, message: result.message };
@@ -645,6 +953,19 @@ function handleAuthorizationDeleteGroup(
       );
     }
   }
+  // T13.2 — a group-membership change can change what any connection may see/join in the channel
+  // tree even though no channel itself changed; re-validate every currently-joined member of every
+  // channel this identity's revoked membership might affect. Deleting a *group* can affect any
+  // number of identities/channels at once, so this walks every active node rather than a single
+  // channel id (contrast `handleAuthorizationGrantGroup`/`RevokeGroup`, which affect one identity).
+  for (const nodeId of ctx.channels.listActiveNodeIds()) {
+    actions.push(...revalidateChannelMembership(nodeId, ctx));
+  }
+  // The personalized catalog refresh is added *last*, after every close action above: a connection
+  // about to be force-closed for losing its admission basis entirely must never receive one more
+  // application message first — `broadcastToReadyPersonalized` only reaches connections still
+  // `ready` at the moment it runs, so ordering this after `closeConnection` naturally excludes them.
+  actions.push(catalogRefreshAction(ctx));
   return { ok: true, nextState: 'ready', actions };
 }
 
@@ -686,6 +1007,10 @@ function handleAuthorizationGrantGroup(
       deliver(target.record.connectionId, buildAuthorizationStateMessage(result.snapshot)),
     );
   }
+  // T13.2 — a granted group can only ever *widen* the target's access, never narrow it, so no
+  // re-validation of their current channel membership is needed here (contrast `handleAuthorization
+  // RevokeGroup`, below, where it can narrow access and force-leave is possible).
+  actions.push(catalogRefreshAction(ctx));
   return { ok: true, nextState: 'ready', actions };
 }
 
@@ -726,11 +1051,24 @@ function handleAuthorizationRevokeGroup(
         'Server-local authorization was revoked',
       ),
     );
-  } else if (target.record.connectionId !== ctx.connectionId) {
-    actions.push(
-      deliver(target.record.connectionId, buildAuthorizationStateMessage(result.snapshot)),
-    );
+  } else {
+    if (target.record.connectionId !== ctx.connectionId) {
+      actions.push(
+        deliver(target.record.connectionId, buildAuthorizationStateMessage(result.snapshot)),
+      );
+    }
+    // T13.2 — revoking a group can narrow the target's channel access; re-validate their current
+    // voice membership (if any) against the channel they are actually in right now.
+    const currentChannelId = ctx.voiceRegistry.getParticipant(
+      target.record.connectionId,
+    )?.channelId;
+    if (currentChannelId !== undefined) {
+      actions.push(...revalidateChannelMembership(currentChannelId, ctx));
+    }
   }
+  // Last, for the same reason `handleAuthorizationDeleteGroup` orders it last — a connection being
+  // force-closed above must never receive one more application message first.
+  actions.push(catalogRefreshAction(ctx));
   return { ok: true, nextState: 'ready', actions };
 }
 
@@ -842,7 +1180,10 @@ function handleChatSend(message: ClientChatSendMessage, ctx: HandlerContext): Ro
   let channelId: string | undefined;
   if (message.scope === 'channel') {
     channelId = requireChannelId(message.channelId);
-    if (!ctx.voiceRegistry.isKnownChannel(channelId)) {
+    // T13.2 — a hidden channel and an absent one are structurally indistinguishable (same
+    // `CHANNEL_NOT_FOUND` code either way) — closes the "raw history/send request by guessed
+    // channelId" leak (see `channel-port.ts`'s own doc comment on this privacy guarantee).
+    if (!isVisibleChannelId(channelId, effectiveGroupIdsFor(identityId, ctx), ctx)) {
       return {
         ok: false,
         code: 'CHANNEL_NOT_FOUND',
@@ -911,16 +1252,17 @@ function handleChatHistoryRequest(
   message: ClientChatHistoryRequestMessage,
   ctx: HandlerContext,
 ): RouteResult {
-  requireIdentityId(ctx);
+  const identityId = requireIdentityId(ctx);
   // No permission check: reading history requires no permission beyond being an admitted, `ready`
-  // connection (T10 Section 8) — this repository has no channel-visibility ACL beyond server
-  // admission, and inventing one was explicitly out of scope for T10 (see
-  // `docs/architecture/PERSISTENT_TEXT_CHAT.md`'s "Reading channel chat" section). Deliberately
-  // asymmetric with `handleChatSend`'s membership/permission checks — documented, not accidental.
+  // connection (T10 Section 8) — only *visibility* now gates it (T13.2), never a send-style
+  // permission key. Deliberately asymmetric with `handleChatSend`'s membership/permission checks —
+  // documented, not accidental.
   let channelId: string | undefined;
   if (message.scope === 'channel') {
     channelId = requireChannelId(message.channelId);
-    if (!ctx.voiceRegistry.isKnownChannel(channelId)) {
+    // T13.2 — closes the "raw history request by guessed/known channelId" leak: a hidden channel is
+    // rejected with the exact same code an unknown one would be.
+    if (!isVisibleChannelId(channelId, effectiveGroupIdsFor(identityId, ctx), ctx)) {
       return {
         ok: false,
         code: 'CHANNEL_NOT_FOUND',
@@ -948,6 +1290,438 @@ function handleChatHistoryRequest(
         ...(page.nextCursor !== undefined ? { nextCursor: page.nextCursor } : {}),
       }),
     ],
+  };
+}
+
+// --- T13.2 channel/category administration handlers -------------------------------------------
+
+function channelAck(replyToId: string): OutgoingAction {
+  return reply({ type: 'server:channel-ack', id: replyToId });
+}
+
+function handleChannelCreateCategory(
+  message: ClientChannelCreateCategoryMessage,
+  ctx: HandlerContext,
+): RouteResult {
+  const identityId = requireIdentityId(ctx);
+  const effectiveGroupIds = effectiveGroupIdsFor(identityId, ctx);
+  const authorized =
+    message.parentId === undefined
+      ? ctx.authorization.can(identityId, 'channels.create')
+      : ctx.authorization.can(identityId, 'channels.manage') ||
+        ctx.channels.hasManageRights(message.parentId, effectiveGroupIds);
+  if (!authorized) {
+    return { ok: false, code: 'AUTHORIZATION_DENIED', message: 'Not permitted to create channels' };
+  }
+  const result = ctx.channels.createCategory({
+    name: message.name,
+    parentId: message.parentId,
+    actorEffectiveGroupIds: effectiveGroupIds,
+  });
+  if (!result.ok) {
+    return { ok: false, code: result.code, message: result.message };
+  }
+  return {
+    ok: true,
+    nextState: 'ready',
+    actions: [
+      reply({ type: 'server:channel-created', id: message.id, node: result.node }),
+      catalogRefreshAction(ctx),
+    ],
+  };
+}
+
+/** Walks `nodeId`'s ancestor chain via `ChannelPort.getVisibleNode` to compute its 0-based depth
+ * (root = 0), matching `ChannelStore`'s own internal `depthOf` semantics exactly. Used only to
+ * validate a *temporary* channel's proposed parent against the same `MAX_CHANNEL_DEPTH` bound
+ * persistent creation enforces internally — a temporary channel is never actually inserted into
+ * `ChannelStore`, so that store's own internal depth check never runs for it; this reuses the
+ * existing `getVisibleNode` read path (the same one every other handler already calls) rather than
+ * re-implementing tree traversal against a second, parallel data source. */
+function depthOfVisibleNode(
+  nodeId: string,
+  effectiveGroupIds: readonly string[],
+  ctx: HandlerContext,
+): number {
+  let depth = 0;
+  let currentId: string | undefined = nodeId;
+  const seen = new Set<string>();
+  while (currentId !== undefined && !seen.has(currentId)) {
+    seen.add(currentId);
+    const node = ctx.channels.getVisibleNode(currentId, effectiveGroupIds);
+    if (!node?.parentId) break;
+    depth += 1;
+    currentId = node.parentId;
+  }
+  return depth;
+}
+
+function handleChannelCreateVoice(
+  message: ClientChannelCreateVoiceMessage,
+  ctx: HandlerContext,
+): RouteResult {
+  const identityId = requireIdentityId(ctx);
+  const effectiveGroupIds = effectiveGroupIdsFor(identityId, ctx);
+  const authorized =
+    message.parentId === undefined
+      ? ctx.authorization.can(identityId, 'channels.create')
+      : ctx.authorization.can(identityId, 'channels.manage') ||
+        ctx.channels.hasManageRights(message.parentId, effectiveGroupIds);
+  if (!authorized) {
+    return { ok: false, code: 'AUTHORIZATION_DENIED', message: 'Not permitted to create channels' };
+  }
+
+  if (message.temporary === true) {
+    // Parent validation mirrors `ChannelPort.createVoiceChannel`'s own rules (must exist, must be
+    // visible to the creator, must not exceed `MAX_CHANNEL_DEPTH`) — reused via the existing
+    // `getVisibleNode` read path rather than duplicated against `ChannelStore` internals, since a
+    // temporary channel is never actually inserted there for that store's own checks to run.
+    if (message.parentId !== undefined) {
+      const parent = ctx.channels.getVisibleNode(message.parentId, effectiveGroupIds);
+      if (!parent) {
+        return {
+          ok: false,
+          code: 'CHANNEL_PARENT_INVALID',
+          message: `Unknown or invisible parent "${message.parentId}"`,
+        };
+      }
+      const parentDepth = depthOfVisibleNode(message.parentId, effectiveGroupIds, ctx);
+      if (parentDepth + 1 > MAX_CHANNEL_DEPTH - 1) {
+        return {
+          ok: false,
+          code: 'CHANNEL_PARENT_INVALID',
+          message: 'Maximum channel nesting depth exceeded',
+        };
+      }
+    }
+
+    // No atomic auto-join by design (coordinator decision) — creation and joining remain two
+    // separate client-issued messages; the client sends an ordinary `voice:join` for this returned
+    // `nodeId` next, entirely reusing existing join logic (including `handleVoiceJoin`'s temporary-
+    // channel branch, already implemented) unchanged.
+    const record = ctx.temporaryChannels.create({
+      name: message.name,
+      parentId: message.parentId,
+      createdByIdentityId: identityId,
+      now: ctx.now().getTime(),
+    });
+    // A temporary channel's policy is always `'inherit'` by construction (no override field exists
+    // on `TemporaryChannelRecord`) with empty group-id lists — it is never reorderable or
+    // ACL-overridable, matching how it is already merged into the filtered catalog view.
+    const node: ChannelNodeAdminView = {
+      nodeId: record.channelId,
+      kind: 'voice',
+      ...(record.parentId ? { parentId: record.parentId } : {}),
+      name: record.name,
+      sortOrder: 0,
+      visibilityPolicy: 'inherit',
+      visibilityGroupIds: [],
+      joinPolicy: 'inherit',
+      joinGroupIds: [],
+      managePolicy: 'inherit',
+      manageGroupIds: [],
+      hasPassword: false,
+      temporary: true,
+    };
+    return {
+      ok: true,
+      nextState: 'ready',
+      actions: [
+        reply({ type: 'server:channel-created', id: message.id, node }),
+        catalogRefreshAction(ctx),
+      ],
+    };
+  }
+
+  const result = ctx.channels.createVoiceChannel({
+    name: message.name,
+    parentId: message.parentId,
+    actorEffectiveGroupIds: effectiveGroupIds,
+  });
+  if (!result.ok) {
+    return { ok: false, code: result.code, message: result.message };
+  }
+  return {
+    ok: true,
+    nextState: 'ready',
+    actions: [
+      reply({ type: 'server:channel-created', id: message.id, node: result.node }),
+      catalogRefreshAction(ctx),
+    ],
+  };
+}
+
+function handleChannelUpdate(
+  message: ClientChannelUpdateMessage,
+  ctx: HandlerContext,
+): RouteResult {
+  const identityId = requireIdentityId(ctx);
+  const effectiveGroupIds = effectiveGroupIdsFor(identityId, ctx);
+  // Security fix (T13.2 review): `hasManageRights` alone does not check Visibility, so without this
+  // precondition a local delegated-Manage grant on a node hidden from the actor by an ancestor's
+  // Visibility restriction would leak the node's existence/content via this handler — breaking the
+  // "existence and visibility are the same check" guarantee `handleChannelMove`/`handleChannelDelete`
+  // already enforce this same way. Mirrors those two handlers' exact pattern.
+  if (!ctx.channels.getVisibleNode(message.nodeId, effectiveGroupIds)) {
+    return { ok: false, code: 'CHANNEL_NOT_FOUND', message: 'Unknown channel/category' };
+  }
+  const authorized =
+    ctx.authorization.can(identityId, 'channels.manage') ||
+    ctx.channels.hasManageRights(message.nodeId, effectiveGroupIds);
+  if (!authorized) {
+    return {
+      ok: false,
+      code: 'AUTHORIZATION_DENIED',
+      message: 'Not permitted to manage this channel',
+    };
+  }
+  const result = ctx.channels.updateNode({
+    nodeId: message.nodeId,
+    actorEffectiveGroupIds: effectiveGroupIds,
+    name: message.name,
+    visibilityPolicy: message.visibilityPolicy,
+    visibilityGroupIds: message.visibilityGroupIds,
+    joinPolicy: message.joinPolicy,
+    joinGroupIds: message.joinGroupIds,
+    managePolicy: message.managePolicy,
+    manageGroupIds: message.manageGroupIds,
+    userLimit: message.userLimit,
+  });
+  if (!result.ok) {
+    return { ok: false, code: result.code, message: result.message };
+  }
+  return {
+    ok: true,
+    nextState: 'ready',
+    actions: [
+      channelAck(message.id),
+      catalogRefreshAction(ctx),
+      ...revalidateChannelMembership(message.nodeId, ctx),
+    ],
+  };
+}
+
+function handleChannelMove(message: ClientChannelMoveMessage, ctx: HandlerContext): RouteResult {
+  const identityId = requireIdentityId(ctx);
+  const effectiveGroupIds = effectiveGroupIdsFor(identityId, ctx);
+  const currentNode = ctx.channels.getVisibleNode(message.nodeId, effectiveGroupIds);
+  if (!currentNode) {
+    return { ok: false, code: 'CHANNEL_NOT_FOUND', message: 'Unknown channel/category' };
+  }
+  const hasGlobal = ctx.authorization.can(identityId, 'channels.manage');
+  // Filesystem-directory-permission semantics: moving requires Manage on *both* the source and the
+  // destination parent (or the global override) — a channel-local Manage grant lets an operator
+  // administer that subtree but never sever/move it out from under its parent without also holding
+  // Manage at the destination. Root (`undefined` parent) has no local Manage holder at all, so only
+  // the global override authorizes a move into/out of the root level.
+  const sourceOk =
+    hasGlobal ||
+    (currentNode.parentId !== undefined &&
+      ctx.channels.hasManageRights(currentNode.parentId, effectiveGroupIds));
+  const destinationOk =
+    hasGlobal ||
+    (message.newParentId !== undefined &&
+      ctx.channels.hasManageRights(message.newParentId, effectiveGroupIds));
+  if (!sourceOk || !destinationOk) {
+    return {
+      ok: false,
+      code: 'AUTHORIZATION_DENIED',
+      message: 'Not permitted to move this channel',
+    };
+  }
+  const result = ctx.channels.moveNode({
+    nodeId: message.nodeId,
+    newParentId: message.newParentId,
+    actorEffectiveGroupIds: effectiveGroupIds,
+  });
+  if (!result.ok) {
+    return { ok: false, code: result.code, message: result.message };
+  }
+  return {
+    ok: true,
+    nextState: 'ready',
+    actions: [
+      channelAck(message.id),
+      catalogRefreshAction(ctx),
+      ...revalidateChannelMembership(message.nodeId, ctx),
+    ],
+  };
+}
+
+function handleChannelReorder(
+  message: ClientChannelReorderMessage,
+  ctx: HandlerContext,
+): RouteResult {
+  const identityId = requireIdentityId(ctx);
+  const effectiveGroupIds = effectiveGroupIdsFor(identityId, ctx);
+  const hasGlobal = ctx.authorization.can(identityId, 'channels.manage');
+  const authorized =
+    hasGlobal ||
+    (message.parentId !== undefined &&
+      ctx.channels.hasManageRights(message.parentId, effectiveGroupIds));
+  if (!authorized) {
+    return {
+      ok: false,
+      code: 'AUTHORIZATION_DENIED',
+      message: 'Not permitted to reorder these channels',
+    };
+  }
+  const result = ctx.channels.reorderChildren({
+    parentId: message.parentId,
+    orderedNodeIds: message.orderedNodeIds,
+    actorEffectiveGroupIds: effectiveGroupIds,
+  });
+  if (!result.ok) {
+    return { ok: false, code: result.code, message: result.message };
+  }
+  return {
+    ok: true,
+    nextState: 'ready',
+    actions: [channelAck(message.id), catalogRefreshAction(ctx)],
+  };
+}
+
+function handleChannelDelete(
+  message: ClientChannelDeleteMessage,
+  ctx: HandlerContext,
+): RouteResult {
+  const identityId = requireIdentityId(ctx);
+  const effectiveGroupIds = effectiveGroupIdsFor(identityId, ctx);
+  const node = ctx.channels.getVisibleNode(message.nodeId, effectiveGroupIds);
+  if (!node) {
+    return { ok: false, code: 'CHANNEL_NOT_FOUND', message: 'Unknown channel/category' };
+  }
+  const hasGlobal = ctx.authorization.can(identityId, 'channels.delete');
+  // Deleting requires Manage on the node's *parent* (or global `channels.delete`) — never Manage on
+  // the node itself (see this file's own doc comment / `channel-port.ts`'s design notes).
+  const authorized =
+    hasGlobal ||
+    (node.parentId !== undefined && ctx.channels.hasManageRights(node.parentId, effectiveGroupIds));
+  if (!authorized) {
+    return {
+      ok: false,
+      code: 'AUTHORIZATION_DENIED',
+      message: 'Not permitted to delete this channel',
+    };
+  }
+  const result = ctx.channels.deleteNode({
+    nodeId: message.nodeId,
+    actorEffectiveGroupIds: effectiveGroupIds,
+  });
+  if (!result.ok) {
+    return { ok: false, code: result.code, message: result.message };
+  }
+  return {
+    ok: true,
+    nextState: 'ready',
+    actions: [
+      channelAck(message.id),
+      catalogRefreshAction(ctx),
+      ...revalidateChannelMembership(message.nodeId, ctx),
+    ],
+  };
+}
+
+function handleChannelSetPassword(
+  message: ClientChannelSetPasswordMessage,
+  ctx: HandlerContext,
+): RouteResult {
+  const identityId = requireIdentityId(ctx);
+  const effectiveGroupIds = effectiveGroupIdsFor(identityId, ctx);
+  // Security fix (T13.2 review) — see `handleChannelUpdate`'s identical precondition doc comment.
+  if (!ctx.channels.getVisibleNode(message.nodeId, effectiveGroupIds)) {
+    return { ok: false, code: 'CHANNEL_NOT_FOUND', message: 'Unknown channel/category' };
+  }
+  const authorized =
+    ctx.authorization.can(identityId, 'channels.manage') ||
+    ctx.channels.hasManageRights(message.nodeId, effectiveGroupIds);
+  if (!authorized) {
+    return {
+      ok: false,
+      code: 'AUTHORIZATION_DENIED',
+      message: 'Not permitted to manage this channel',
+    };
+  }
+  const result = ctx.channels.setPassword({
+    nodeId: message.nodeId,
+    password: message.password,
+    actorEffectiveGroupIds: effectiveGroupIds,
+  });
+  if (!result.ok) {
+    return { ok: false, code: result.code, message: result.message };
+  }
+  return {
+    ok: true,
+    nextState: 'ready',
+    actions: [channelAck(message.id), catalogRefreshAction(ctx)],
+  };
+}
+
+function handleChannelRemovePassword(
+  message: ClientChannelRemovePasswordMessage,
+  ctx: HandlerContext,
+): RouteResult {
+  const identityId = requireIdentityId(ctx);
+  const effectiveGroupIds = effectiveGroupIdsFor(identityId, ctx);
+  // Security fix (T13.2 review) — see `handleChannelUpdate`'s identical precondition doc comment.
+  if (!ctx.channels.getVisibleNode(message.nodeId, effectiveGroupIds)) {
+    return { ok: false, code: 'CHANNEL_NOT_FOUND', message: 'Unknown channel/category' };
+  }
+  const authorized =
+    ctx.authorization.can(identityId, 'channels.manage') ||
+    ctx.channels.hasManageRights(message.nodeId, effectiveGroupIds);
+  if (!authorized) {
+    return {
+      ok: false,
+      code: 'AUTHORIZATION_DENIED',
+      message: 'Not permitted to manage this channel',
+    };
+  }
+  const result = ctx.channels.removePassword({
+    nodeId: message.nodeId,
+    actorEffectiveGroupIds: effectiveGroupIds,
+  });
+  if (!result.ok) {
+    return { ok: false, code: result.code, message: result.message };
+  }
+  return {
+    ok: true,
+    nextState: 'ready',
+    actions: [channelAck(message.id), catalogRefreshAction(ctx)],
+  };
+}
+
+function handleChannelGetEditableNode(
+  message: ClientChannelGetEditableNodeMessage,
+  ctx: HandlerContext,
+): RouteResult {
+  const identityId = requireIdentityId(ctx);
+  const effectiveGroupIds = effectiveGroupIdsFor(identityId, ctx);
+  // Security fix (T13.2 review) — see `handleChannelUpdate`'s identical precondition doc comment.
+  // Especially important here: this is the one handler that returns the *full* admin detail view
+  // (name, parentId, userLimit, hasPassword, and all three group-id lists) for a node — exactly the
+  // content this task's privacy guarantee promises a hidden node never leaks.
+  if (!ctx.channels.getVisibleNode(message.nodeId, effectiveGroupIds)) {
+    return { ok: false, code: 'CHANNEL_NOT_FOUND', message: 'Unknown channel/category' };
+  }
+  const authorized =
+    ctx.authorization.can(identityId, 'channels.manage') ||
+    ctx.channels.hasManageRights(message.nodeId, effectiveGroupIds);
+  if (!authorized) {
+    return {
+      ok: false,
+      code: 'AUTHORIZATION_DENIED',
+      message: 'Not permitted to view this channel',
+    };
+  }
+  const node = ctx.channels.getEditableNode(message.nodeId);
+  if (!node) {
+    return { ok: false, code: 'CHANNEL_NOT_FOUND', message: 'Unknown channel/category' };
+  }
+  return {
+    ok: true,
+    nextState: 'ready',
+    actions: [reply({ type: 'server:channel-editable-node', id: message.id, node })],
   };
 }
 
@@ -1040,5 +1814,23 @@ export function routeClientMessage(
       return handleChatSend(message, ctx);
     case 'client:chat-history-request':
       return handleChatHistoryRequest(message, ctx);
+    case 'client:channel-create-category':
+      return handleChannelCreateCategory(message, ctx);
+    case 'client:channel-create-voice':
+      return handleChannelCreateVoice(message, ctx);
+    case 'client:channel-update':
+      return handleChannelUpdate(message, ctx);
+    case 'client:channel-move':
+      return handleChannelMove(message, ctx);
+    case 'client:channel-reorder':
+      return handleChannelReorder(message, ctx);
+    case 'client:channel-delete':
+      return handleChannelDelete(message, ctx);
+    case 'client:channel-set-password':
+      return handleChannelSetPassword(message, ctx);
+    case 'client:channel-remove-password':
+      return handleChannelRemovePassword(message, ctx);
+    case 'client:channel-get-editable-node':
+      return handleChannelGetEditableNode(message, ctx);
   }
 }

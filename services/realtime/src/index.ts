@@ -36,3 +36,21 @@ export {
   type ChatPort,
   type SendChatMessageResult,
 } from './chat-port.js';
+export {
+  createNoopChannelPort,
+  type CanJoinResult,
+  type ChannelPort,
+  type ChannelTreeSnapshot,
+  type CreateNodeResult,
+  type DeleteNodeResult,
+  type MoveNodeResult,
+  type ReorderResult,
+  type SetPasswordResult,
+  type UpdateNodeResult,
+} from './channel-port.js';
+export {
+  maybeDestroyEmptyTemporaryChannel,
+  TemporaryChannelRegistry,
+  type TemporaryChannelRecord,
+} from './voice/temporary-channels.js';
+export { VoiceRegistry } from './voice/registry.js';

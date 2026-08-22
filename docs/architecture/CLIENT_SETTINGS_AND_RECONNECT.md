@@ -147,6 +147,26 @@ afterward (T11's race requirement).
 Camera and screen non-restoration is a mandatory, non-negotiable product/privacy constraint, not a
 convenience trade-off — see ADR 0016.
 
+**T13.2 — restoring into a channel that changed while offline.** "Voice-channel membership: Yes — via
+`join()`" above assumes the previously-joined channel is still restorable; T13.2 added three specific
+outcomes for when it is not, all resolved via the same `join()` call's own rejection rather than a
+special-cased restore path:
+
+| While disconnected, the channel was...  | `join()`'s rejection code                           | Client behavior                                                                                                                                           |
+| --------------------------------------- | --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Deleted, or hidden by a live ACL change | `CHANNEL_NOT_FOUND` (both cases, indistinguishable) | Silently gives up — no error toast, since this is a background reconciliation, not a user action                                                          |
+| Still visible but no longer joinable    | `CHANNEL_ACCESS_DENIED`                             | Same silent give-up                                                                                                                                       |
+| Made password-protected                 | `CHANNEL_PASSWORD_REQUIRED`                         | The connection itself still succeeds; `state.channelPasswordPrompt` opens so the user can manually re-enter a password and complete the rejoin themselves |
+
+In every case **the connection itself reconnects successfully** — a channel-restore failure never
+fails the whole reconnect, matching this codebase's existing "a non-fatal error code never appears in
+`CLOSE_CODE_BY_ERROR`" precedent. `use-voice-channel.ts` distinguishes a restore-triggered join
+attempt from a user-initiated one via a `lastJoinRequestRef.isRestore` flag, purely to decide _how_ to
+present a failure (silent vs. a password prompt vs, for a genuinely user-initiated join, an ordinary
+error toast) — never to change what the server actually allows. See
+[`CHANNELS_AND_SERVER_ADMINISTRATION.md`](CHANNELS_AND_SERVER_ADMINISTRATION.md)'s "Reconnect
+interaction" section and `e2e:reconnect-channel-smoke` for the real-socket proof of all three cases.
+
 ### Fresh authentication, every time
 
 Every reconnect goes through the _exact same_ T7 handshake (`client:hello` →

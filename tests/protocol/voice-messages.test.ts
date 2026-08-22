@@ -3,11 +3,11 @@ import { describe, expect, it } from 'vitest';
 import {
   clientVoiceJoinMessageSchema,
   clientVoiceLeaveMessageSchema,
-  serverVoiceCatalogMessageSchema,
   serverVoiceJoinedMessageSchema,
   serverVoiceParticipantJoinedMessageSchema,
   serverVoiceParticipantLeftMessageSchema,
 } from '../../packages/protocol/src/messages/voice.js';
+import { serverVoiceCatalogMessageSchema } from '../../packages/protocol/src/messages/channels.js';
 import { clientMessageSchema } from '../../packages/protocol/src/messages/client.js';
 
 describe('clientVoiceJoinMessageSchema', () => {
@@ -119,22 +119,41 @@ describe('server voice messages', () => {
     ).toBe(true);
   });
 
-  it('accepts a valid voice:catalog with an empty channel list', () => {
+  it('accepts a valid voice:catalog with an empty node list', () => {
     expect(
-      serverVoiceCatalogMessageSchema.safeParse({ type: 'voice:catalog', id: 'c1', channels: [] })
+      serverVoiceCatalogMessageSchema.safeParse({ type: 'voice:catalog', id: 'c1', nodes: [] })
         .success,
     ).toBe(true);
   });
 
-  it('accepts a valid voice:catalog with channels', () => {
+  it('accepts a valid voice:catalog with nodes', () => {
     expect(
       serverVoiceCatalogMessageSchema.safeParse({
         type: 'voice:catalog',
         id: 'c1',
-        channels: [
-          { channelId: 'general', name: 'General' },
-          { channelId: 'games', name: 'Games' },
-          { channelId: 'afk', name: 'AFK' },
+        nodes: [
+          {
+            nodeId: 'general',
+            kind: 'voice',
+            name: 'General',
+            sortOrder: 0,
+            visibilityPolicy: 'inherit',
+            joinPolicy: 'inherit',
+            managePolicy: 'inherit',
+            hasPassword: false,
+            temporary: false,
+          },
+          {
+            nodeId: 'games',
+            kind: 'voice',
+            name: 'Games',
+            sortOrder: 1,
+            visibilityPolicy: 'inherit',
+            joinPolicy: 'inherit',
+            managePolicy: 'inherit',
+            hasPassword: false,
+            temporary: false,
+          },
         ],
       }).success,
     ).toBe(true);

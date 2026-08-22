@@ -13,6 +13,30 @@ export const channelIdSchema = z
   .regex(CHANNEL_ID_PATTERN, 'channel id must be lowercase alphanumeric/hyphen, 1-64 chars');
 
 /**
+ * T13.2 — a category and a voice channel share one unified id space (`channel_nodes.node_id` in
+ * `services/dedicated-server`'s `channels.sqlite`), so every wire field that carries a channel-tree
+ * node id (`channelNodeSchema.nodeId`, `parentId`, etc. — see `channels.ts`) reuses
+ * {@link channelIdSchema} directly. `categoryIdSchema` is the identical shape/regex kept as a
+ * nominally distinct type for any future wire field that specifically wants to express "this must
+ * be a category, not just any node" at the type level — not currently used to type a field, since
+ * `channelNodeSchema` deliberately types every node reference generically (a category and a voice
+ * channel are structurally interchangeable as *references*; only `kind` distinguishes them).
+ */
+export const categoryIdSchema = z
+  .string()
+  .regex(CHANNEL_ID_PATTERN, 'category id must be lowercase alphanumeric/hyphen, 1-64 chars');
+
+/**
+ * The one hard technical ceiling on voice-channel occupancy — also the wire-schema array-size bound
+ * for a join snapshot (`voiceParticipantSchema` array in `messages/voice.ts`) and the upper bound a
+ * channel-tree node's own configured `userLimit` (`channels.ts`) can never exceed. Defined here
+ * (a dependency-free file) rather than in `messages/voice.ts` itself so `channels.ts` can reference
+ * the exact same constant without an import cycle (`messages/voice.ts` <-> `channels.ts`) — see
+ * `messages/voice.ts`'s re-export.
+ */
+export const MAX_CHANNEL_PARTICIPANTS = 64;
+
+/**
  * Server-generated per-voice-session identity (see `docs/architecture/WEBRTC_VOICE.md` for the
  * `connectionId`/`participantId`/future-`userId` distinction). Clients only ever receive this
  * value from the server; they never mint or choose it.

@@ -18,6 +18,7 @@ describe('loadRealtimeConfig', () => {
       rateLimit: { maxMessages: 30, windowMs: 10000 },
       chatSendRateLimit: { maxMessages: 10, windowMs: 10000 },
       chatHistoryRateLimit: { maxMessages: 20, windowMs: 10000 },
+      channelPasswordRateLimit: { maxMessages: 5, windowMs: 60000 },
       logLevel: 'info',
     });
   });
@@ -38,6 +39,8 @@ describe('loadRealtimeConfig', () => {
       REALTIME_CHAT_SEND_RATE_LIMIT_WINDOW_MS: '2000',
       REALTIME_CHAT_HISTORY_RATE_LIMIT_MAX_MESSAGES: '8',
       REALTIME_CHAT_HISTORY_RATE_LIMIT_WINDOW_MS: '3000',
+      REALTIME_CHANNEL_PASSWORD_RATE_LIMIT_MAX_MESSAGES: '2',
+      REALTIME_CHANNEL_PASSWORD_RATE_LIMIT_WINDOW_MS: '9000',
       LOG_LEVEL: 'debug',
     });
 
@@ -53,6 +56,7 @@ describe('loadRealtimeConfig', () => {
       rateLimit: { maxMessages: 10, windowMs: 1000 },
       chatSendRateLimit: { maxMessages: 7, windowMs: 2000 },
       chatHistoryRateLimit: { maxMessages: 8, windowMs: 3000 },
+      channelPasswordRateLimit: { maxMessages: 2, windowMs: 9000 },
       logLevel: 'debug',
     });
   });

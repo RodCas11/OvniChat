@@ -201,7 +201,7 @@ async function main() {
     if (catalog.type !== 'voice:catalog') {
       throw new Error(`Expected voice:catalog, got ${catalog.type}`);
     }
-    const channelIds = catalog.channels.map((c) => c.channelId).sort();
+    const channelIds = catalog.nodes.map((n) => n.nodeId).sort();
     if (channelIds.join(',') !== 'lobby,raid') {
       throw new Error(
         `Expected the configured "lobby"/"raid" channels, got [${channelIds.join(', ')}] — the ` +

@@ -173,17 +173,25 @@ actual SQLite-backed authorization store lives entirely in `services/dedicated-s
 [`architecture/SERVER_AUTHORIZATION.md`](architecture/SERVER_AUTHORIZATION.md). T10 added a second,
 identically-shaped seam for persistent chat: `ChatPort` (`services/realtime/src/chat-port.ts`),
 implemented by `services/dedicated-server`'s own SQLite-backed `ChatStore` — see
-[`architecture/PERSISTENT_TEXT_CHAT.md`](architecture/PERSISTENT_TEXT_CHAT.md). Presence beyond raw
-connection lifecycle remains an unimplemented internal module for a later task:
+[`architecture/PERSISTENT_TEXT_CHAT.md`](architecture/PERSISTENT_TEXT_CHAT.md). T13.2 added a third,
+identically-shaped seam, `ChannelPort` (`services/realtime/src/channel-port.ts`), implemented by
+`services/dedicated-server`'s SQLite-backed `ChannelStore` — replacing T3/T8's static, flat,
+constructor-injected `voiceChannels` list with a dynamic, hierarchical, access-controlled tree
+`VoiceRegistry` no longer owns at all (it is now purely a live-membership tracker, taking an explicit
+per-join capacity limit from its caller) — see
+[`architecture/CHANNELS_AND_SERVER_ADMINISTRATION.md`](architecture/CHANNELS_AND_SERVER_ADMINISTRATION.md)
+and [`adr/0019-channel-hierarchy-storage-and-acl.md`](adr/0019-channel-hierarchy-storage-and-acl.md).
+Presence beyond raw connection lifecycle remains an unimplemented internal module for a later task:
 
 ```text
 services/realtime/src/
-  connection.ts, connection-state.ts   # T2, extended T7/T9/T10 — implemented
-  protocol-handlers.ts, heartbeat.ts   # T2, extended T7/T9/T10 — implemented
-  rate-limiter.ts, config.ts, logging.ts, server.ts, index.ts   # T2, extended T7/T9/T10 — implemented
-  voice/catalog.ts, voice/registry.ts  # T3, extended T10 — implemented
+  connection.ts, connection-state.ts   # T2, extended T7/T9/T10/T13.2 — implemented
+  protocol-handlers.ts, heartbeat.ts   # T2, extended T7/T9/T10/T13.2 — implemented
+  rate-limiter.ts, config.ts, logging.ts, server.ts, index.ts   # T2, extended T7/T9/T10/T13.2 — implemented
+  voice/registry.ts, voice/temporary-channels.ts  # T3, extended T13.2 — implemented
   authorization-port.ts                # T9 — implemented
-  chat-port.ts                         # T10 — implemented
+  chat-port.ts                         # T10, extended T13.2 — implemented
+  channel-port.ts                      # T13.2 — implemented
   presence/          # not yet implemented
 ```
 
@@ -226,6 +234,18 @@ between chat and authorization data, and module-boundary consistency with T9's o
 module). Both stores share a small `withTransaction`/migration-runner _pattern_
 (`services/dedicated-server/src/storage/sqlite-store-utils.ts`), never a shared file, shared
 connection, or shared `schema_migrations` table.
+
+T13.2 added the Dedicated Server's third persistent SQLite file, `<dataDir>/channels.sqlite` —
+the dynamic category/voice-channel hierarchy, its per-node access-control policy, and password
+verifiers — again deliberately separate from both `authorization.sqlite` and `chat.sqlite`, and
+again sharing only the same `withTransaction`/migration-runner pattern, never a file/connection/
+migrations table. Channel deletion is a tombstone (`deleted_at`), never a row delete, specifically so
+it never needs a corresponding write in `chat.sqlite` — see
+[`architecture/CHANNELS_AND_SERVER_ADMINISTRATION.md`](architecture/CHANNELS_AND_SERVER_ADMINISTRATION.md)
+and [`adr/0019-channel-hierarchy-storage-and-acl.md`](adr/0019-channel-hierarchy-storage-and-acl.md)
+for the full reasoning. TeamSpeak-style temporary channels are the one exception to this store's own
+persistence: they are held only in an in-memory `services/realtime` registry and never get a
+`channels.sqlite` row at all, since they structurally cannot survive a restart regardless.
 
 T11 added the Client's own first genuine local-settings file, `%APPDATA%/DiscoVoador/settings.json`
 (`apps/desktop/src/main/settings/`) — device preferences, screen-quality/mute/deafen defaults, and

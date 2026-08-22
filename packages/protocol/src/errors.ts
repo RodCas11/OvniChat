@@ -104,6 +104,33 @@ import { z } from 'zod';
  * - `CHAT_RATE_LIMITED` — the connection exceeded its per-connection chat-send or chat-history-
  *   request rate limit (a separate, smaller bucket than the generic transport-level `RATE_LIMITED`
  *   — see `services/realtime/src/connection.ts`).
+ *
+ * The T13.2 codes below cover channel/category tree administration (design lives in the T13.2 task
+ * for now). All are **non-fatal** — an ordinary, expected condition a channel-browser/admin UI can
+ * recover from without tearing down the connection, exactly like the T3/T9/T10 codes above:
+ *
+ * - `CHANNEL_ACCESS_DENIED` — a channel is visible but the caller's join policy does not admit them
+ *   (visibility and join are genuinely separate axes — see `ChannelPort`'s ACL resolution). Also
+ *   used generically for a `client:channel-*` mutation the caller lacks Manage rights for.
+ * - `CHANNEL_PASSWORD_REQUIRED` — `voice:join` named a password-protected channel with no
+ *   `password` field.
+ * - `CHANNEL_PASSWORD_INVALID` — `voice:join.password` did not match the channel's verifier.
+ * - `CHANNEL_PASSWORD_RATE_LIMITED` — the connection exceeded its per-connection channel-password
+ *   attempt rate limit (a separate, smaller bucket than the generic transport-level `RATE_LIMITED`
+ *   — see `services/realtime/src/connection.ts`). Deliberately non-fatal, matching `CHAT_RATE_LIMITED`.
+ * - `CHANNEL_PARENT_INVALID` — a `client:channel-create-*`/`-move`/`-reorder` named a `parentId`
+ *   that does not exist, is tombstoned, would create a cycle, would exceed `MAX_CHANNEL_DEPTH`, or
+ *   (for a category) is non-null at all — categories are always top-level.
+ * - `CHANNEL_TREE_LIMIT_EXCEEDED` — a `client:channel-create-*` would push the server's active
+ *   (non-tombstoned) node count past `MAX_CHANNEL_TREE_NODES`.
+ * - `GROUP_IN_USE_BY_CHANNEL_POLICY` — `client:authorization-delete-group` named a group id
+ *   currently referenced by some channel node's visibility/join/manage ACL — deleting the group
+ *   first requires removing it from every channel policy that names it, so a channel's ACL can
+ *   never silently start referencing a group id that no longer exists.
+ *
+ * Reuses `CHANNEL_NOT_FOUND` (a hidden channel and an absent one are structurally indistinguishable
+ * — this is the core privacy guarantee, see `ChannelPort`'s own doc comment) and `CHANNEL_FULL`
+ * unchanged from their T3 meanings.
  */
 export const errorCodeSchema = z.enum([
   'INVALID_MESSAGE',
@@ -135,6 +162,13 @@ export const errorCodeSchema = z.enum([
   'TOKEN_ALREADY_USED',
   'PARTICIPANT_NOT_FOUND',
   'CHAT_RATE_LIMITED',
+  'CHANNEL_ACCESS_DENIED',
+  'CHANNEL_PASSWORD_REQUIRED',
+  'CHANNEL_PASSWORD_INVALID',
+  'CHANNEL_PASSWORD_RATE_LIMITED',
+  'CHANNEL_PARENT_INVALID',
+  'CHANNEL_TREE_LIMIT_EXCEEDED',
+  'GROUP_IN_USE_BY_CHANNEL_POLICY',
 ]);
 
 export type ErrorCode = z.infer<typeof errorCodeSchema>;

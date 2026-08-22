@@ -35,3 +35,9 @@ export {
   type TokenPrefix,
 } from './authorization/index.js';
 export { ChatStore, CHAT_MIGRATIONS, type ChatStoreOptions } from './chat/index.js';
+export {
+  ChannelStore,
+  CHANNEL_MIGRATIONS,
+  type ChannelPolicyKind,
+  type ChannelStoreOptions,
+} from './channels/index.js';

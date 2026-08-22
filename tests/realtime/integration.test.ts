@@ -7,11 +7,36 @@ import { buildIdentityAuthPayload, CURRENT_PROTOCOL_VERSION } from '@disco-voado
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WebSocket } from 'ws';
 
+import type { ChannelNodeView } from '@disco-voador/protocol';
+
+import {
+  createNoopChannelPort,
+  type ChannelPort,
+} from '../../services/realtime/src/channel-port.js';
 import type { RealtimeConfig } from '../../services/realtime/src/config.js';
 import {
   createRealtimeServer,
   type RealtimeServerHandle,
 } from '../../services/realtime/src/server.js';
+
+/** A minimal fixed-catalog `ChannelPort` for dependency-injection tests — every mutation is a
+ * no-op (unused by these tests), only `getFilteredTree`/`getVisibleNode`/`checkJoin` matter here. */
+function fakeChannelPort(nodes: readonly ChannelNodeView[]): ChannelPort {
+  const port = createNoopChannelPort();
+  const byId = new Map(nodes.map((node) => [node.nodeId, node]));
+  return {
+    ...port,
+    getFilteredTree: () => nodes,
+    getVisibleNode: (nodeId) => byId.get(nodeId),
+    checkJoin: ({ nodeId, currentMemberCount }) => {
+      const node = byId.get(nodeId);
+      if (!node) return { ok: false, code: 'NOT_FOUND' };
+      if (currentMemberCount >= 64) return { ok: false, code: 'FULL' };
+      return { ok: true };
+    },
+    listActiveNodeIds: () => nodes.map((node) => node.nodeId),
+  };
+}
 
 /**
  * These tests start a real `RealtimeServer` bound to an ephemeral localhost port and drive it
@@ -32,6 +57,7 @@ const DEFAULT_TEST_CONFIG: RealtimeConfig = {
   rateLimit: { maxMessages: 100, windowMs: 10_000 },
   chatSendRateLimit: { maxMessages: 100, windowMs: 10_000 },
   chatHistoryRateLimit: { maxMessages: 100, windowMs: 10_000 },
+  channelPasswordRateLimit: { maxMessages: 100, windowMs: 10_000 },
   logLevel: 'error',
 };
 
@@ -332,9 +358,21 @@ describe('realtime server integration (real sockets)', () => {
     expect(code).toBe(1001);
   });
 
-  it('T8: an injected voiceChannels/serverMetadata dependency is used instead of the defaults', async () => {
+  it('T8/T13.2: an injected channels/serverMetadata dependency is used instead of the defaults', async () => {
     const injected = createRealtimeServer(testConfig(), {
-      voiceChannels: [{ channelId: 'lobby', name: 'Lobby' }],
+      channels: fakeChannelPort([
+        {
+          nodeId: 'lobby',
+          kind: 'voice',
+          name: 'Lobby',
+          sortOrder: 0,
+          visibilityPolicy: 'everyone',
+          joinPolicy: 'everyone',
+          managePolicy: 'inherit',
+          hasPassword: false,
+          temporary: false,
+        },
+      ]),
       serverMetadata: { name: 'Injected Server', capabilities: ['voice'] },
     });
     const address = await injected.start();
@@ -362,7 +400,7 @@ describe('realtime server integration (real sockets)', () => {
     });
     expect(catalog).toMatchObject({
       type: 'voice:catalog',
-      channels: [{ channelId: 'lobby', name: 'Lobby' }],
+      nodes: [{ nodeId: 'lobby', name: 'Lobby' }],
     });
 
     await injected.stop();

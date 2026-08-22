@@ -549,23 +549,27 @@ Renderer/Main trust boundary.
 
 There is no running Coturn stack (templates exist but no TURN credential minting), installer/maker
 artifact, or SFU. Production configuration/TLS termination and Docker packaging for the Dedicated
-Server are also not yet implemented — this work is now **T14** (see the T13 redefinition below).
-Channel/server administration (categories, subchannels, passwords/ACLs), real avatars/presence,
-voice-activity/push-to-talk UX, and Discord-like stream/camera layout are also not yet implemented —
-this is **T13.2-T13.5**. Voice, camera, screen-video, and screen-audio sharing (T3–T6, P2P-mesh,
-small-room, self-hosted scope), local cryptographic client identity (T7), the Dedicated Server
-product boundary (T8), server-local groups/permissions/tokens/bans (T9), persistent server-side text
-chat (T10 — server-wide and per-voice-channel, real restart persistence, no message editing/deletion
-yet), local device management/bookmarks/automatic reconnect (T11), Windows per-application audio
-capture (T12 — real native WASAPI process-loopback, this repository's first native/compiled code),
-the Renderer's visual/interaction foundation (T13.1 — design tokens, CSS Modules, `lucide-react`
-icons, server-home/rail/channel-sidebar/chat/member-panel/bottom-control-bar layout, replacing the
-previous unstyled UI with no protocol/IPC/persistence change), and its visual polish/UX refinement
-(T13.1.1 — a substantial Settings information-architecture redesign, a Home with real presence,
-quieter hover-revealed channel actions, a Member Panel duplicate-heading fix — presentation only, no
-new capability) are all implemented, mechanism-verified, and live-verified end to end. The product is
-now marketed as **OvniChat** (see [`PRODUCT.md`](PRODUCT.md)); the internal `@disco-voador/*` package
-namespace is unchanged.
+Server are also not yet implemented — this work is now **T14** (see the T13 redefinition below). Real
+avatars/presence/status, voice-activity/push-to-talk UX, and Discord-like stream/camera layout are
+also not yet implemented — this is **T13.3-T13.5**. Voice, camera, screen-video, and screen-audio
+sharing (T3–T6, P2P-mesh, small-room, self-hosted scope), local cryptographic client identity (T7),
+the Dedicated Server product boundary (T8), server-local groups/permissions/tokens/bans (T9),
+persistent server-side text chat (T10 — server-wide and per-voice-channel, real restart persistence,
+no message editing/deletion yet), local device management/bookmarks/automatic reconnect (T11),
+Windows per-application audio capture (T12 — real native WASAPI process-loopback, this repository's
+first native/compiled code), the Renderer's visual/interaction foundation (T13.1 — design tokens, CSS
+Modules, `lucide-react` icons, server-home/rail/channel-sidebar/chat/member-panel/bottom-control-bar
+layout, replacing the previous unstyled UI with no protocol/IPC/persistence change), its visual
+polish/UX refinement (T13.1.1 — a substantial Settings information-architecture redesign, a Home with
+real presence, quieter hover-revealed channel actions, a Member Panel duplicate-heading fix —
+presentation only, no new capability), and dynamic channel/category hierarchy and server
+administration (T13.2 — categories, voice channels, subchannels, TeamSpeak-style temporary channels,
+group-based Visibility/Join/Manage access control with inheritance, optional user limits and scrypt
+passwords, tombstone deletion, live per-connection-filtered catalog updates, and a full Renderer admin
+UI reusing the T13.1/T13.1.1 design system — all administered live from the Client, no server restart,
+no hand-edited config) are all implemented, mechanism-verified, and live-verified end to end. The
+product is now marketed as **OvniChat** (see [`PRODUCT.md`](PRODUCT.md)); the internal
+`@disco-voador/*` package namespace is unchanged.
 
 ## What should happen next?
 
@@ -573,9 +577,8 @@ T13 was redefined, by explicit product direction, from a single "self-hosting pr
 task into a five-part Product Experience series (T13.1-T13.5) — see
 [`tasks/STATUS.md`](tasks/STATUS.md) for the full renumbering (production self-hosting is now T14,
 installer/releases T15, private-beta polish T16, SFU T17, hardening/release-candidate T18).
-**T13.2 — Channels & Server Administration** is next: channel create/edit/delete/hierarchy,
-subchannels, temporary channels, channel access policies, and richer server admin UX, building on the
-visual foundation T13.1 established.
+**T13.3 — Profiles / Avatars / Members / Presence** is next, building on the channel administration
+system T13.2 established. Do not implement it until its own task document exists.
 
 Non-blocking follow-ups still open, cheap relative to the risk they guard against: (1) ~~a
 frequency-domain (e.g. dominant-frequency-near-440Hz) check for `e2e:screen-audio-smoke`'s
@@ -971,6 +974,62 @@ are satisfied except the one honestly-recorded, diff-unrelated `e2e:process-audi
 above. See [`tasks/T13_1_1_VISUAL_POLISH.md`](tasks/T13_1_1_VISUAL_POLISH.md)’s handoff notes and
 [`architecture/PRODUCT_UI_FOUNDATION.md`](architecture/PRODUCT_UI_FOUNDATION.md)’s own T13.1.1 section
 for the full record.
+
+T13.2’s clean-state evidence is the same gate with 1258 Vitest tests (up from T13.1.1’s 1122; the
+same one pre-existing, already-allowlisted high-severity dependency advisory — T13.2 introduced zero
+new npm dependencies) — formatting, lint, whole-repo typecheck, `vitest run`, composite build,
+`verify-repository.mjs`, and the dependency audit all pass via one canonical `corepack pnpm check`
+run — plus its own required real-runtime evidence: four new E2E scripts (`e2e:channel-admin-smoke`,
+`e2e:channel-hidden-smoke`, `e2e:channel-temporary-smoke`, `e2e:reconnect-channel-smoke`) each passed
+against the final, security-fixed, repackaged build, proving (respectively) a full nested
+category/channel/subchannel administration journey including a live ACL grant and a live
+rename/reparent observed with no reconnect, wrong-then-right password join, and the password never
+persisted to disk; a fully hidden category+channel never appearing in a Guest’s raw incoming messages,
+with joining/reading-admin-details/reading-chat-history for the real (guessed) hidden ID all
+byte-identical in rejection shape to a genuinely nonexistent ID; a temporary channel’s full lifecycle
+(appears on creation, survives while occupied, destroyed with a real chat-history purge the instant it
+empties, never returns after a restart); and the three new offline-mutation reconnect cases
+(deleted/ACL-denied/password-added) each reconnecting the whole connection successfully while
+correctly declining to silently restore voice. `e2e:reconnect-smoke` (T11, unmodified) re-confirmed
+the fourth, still-allowed-restore case. All twelve pre-existing Electron E2E scripts
+(`e2e:product-shell-smoke`, `e2e:text-chat-persistence`, `e2e:authorization`, `e2e:connection-smoke`,
+`e2e:identity-auth`, `e2e:identity-persistence`, `e2e:settings-persistence`, `e2e:voice-smoke`,
+`e2e:camera-smoke`, `e2e:screen-smoke`, `e2e:screen-audio-smoke`, `e2e:process-audio-smoke`) were
+re-verified passing against the final code — no regression, including `e2e:process-audio-smoke`
+passing cleanly across all four of its scenarios on this run (the class of environmental flakiness
+recorded since T6/observed again in T13.1.1 did not reproduce this time). Thirteen real screenshots
+from an actual packaged Electron instance (the full admin hierarchy at 1920×1080; the admin context
+menu; Create/Edit Channel; Create Category; Move Channel; the ACL editor with a real Selected-Groups
+checkbox list and inheritance note; the password-join prompt; a temporary channel; Server Settings’
+Channels and Groups & Permissions pages; a genuine no-permission Guest’s sidebar; and the admin
+workspace at 1366×768) were captured and personally visually reviewed, surfacing and fixing two real,
+minor defects (channel/category names truncating with no way to see the full name — fixed with
+`title` tooltips and matching CSS ellipsis handling on the category header) and honestly recording one
+pre-existing, out-of-scope rough edge left unfixed (the reused T9 Groups & Permissions panel shows raw
+permission-key strings rather than human labels — predates T13.2, and rewriting it would cross this
+task’s own “do not rewrite working T9 behavior” boundary). **T13.2 is marked COMPLETE in
+[`tasks/STATUS.md`](tasks/STATUS.md)** — its mechanism is implemented, reviewed (`security-reviewer`
+found and this task fixed one real, high-severity issue — four Manage-gated channel-administration
+handlers authorized a caller without first checking Visibility, letting a node-local delegated-Manage
+grant leak a Visibility-hidden node’s existence/admin-detail content; fixed to check visibility first,
+matching the pattern the Move/Delete handlers already used correctly, with a dedicated regression test
+covering all six node-addressing actions; three lower-severity findings — parent-Manage delete/move
+semantics, per-connection password rate limiting, temporary-channel idle-pruning cadence — were
+reviewed and accepted as already-deliberate, documented tradeoffs rather than gaps. `qa-engineer`
+exercised every admin scenario through real component tests against actual rendered UI, found and
+fixed one narrow CSS overflow defect for long group names, and added 19 new tests, including a new
+`voice-channel-view-wiring.test.tsx` proving the selected-channel-removed fallback and Server Settings
+gating are genuine UI wiring, not just isolated pure functions. A separate UI-authorization defect —
+“Move Channel” gated on Manage-over-the-node-itself instead of Manage-over-the-parent, exactly
+backwards from `handleChannelMove`’s real requirement — was found during this task’s own final
+code review and fixed, with both affected component tests corrected and two new ones added
+distinguishing the two Manage scopes), and unit/integration/live-verified through a real third SQLite
+store, real sockets, and a real multi-instance Electron flow, with all Definition of Done items
+satisfied. See [`tasks/T13_2_CHANNEL_ADMINISTRATION.md`](tasks/T13_2_CHANNEL_ADMINISTRATION.md)’s
+handoff notes and
+[`architecture/CHANNELS_AND_SERVER_ADMINISTRATION.md`](architecture/CHANNELS_AND_SERVER_ADMINISTRATION.md)
+for the full record, including the storage/ACL/password/temporary-channel/tombstone design (ADR 0019),
+the security-fix detail, and the Renderer admin-UI summary.
 
 Then perform the task’s required manual/platform checks. Apply
 [`DEFINITION_OF_DONE.md`](DEFINITION_OF_DONE.md) and update status only when every applicable item

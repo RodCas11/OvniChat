@@ -57,6 +57,16 @@ navigation, a real Danger Zone for Regenerate Identity), a Home with real presen
 hover-revealed secondary channel actions — visual refinement only, no new product capability. See
 [`architecture/PRODUCT_UI_FOUNDATION.md`](architecture/PRODUCT_UI_FOUNDATION.md).
 
+T13.2 turned the visual foundation into a real TeamSpeak-style channel administration system: an
+authorized server administrator creates, renames, moves, and deletes categories and voice channels
+(including subchannels) live, from the Client, with no server restart and no hand-edited config file.
+Each channel supports optional group-based visibility/join/management access policy (against T9's
+existing server-local groups, never a second permission system), an optional user limit, and an
+optional password — all enforced authoritatively by the Dedicated Server, never merely hidden in the
+UI. TeamSpeak-style temporary channels exist while at least one participant remains inside and are
+destroyed (along with their chat) the moment the last one leaves. See
+[`architecture/CHANNELS_AND_SERVER_ADMINISTRATION.md`](architecture/CHANNELS_AND_SERVER_ADMINISTRATION.md).
+
 ## Primary capabilities
 
 The target product will provide:
@@ -132,3 +142,12 @@ transport-neutral enough to introduce an SFU later.
     `docs/adr/0015-local-client-settings-and-bookmarks.md`). Reconnecting after a network/server
     interruption never bypasses or caches T7 authentication — every reconnect is a fresh handshake
     (see `docs/adr/0016-automatic-reconnect-and-media-restoration-policy.md`).
+13. Channel structure is server-owned and server-authoritative, never a client preference or a
+    hardcoded default: an administrator manages a Dedicated Server's category/channel hierarchy,
+    access policy, capacity, and passwords entirely from the Client, live, with no server restart —
+    but every mutation and every join decision is validated and enforced by the Dedicated Server
+    itself, and a channel hidden from an identity by policy is indistinguishable from one that does
+    not exist, through every protocol path (T13.2; see
+    `docs/adr/0019-channel-hierarchy-storage-and-acl.md`). A control this product cannot
+    authoritatively enforce (such as who may speak, given the current P2P media transport) is omitted
+    entirely rather than shipped as a misleading checkbox.

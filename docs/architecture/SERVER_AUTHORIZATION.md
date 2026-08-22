@@ -1,4 +1,4 @@
-# Server-local authorization (T9, permission registry extended by T10)
+# Server-local authorization (T9, permission registry extended by T10 and T13.2)
 
 Canonical contracts live in code at
 [`services/dedicated-server/src/authorization/`](../../services/dedicated-server/src/authorization/),
@@ -79,14 +79,24 @@ authorization.tokens.manage        — create privilege/invite tokens
 server.manage                      — reserved for future server-level administration
 chat.server.send                   — send a message to Server Chat (T10)
 chat.channel.send                  — send a message to a voice channel's chat (T10)
+channels.create                    — create a root-level category/voice channel (T13.2)
+channels.manage                    — global override of any node's Manage rights (T13.2)
+channels.delete                    — global override of channel/category deletion (T13.2)
+channels.password.bypass           — join a password-protected channel without the password (T13.2)
 ```
 
 Deliberately excludes anything the current P2P architecture cannot authoritatively enforce (e.g. a
 "camera forbidden" permission — a malicious client could still place media into WebRTC directly).
 Adding a new key is additive and needs no protocol version bump, provided a client treats an
-unrecognized key as simply absent, never fatal — the two `chat.*` keys T10 added are the first real
-proof of this policy working as intended after the fact. Reading chat history requires no
-permission at all (see [`PERSISTENT_TEXT_CHAT.md`](PERSISTENT_TEXT_CHAT.md)) — only sending does.
+unrecognized key as simply absent, never fatal — the two `chat.*` keys T10 added, and the four
+`channels.*` keys T13.2 added, are real proof of this policy working as intended after the fact.
+Reading chat history requires no permission at all (see
+[`PERSISTENT_TEXT_CHAT.md`](PERSISTENT_TEXT_CHAT.md)) — only sending does. T13.2's own channel-ACL
+system (Visibility/Join/Manage against these T9 groups, layered per-channel — see
+[`CHANNELS_AND_SERVER_ADMINISTRATION.md`](CHANNELS_AND_SERVER_ADMINISTRATION.md)) is the same "exclude
+what cannot be authoritatively enforced" discipline applied a second time: it deliberately has no
+"who may speak" permission, for the identical P2P-media reasoning this paragraph's own "camera
+forbidden" example already establishes.
 
 ## Admission flow
 

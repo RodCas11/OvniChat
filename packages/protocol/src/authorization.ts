@@ -39,6 +39,19 @@ export const permissionKeySchema = z.enum([
   // connection may request it; see `docs/architecture/PERSISTENT_TEXT_CHAT.md`), only sending does.
   'chat.server.send',
   'chat.channel.send',
+  // T13.2 — channel/category tree administration (see `docs/architecture/CHANNELS_AND_ADMINISTRATION.md`
+  // once written; design lives in the T13.2 task for now). `channels.create`/`channels.delete` gate
+  // root-level tree operations (a node with no parent); `channels.manage` is a global override of
+  // any node's local Manage policy; the local, per-subtree override itself is never a permission key
+  // at all — it is `ChannelPort.hasManageRights`, evaluated against the node's own ACL. Deliberately
+  // no `channels.speak` (or any "who may speak" control): the Dedicated Server cannot authoritatively
+  // enforce it given this app's P2P-mesh WebRTC architecture (media never flows through the realtime
+  // service) — deferred until an SFU exists (T17).
+  'channels.create',
+  'channels.manage',
+  'channels.delete',
+  /** Bypasses only the password *step* of `ChannelPort.checkJoin` — never visibility/join ACL. */
+  'channels.password.bypass',
 ]);
 export type PermissionKey = z.infer<typeof permissionKeySchema>;
 

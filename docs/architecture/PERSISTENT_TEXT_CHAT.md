@@ -98,8 +98,13 @@ matches every other membership-related rejection T3 already established), never 
 **Reading is asymmetric with sending, deliberately** — a client may request a channel's history
 without being a current member of that channel (T10 Section 8's preferred behavior: "a user who can
 see/access a voice channel may read its chat history even when not currently connected to that voice
-channel"). The only check on a history request is that the named `channelId` exists in the server's
-channel catalog (`CHANNEL_NOT_FOUND` otherwise).
+channel"). Before T13.2, the only check on a history request was that the named `channelId` existed in
+the server's (then-flat, ACL-free) channel catalog. **Since T13.2**, a history request resolves the
+target channel through the same visibility-checking `ChannelPort.getVisibleNode` call `voice:join`
+uses — a channel hidden from this identity by its access policy is `CHANNEL_NOT_FOUND`, identical to a
+genuinely nonexistent one, never a different code that would confirm the channel exists. See
+[`CHANNELS_AND_SERVER_ADMINISTRATION.md`](CHANNELS_AND_SERVER_ADMINISTRATION.md)'s "Privacy
+boundaries" section.
 
 ## Persistence and ordering
 

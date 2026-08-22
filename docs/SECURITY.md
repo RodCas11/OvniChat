@@ -413,6 +413,91 @@ document:
   remote participant can observe: the same track kind (audio/video) simply now carries different
   hardware's content, with no new signaling message or protocol surface introduced.
 
+**Implemented (T13.2 — dynamic channel hierarchy, access control, and passwords):** see
+`docs/architecture/CHANNELS_AND_SERVER_ADMINISTRATION.md` for the full design. Key points relevant to
+this document:
+
+- **Existence and visibility are the same check everywhere.** A channel hidden from an identity by
+  its access policy is structurally indistinguishable from one that does not exist at all, to every
+  protocol path that resolves a channel by ID — the catalog build, `client:chat-send`,
+  `client:chat-history-request`, and `voice:join` all route through the identical
+  `ChannelPort.getVisibleNode`/`checkJoin` lookup. A hostile client cannot learn a hidden channel's
+  name, membership, password-protected flag, or chat history by guessing or reusing a known
+  `channelId` — every such attempt returns the same `CHANNEL_NOT_FOUND` a genuinely nonexistent ID
+  would, verified by real-socket integration tests, not UI-layer filtering alone.
+- **Channel passwords are never stored, logged, or transmitted in recoverable form.** The verifier
+  format (`scrypt$1$16384$8$1$<salt>$<hash>`, `node:crypto`'s built-in `scryptSync` with a random
+  16-byte salt per password) has no reversal path; `ChannelPort` structurally has no
+  `getPassword`/`getVerifier` method, so an admin UI cannot retrieve an existing password even by
+  mistake. A dedicated integration test sets a password, exercises the full join sequence, and greps
+  captured server logs to confirm the raw password string never appears anywhere. Password input is
+  bounded (128 characters) to cap the CPU cost of a brute-force loop against `scryptSync`'s
+  PBKDF2-HMAC-SHA256 first pass, and a per-connection rate limiter (5 attempts / 60s, reusing the
+  existing `RateLimiter` class `chatSendRateLimiter`/`chatHistoryRateLimiter` already use) gates
+  repeated wrong attempts before the expensive `scryptSync` call ever runs.
+- **A channel password is an additional gate, never a substitute for group-based access control.**
+  Password verification is deliberately the _last_ step in the join sequence (visibility → join
+  policy → capacity → password) — an identity denied by group policy never reaches password
+  verification at all, closing the class of bug where a correct password could bypass an otherwise
+  restrictive ACL. Proven directly by an integration test: a Guest denied by join policy stays denied
+  even when supplying the channel's correct password.
+- **The Client never persists a channel password anywhere** — not in bookmarks, not in
+  `settings.json`, not in `localStorage`/`IndexedDB`/AppData, not logged. It exists only as transient
+  Renderer form state for the duration of one join attempt, cleared immediately after (success or
+  failure).
+- **No client-supplied value is ever trusted as an authorization decision.** Every `client:channel-*`
+  mutation (create/update/move/reorder/delete/set-password/remove-password) resolves the caller's
+  actual current permissions and group memberships server-side before acting — a client never
+  self-asserts its own permission level, current group membership, or a target channel's current
+  occupancy/policy state. The permission check (a global `channels.*` permission key, or the target
+  node's own server-computed Manage rights) happens once, in `services/realtime/src/protocol-handlers.ts`,
+  before any mutating `ChannelPort` method is ever called — `ChannelStore` itself has no authorization
+  logic of its own to bypass.
+- **Deleting a channel a user is currently in removes only their voice membership, never their
+  connection to the server** — the same force-leave/signaling-cleanup lifecycle T9's live
+  authorization-change handling already established, reused rather than duplicated for the new
+  channel-deletion and ACL-narrowing trigger points.
+- **Fixed by security review before this task's completion: Manage-gated handlers now check
+  visibility first.** `client:channel-update`/`-set-password`/`-remove-password`/
+  `-get-editable-node` previously authorized via global `channels.manage` **or** local delegated
+  Manage rights alone, without first confirming the caller could even see the target node — since
+  `ChannelPort.hasManageRights` evaluates only the Manage-policy ancestor chain, never Visibility.
+  A caller holding delegated Manage on a node hidden from them by a _different_ ancestor's
+  Visibility restriction (a realistic configuration: Manage and Visibility are deliberately
+  independent, separately-delegatable axes) could read the node's full admin-detail view or mutate
+  it via `AUTHORIZATION_DENIED`-shaped responses that themselves leaked the node's existence — the
+  exact signal the existence/visibility guarantee above exists to deny. All four handlers now call
+  `ChannelPort.getVisibleNode` first and return `CHANNEL_NOT_FOUND` for an invisible node before
+  ever considering Manage rights, matching the pattern `client:channel-move`/`-delete` already used
+  correctly. Covered by a dedicated regression test (`channels-integration.test.ts`) reproducing the
+  disjoint-Visibility/Manage-group scenario, plus real-socket assertions in
+  `e2e-channel-hidden-smoke.mjs`.
+- **Known, accepted limitation: parent-level delegated Manage can delete/move a child whose own
+  Manage policy excludes the actor.** Deleting a node requires Manage on its _parent_ (or global
+  `channels.delete`), never Manage on the node itself; moving requires Manage on both the source and
+  destination parent, never on the node being moved (filesystem-directory-permission semantics — see
+  `ChannelPort`'s own doc comment: "delegated administration is the point"). This means an actor
+  delegated Manage over a category can delete or relocate a child channel even if that child's own
+  `managePolicy` deliberately excludes them, then recreate a same-named replacement under their own
+  control. This is a deliberate simplicity tradeoff (this task explicitly targets something simpler
+  than TeamSpeak's numeric permission-power model, not an equivalent), not an oversight — a
+  server operator delegating category-level Manage should understand it implies the ability to
+  restructure everything beneath it, including nodes with their own narrower Manage carve-outs.
+- **Channel-password rate limiting is per-connection, matching `CHAT_RATE_LIMITED`'s existing shape
+  exactly** (5 attempts/60s via the same `RateLimiter` class) — not per-identity or per-IP. A
+  scripted client can reset its password-attempt budget by reconnecting (a fresh T7 identity-proof
+  handshake each time), bounded only by `REALTIME_MAX_CONNECTIONS`. This is consistent with, not
+  weaker than, the already-accepted T10 chat-rate-limiting precedent; tracked as a shared hardening
+  follow-up rather than fixed only for channel passwords in isolation.
+- **No authoritative "who may speak" control exists, and none was added.** This app's WebRTC
+  transport is a P2P mesh — media never passes through `services/realtime`/`services/dedicated-server`
+  — so the Dedicated Server has no enforcement point capable of authoritatively preventing a modified
+  client from transmitting audio it has been told to suppress. Rather than ship a control that
+  _looks_ like a real security boundary but is not, T13.2 deliberately omits it; see
+  `docs/architecture/CHANNELS_AND_SERVER_ADMINISTRATION.md`'s "Speak-permission" section for the full
+  reasoning. Do not add a "speak" permission or UI control in a later task without first re-deriving
+  this same architectural constraint — it has not changed.
+
 ## Secrets and configuration
 
 - No real credentials, private keys, TURN shared secret, auth tokens, or certificates in Git.

@@ -10,6 +10,7 @@ import {
 import type { ServerCapability } from '@disco-voador/protocol';
 
 import { AuthorizationStore } from './authorization/store.js';
+import { ChannelStore } from './channels/store.js';
 import { ChatStore } from './chat/store.js';
 import type { DedicatedServerConfig } from './config.js';
 
@@ -48,6 +49,10 @@ export interface DedicatedServerDependencies {
    * `<dataDir>/chat.sqlite` — its own physical file, entirely separate from the authorization store
    * (see `docs/adr/0014-persistent-server-owned-chat-history.md`). */
   readonly chat?: ChatStore;
+  /** T13.2 — injectable for the same reasons `authorization`/`chat` are. Defaults to a real
+   * `ChannelStore` at `<dataDir>/channels.sqlite` — its own physical file, entirely separate from
+   * both other stores (see `channels/migrations.ts`'s own doc comment). */
+  readonly channels?: ChannelStore;
 }
 
 /**
@@ -78,20 +83,37 @@ export function createDedicatedServer(
   const authorization =
     deps.authorization ??
     new AuthorizationStore(authorizationPath, { accessMode: config.accessMode });
+  // T13.2 — its own physical file, opened *before* `chat` (see `channels/migrations.ts`'s own doc
+  // comment) so the best-effort `pruneOrphanedChannelHistory` startup hygiene step below can use
+  // `channels.listActiveNodeIds()`.
+  const channelsPath =
+    config.dataDir === ':memory:' ? ':memory:' : path.join(config.dataDir, 'channels.sqlite');
+  const channels = deps.channels ?? new ChannelStore(channelsPath, { seed: config.voiceChannels });
+
   // T10 — its own physical file, never shared with `authorizationPath` (see the module doc comment
   // above and ADR 0014): a chat-store problem can never jeopardize authorization state, and the two
   // stores can be backed up/retained on independent schedules.
   const chatPath =
     config.dataDir === ':memory:' ? ':memory:' : path.join(config.dataDir, 'chat.sqlite');
   const chat = deps.chat ?? new ChatStore(chatPath);
+  // T13.2 — best-effort disk-growth hygiene only, never the actual safety mechanism (that is the
+  // mandatory `ChannelPort.getVisibleNode` check every channel-scoped chat request already goes
+  // through) — see `ChatPort.pruneOrphanedChannelHistory`'s own doc comment.
+  chat.pruneOrphanedChannelHistory(channels.listActiveNodeIds());
 
   const realtimeServer = createRealtimeServer(config.realtime, {
     logger,
-    voiceChannels: config.voiceChannels,
     serverMetadata: { name: config.name, capabilities: DEDICATED_SERVER_CAPABILITIES },
     authorization,
     chat,
+    channels,
   });
+
+  // Guards against a second `stop()` call re-closing already-closed store handles (`node:sqlite`'s
+  // `DatabaseSync.close()` throws "database is not open" on a double-close, unlike the underlying
+  // realtime server's own `stop()`, which already no-ops safely if called twice — see `server.ts`'s
+  // `if (!wss) return;`). Mirrors that same idempotency guarantee at this composition-root layer.
+  let stopped = false;
 
   return {
     get connectionCount() {
@@ -101,9 +123,12 @@ export function createDedicatedServer(
     bootstrapToken: authorization.bootstrapToken,
     start: () => realtimeServer.start(),
     stop: async () => {
+      if (stopped) return;
+      stopped = true;
       await realtimeServer.stop();
       authorization.close();
       chat.close();
+      channels.close();
     },
   };
 }

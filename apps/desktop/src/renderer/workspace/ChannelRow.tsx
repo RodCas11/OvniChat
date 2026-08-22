@@ -1,7 +1,7 @@
-import type { ReactElement } from 'react';
-import { LogOut, MessageSquare, Phone, Volume2 } from 'lucide-react';
+import type { MouseEvent, ReactElement } from 'react';
+import { Lock, LogOut, MessageSquare, Phone, Timer, Volume2 } from 'lucide-react';
 
-import type { VoiceChannelSummary } from '@disco-voador/protocol';
+import type { ChannelNodeView } from '@disco-voador/protocol';
 
 import { Button } from '../ui/Button.js';
 import { IconButton } from '../ui/IconButton.js';
@@ -10,7 +10,7 @@ import { ParticipantRow } from './ParticipantRow.js';
 import styles from './ChannelRow.module.css';
 
 interface ChannelRowProps {
-  readonly channel: VoiceChannelSummary;
+  readonly channel: ChannelNodeView;
   /** Selected for *viewing its chat* — entirely independent of `isJoined` (T13.1 rule: a single
    * click selects/views a channel's chat and must never join voice by itself). */
   readonly isSelected: boolean;
@@ -31,12 +31,22 @@ interface ChannelRowProps {
   readonly onSelect: () => void;
   readonly onJoin: () => void;
   readonly onLeave: () => void;
+  /** T13.2 — 0 for a top-level channel; a subchannel nested under another voice channel adds one
+   * per level (bounded by `MAX_CHANNEL_DEPTH`). Purely a visual indent — the server, not this
+   * value, is the actual authority on hierarchy depth limits. */
+  readonly depth?: number;
+  /** T13.2 — right-click anywhere on the row body opens the shared channel/category admin context
+   * menu (see `ChannelContextMenu.tsx`) — optional so every existing caller/test that has no use for
+   * it (e.g. a context that never offers admin actions) is unaffected. */
+  readonly onContextMenu?: (event: MouseEvent<HTMLLIElement>) => void;
 }
 
 /**
- * One row per real server-owned voice channel (T13.1). A click anywhere on the row body selects it
- * for chat viewing only — joining voice is always the separate, explicit `Join`/`Leave` action, per
- * the task's hard "single click never auto-joins voice" rule.
+ * One row per real server-owned voice channel (T13.1, tree-aware since T13.2 — `ChannelSidebar`
+ * flattens the real category/channel/subchannel hierarchy into a depth-annotated list and renders
+ * one `ChannelRow` per voice-kind node; categories get their own, simpler header treatment). A click
+ * anywhere on the row body selects it for chat viewing only — joining voice is always the separate,
+ * explicit `Join`/`Leave` action, per the task's hard "single click never auto-joins voice" rule.
  */
 export function ChannelRow({
   channel,
@@ -53,6 +63,8 @@ export function ChannelRow({
   onSelect,
   onJoin,
   onLeave,
+  depth = 0,
+  onContextMenu,
 }: ChannelRowProps): ReactElement {
   // T13.1.1 — secondary actions (the chat-bubble icon, Join/Leave) stay visually quiet until the
   // row is hovered/focused, selected, or already joined; the channel name itself never competes
@@ -67,7 +79,12 @@ export function ChannelRow({
     .join(' ');
 
   return (
-    <li className={styles.container} data-testid={`channel-row-${channel.channelId}`}>
+    <li
+      className={styles.container}
+      style={depth > 0 ? { marginLeft: depth * 16 } : undefined}
+      data-testid={`channel-row-${channel.nodeId}`}
+      onContextMenu={onContextMenu}
+    >
       <div
         className={`${styles.row} ${isSelected ? styles.selected : ''} ${
           isJoined ? styles.joined : ''
@@ -77,14 +94,37 @@ export function ChannelRow({
           type="button"
           className={styles.selectButton}
           onClick={onSelect}
-          data-testid={`channel-row-select-${channel.channelId}`}
+          data-testid={`channel-row-select-${channel.nodeId}`}
         >
           {isJoined ? (
             <Volume2 size={16} aria-hidden="true" className={styles.joinedIcon} />
           ) : (
             <MessageSquare size={16} aria-hidden="true" className={styles.chatIcon} />
           )}
-          <span className={styles.name}>{channel.name}</span>
+          <span className={styles.name} title={channel.name}>
+            {channel.name}
+          </span>
+          {channel.hasPassword && (
+            <Lock
+              size={12}
+              aria-hidden="true"
+              className={styles.badgeIcon}
+              role="img"
+              data-testid={`channel-row-password-badge-${channel.nodeId}`}
+            >
+              <title>Password protected</title>
+            </Lock>
+          )}
+          {channel.temporary && (
+            <Timer
+              size={12}
+              aria-hidden="true"
+              className={styles.badgeIcon}
+              data-testid={`channel-row-temporary-badge-${channel.nodeId}`}
+            >
+              <title>Temporary channel</title>
+            </Timer>
+          )}
         </button>
 
         <div className={actionsClassName}>
@@ -93,7 +133,7 @@ export function ChannelRow({
             ariaLabel={`Open ${channel.name} chat`}
             size="small"
             onClick={onSelect}
-            data-testid={`channel-row-chat-${channel.channelId}`}
+            data-testid={`channel-row-chat-${channel.nodeId}`}
           />
           {isJoined ? (
             <IconButton
@@ -101,14 +141,14 @@ export function ChannelRow({
               ariaLabel="Leave voice channel"
               size="small"
               onClick={onLeave}
-              data-testid={`channel-row-leave-${channel.channelId}`}
+              data-testid={`channel-row-leave-${channel.nodeId}`}
             />
           ) : (
             <Button
               variant="ghost"
               onClick={onJoin}
               disabled={!canJoin || joining}
-              data-testid={`channel-row-join-${channel.channelId}`}
+              data-testid={`channel-row-join-${channel.nodeId}`}
             >
               <Phone size={14} aria-hidden="true" />
               Join

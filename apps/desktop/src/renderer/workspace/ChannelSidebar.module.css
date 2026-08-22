@@ -71,3 +71,22 @@
   padding: 0;
   margin: 0;
 }
+
+/* T13.2 — a category node in the flattened tree list. Distinct from `.sectionLabel` (the fixed
+   "Voice Channels" header, which is not itself a real server-owned node) by weight/case: a
+   category is real, operator-named content, so it is not uppercased/letter-spaced like the
+   structural label above it. */
+.categoryHeader {
+  list-style: none;
+  padding: var(--ovni-space-2) var(--ovni-space-2) var(--ovni-space-1);
+  margin-top: var(--ovni-space-1);
+  color: var(--ovni-text-tertiary);
+  font-size: var(--ovni-text-xs);
+  font-weight: 700;
+  /* T13.2 QA — a category name can be up to 64 characters (`MAX_CHANNEL_NAME_LENGTH`); without
+     this, a long one wraps to multiple lines or overflows the sidebar instead of eliding, unlike
+     `ChannelRow.module.css`'s `.name`, which already truncates this same way. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
