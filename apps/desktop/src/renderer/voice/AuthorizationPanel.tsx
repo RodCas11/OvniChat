@@ -79,15 +79,18 @@ export function AuthorizationPanel({ state, actions }: AuthorizationPanelProps):
 
   return (
     <div className={styles.container}>
-      <p>
+      <p className={styles.myGroups}>
         My groups:{' '}
-        {state.myGroups.length > 0 ? state.myGroups.map((g) => g.name).join(', ') : 'Guest'}
+        <strong>
+          {state.myGroups.length > 0 ? state.myGroups.map((g) => g.name).join(', ') : 'Guest'}
+        </strong>
       </p>
 
       <form onSubmit={handleRedeem} className={styles.redeemForm}>
         <label className={styles.field}>
-          <span>Privilege key / invite token</span>
+          <span className={styles.fieldLabel}>Privilege key / invite token</span>
           <input
+            className={styles.input}
             value={tokenInput}
             onChange={(event) => {
               setTokenInput(event.target.value);
@@ -99,15 +102,18 @@ export function AuthorizationPanel({ state, actions }: AuthorizationPanelProps):
           Redeem
         </Button>
       </form>
-      {state.lastRedeemedGroup && <p>Success — now: {state.lastRedeemedGroup.name}</p>}
+      {state.lastRedeemedGroup && (
+        <p className={styles.success}>Success — now: {state.lastRedeemedGroup.name}</p>
+      )}
 
       {can('authorization.tokens.manage') && (
         <section className={styles.section}>
-          <h4>Tokens</h4>
-          <form onSubmit={handleCreateToken}>
-            <label>
-              Kind
+          <h4 className={styles.sectionTitle}>Tokens</h4>
+          <form onSubmit={handleCreateToken} className={styles.form}>
+            <label className={styles.field}>
+              <span className={styles.fieldLabel}>Kind</span>
               <select
+                className={styles.select}
                 value={tokenKind}
                 onChange={(event) => {
                   setTokenKind(event.target.value as TokenKind);
@@ -117,9 +123,10 @@ export function AuthorizationPanel({ state, actions }: AuthorizationPanelProps):
                 <option value="privilege">Privilege</option>
               </select>
             </label>
-            <label>
-              Group after redemption
+            <label className={styles.field}>
+              <span className={styles.fieldLabel}>Group after redemption</span>
               <select
+                className={styles.select}
                 value={tokenGroupId}
                 onChange={(event) => {
                   setTokenGroupId(event.target.value);
@@ -133,13 +140,13 @@ export function AuthorizationPanel({ state, actions }: AuthorizationPanelProps):
                 ))}
               </select>
             </label>
-            <button type="submit" disabled={!tokenGroupId}>
+            <Button variant="secondary" type="submit" disabled={!tokenGroupId}>
               Generate
-            </button>
+            </Button>
           </form>
           {state.lastCreatedToken && (
-            <p>
-              {state.lastCreatedToken.token}
+            <p className={styles.tokenReveal}>
+              <code>{state.lastCreatedToken.token}</code>
               <br />
               Shown once — copy it now.
             </p>
@@ -149,37 +156,40 @@ export function AuthorizationPanel({ state, actions }: AuthorizationPanelProps):
 
       {can('authorization.groups.manage') && (
         <section className={styles.section}>
-          <h4>Groups</h4>
-          <button
-            type="button"
+          <h4 className={styles.sectionTitle}>Groups</h4>
+          <Button
+            variant="ghost"
             onClick={() => {
               actions.listGroups();
             }}
           >
             Refresh groups
-          </button>
-          <ul>
+          </Button>
+          <ul className={styles.list}>
             {(state.groups ?? []).map((group) => (
-              <li key={group.groupId}>
-                {group.name} ({group.permissions.join(', ') || 'no permissions'})
+              <li key={group.groupId} className={styles.listRow}>
+                <span>
+                  {group.name} ({group.permissions.join(', ') || 'no permissions'})
+                </span>
                 {!group.protectedGroup && (
-                  <button
-                    type="button"
+                  <Button
+                    variant="danger"
                     onClick={() => {
                       actions.deleteGroup(group.groupId);
                     }}
                   >
                     Delete
-                  </button>
+                  </Button>
                 )}
               </li>
             ))}
           </ul>
 
-          <form onSubmit={handleCreateGroup}>
-            <label>
-              Name
+          <form onSubmit={handleCreateGroup} className={styles.form}>
+            <label className={styles.field}>
+              <span className={styles.fieldLabel}>Name</span>
               <input
+                className={styles.input}
                 value={newGroupName}
                 onChange={(event) => {
                   setNewGroupName(event.target.value);
@@ -187,65 +197,74 @@ export function AuthorizationPanel({ state, actions }: AuthorizationPanelProps):
                 maxLength={64}
               />
             </label>
-            {ALL_PERMISSION_KEYS.map((permission) => (
-              <label key={permission}>
-                <input
-                  type="checkbox"
-                  checked={newGroupPermissions.includes(permission)}
-                  onChange={() => {
-                    togglePermission(permission);
-                  }}
-                />
-                {PERMISSION_LABELS[permission]}
-              </label>
-            ))}
-            <button type="submit" disabled={newGroupName.trim().length === 0}>
+            <div className={styles.checkboxGrid}>
+              {ALL_PERMISSION_KEYS.map((permission) => (
+                <label key={permission} className={styles.checkboxField}>
+                  <input
+                    type="checkbox"
+                    checked={newGroupPermissions.includes(permission)}
+                    onChange={() => {
+                      togglePermission(permission);
+                    }}
+                  />
+                  {PERMISSION_LABELS[permission]}
+                </label>
+              ))}
+            </div>
+            <Button variant="secondary" type="submit" disabled={newGroupName.trim().length === 0}>
               Create Group
-            </button>
+            </Button>
           </form>
         </section>
       )}
 
       {can('moderation.ban') && (
         <section className={styles.section}>
-          <h4>Bans</h4>
-          <button
-            type="button"
+          <h4 className={styles.sectionTitle}>Bans</h4>
+          <Button
+            variant="ghost"
             onClick={() => {
               actions.listBans();
             }}
           >
             Refresh bans
-          </button>
-          <ul>
+          </Button>
+          <ul className={styles.list}>
             {(state.bans ?? []).map((ban) => (
-              <li key={ban.identityId}>
-                {ban.identityId} {ban.expiresAt ? '(temporary)' : '(permanent)'}
-                <button
-                  type="button"
+              <li key={ban.identityId} className={styles.listRow}>
+                <span>
+                  {ban.identityId} {ban.expiresAt ? '(temporary)' : '(permanent)'}
+                </span>
+                <Button
+                  variant="secondary"
                   onClick={() => {
                     actions.unban(ban.identityId);
                     actions.listBans();
                   }}
                 >
                   Unban
-                </button>
+                </Button>
               </li>
             ))}
           </ul>
-          <form onSubmit={handleUnban}>
-            <label>
-              Unban by identity id
+          <form onSubmit={handleUnban} className={styles.form}>
+            <label className={styles.field}>
+              <span className={styles.fieldLabel}>Unban by identity id</span>
               <input
+                className={styles.input}
                 value={unbanIdentityId}
                 onChange={(event) => {
                   setUnbanIdentityId(event.target.value);
                 }}
               />
             </label>
-            <button type="submit" disabled={unbanIdentityId.trim().length === 0}>
+            <Button
+              variant="secondary"
+              type="submit"
+              disabled={unbanIdentityId.trim().length === 0}
+            >
               Unban
-            </button>
+            </Button>
           </form>
         </section>
       )}
@@ -255,53 +274,58 @@ export function AuthorizationPanel({ state, actions }: AuthorizationPanelProps):
           can('moderation.kick') ||
           can('moderation.ban')) && (
           <section className={styles.section}>
-            <h4>Participants</h4>
-            <ul>
+            <h4 className={styles.sectionTitle}>Participants</h4>
+            <ul className={styles.list}>
               {state.participants.map((participant) => (
-                <li key={participant.participantId}>
-                  {participant.displayName}
-                  {participant.groups.length > 0 &&
-                    ` [${participant.groups.map((g) => g.name).join(', ')}]`}
-                  {can('authorization.memberships.manage') && (state.groups ?? []).length > 0 && (
-                    <select
-                      onChange={(event) => {
-                        if (event.target.value) {
-                          actions.grantGroup(participant.participantId, event.target.value);
-                          event.target.value = '';
-                        }
-                      }}
-                      defaultValue=""
-                    >
-                      <option value="" disabled>
-                        Grant group…
-                      </option>
-                      {(state.groups ?? []).map((group) => (
-                        <option key={group.groupId} value={group.groupId}>
-                          {group.name}
+                <li key={participant.participantId} className={styles.listRow}>
+                  <span>
+                    {participant.displayName}
+                    {participant.groups.length > 0 &&
+                      ` [${participant.groups.map((g) => g.name).join(', ')}]`}
+                  </span>
+                  <div className={styles.listRowActions}>
+                    {can('authorization.memberships.manage') && (state.groups ?? []).length > 0 && (
+                      <select
+                        className={styles.select}
+                        onChange={(event) => {
+                          if (event.target.value) {
+                            actions.grantGroup(participant.participantId, event.target.value);
+                            event.target.value = '';
+                          }
+                        }}
+                        defaultValue=""
+                      >
+                        <option value="" disabled>
+                          Grant group…
                         </option>
-                      ))}
-                    </select>
-                  )}
-                  {can('moderation.kick') && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        actions.kick(participant.participantId);
-                      }}
-                    >
-                      Kick
-                    </button>
-                  )}
-                  {can('moderation.ban') && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        actions.ban(participant.participantId);
-                      }}
-                    >
-                      Ban
-                    </button>
-                  )}
+                        {(state.groups ?? []).map((group) => (
+                          <option key={group.groupId} value={group.groupId}>
+                            {group.name}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                    {can('moderation.kick') && (
+                      <Button
+                        variant="secondary"
+                        onClick={() => {
+                          actions.kick(participant.participantId);
+                        }}
+                      >
+                        Kick
+                      </Button>
+                    )}
+                    {can('moderation.ban') && (
+                      <Button
+                        variant="danger"
+                        onClick={() => {
+                          actions.ban(participant.participantId);
+                        }}
+                      >
+                        Ban
+                      </Button>
+                    )}
+                  </div>
                 </li>
               ))}
             </ul>

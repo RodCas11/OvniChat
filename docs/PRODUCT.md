@@ -52,7 +52,10 @@ picker, server rail, channel sidebar, chat, member panel, persistent voice contr
 green used sparingly as an accent — never a pixel-for-pixel Discord clone, and never Discord's own
 assets or branding. Technical internals a normal participant never needs (identity fingerprint,
 connection protocol details) live behind an explicit Advanced/Diagnostics area, not the main flow.
-See [`architecture/PRODUCT_UI_FOUNDATION.md`](architecture/PRODUCT_UI_FOUNDATION.md).
+T13.1.1 then polished that foundation into a substantial desktop settings experience (sidebar
+navigation, a real Danger Zone for Regenerate Identity), a Home with real presence, and quieter,
+hover-revealed secondary channel actions — visual refinement only, no new product capability. See
+[`architecture/PRODUCT_UI_FOUNDATION.md`](architecture/PRODUCT_UI_FOUNDATION.md).
 
 ## Primary capabilities
 

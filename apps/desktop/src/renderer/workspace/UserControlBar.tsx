@@ -43,7 +43,7 @@ export function UserControlBar({
   return (
     <div className={styles.bar}>
       <div className={styles.identity}>
-        <Avatar name={displayName} size="small" />
+        <Avatar name={displayName} />
         <div className={styles.names}>
           <span className={styles.displayName}>{displayName}</span>
           <span className={styles.connectionStatus}>{state.connectionStatus}</span>

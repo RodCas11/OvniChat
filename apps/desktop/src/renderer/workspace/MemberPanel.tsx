@@ -48,6 +48,13 @@ export function MemberPanel({
     );
   }
 
+  // T13.1.1 (real bug fix): when a real, distinctly-labeled `groups` prop is supplied (a future
+  // T13.3 real-role-grouping case), each group legitimately wants its own "Label — N" row. But the
+  // fallback single-group case built here has no distinct label of its own — it is the exact same
+  // count already shown in the header immediately above (`Members — {count}`) — so repeating it as
+  // a second "Members — N" row directly below is a pure duplicate, not real information. `groups`
+  // being explicitly provided (regardless of its own labels) is what distinguishes the two cases.
+  const hasRealGroups = groups !== undefined;
   const effectiveGroups: readonly MemberGroup[] =
     groups ?? (participants.length > 0 ? [{ label: 'Members', members: participants }] : []);
 
@@ -80,9 +87,11 @@ export function MemberPanel({
         ) : (
           effectiveGroups.map((group) => (
             <div key={group.label} className={styles.group}>
-              <div className={styles.groupLabel}>
-                {group.label} — {group.members.length}
-              </div>
+              {hasRealGroups && (
+                <div className={styles.groupLabel}>
+                  {group.label} — {group.members.length}
+                </div>
+              )}
               <ul className={styles.list}>
                 {group.members.map((member) => (
                   <MemberRow

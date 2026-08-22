@@ -2,9 +2,9 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--ovni-space-2);
-  height: 56px;
-  padding: 0 var(--ovni-space-3);
+  gap: var(--ovni-space-3);
+  height: 60px;
+  padding: 0 var(--ovni-space-4);
   flex-shrink: 0;
   background: var(--ovni-bg-surface-alt);
   border-top: 1px solid var(--ovni-border);
@@ -15,6 +15,10 @@
   align-items: center;
   gap: var(--ovni-space-2);
   min-width: 0;
+  padding-right: var(--ovni-space-3);
+  /* T13.1.1 — a real separator from the center content (previously implied only by the bar's own
+     background), matching the panel-divider treatment used elsewhere in this design system. */
+  border-right: 1px solid var(--ovni-border);
 }
 
 .names {
@@ -27,7 +31,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: var(--ovni-text-sm);
+  font-size: var(--ovni-text-base);
   font-weight: 600;
 }
 
@@ -43,6 +47,6 @@
 .controls {
   display: flex;
   align-items: center;
-  gap: var(--ovni-space-1);
+  gap: var(--ovni-space-2);
   flex-shrink: 0;
 }

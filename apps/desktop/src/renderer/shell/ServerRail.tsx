@@ -85,7 +85,7 @@ export function ServerRail({
           aria-label="Server list"
           data-testid="server-rail-home"
         >
-          <Home size={20} aria-hidden="true" />
+          <Home size={22} aria-hidden="true" />
         </button>
       </Tooltip>
 
@@ -134,7 +134,7 @@ export function ServerRail({
           }}
           data-testid="server-rail-add"
         >
-          <Plus size={20} aria-hidden="true" />
+          <Plus size={22} aria-hidden="true" />
         </button>
       </Tooltip>
 

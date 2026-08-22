@@ -10,18 +10,65 @@
 
 .content {
   width: 100%;
-  max-width: 640px;
+  max-width: 760px;
   padding: var(--ovni-space-8);
 }
 
+.brand {
+  margin-bottom: var(--ovni-space-8);
+}
+
 .heading {
-  margin: 0 0 var(--ovni-space-1);
-  font-size: var(--ovni-text-2xl);
+  margin: 0 0 var(--ovni-space-2);
+  font-size: var(--ovni-text-3xl);
+  font-weight: 700;
+  letter-spacing: -0.01em;
 }
 
 .subheading {
-  margin: 0 0 var(--ovni-space-6);
+  margin: 0;
   color: var(--ovni-text-secondary);
+  font-size: var(--ovni-text-md);
+}
+
+/* T13.1.1 — the Home nickname/profile affordance: avatar-fallback + nickname, an explicit path to
+   Settings, deliberately styled as a quiet, bounded row (a real surface, not a floating control)
+   between the brand area and the server grid. */
+.profileRow {
+  display: flex;
+  align-items: center;
+  gap: var(--ovni-space-3);
+  width: 100%;
+  margin-bottom: var(--ovni-space-8);
+  padding: var(--ovni-space-3) var(--ovni-space-4);
+  border: 1px solid var(--ovni-border);
+  border-radius: var(--ovni-radius-lg);
+  background: var(--ovni-bg-surface);
+  color: var(--ovni-text-primary);
+  text-align: left;
+}
+
+.profileRow:hover {
+  background: var(--ovni-bg-surface-alt);
+  border-color: var(--ovni-text-tertiary);
+}
+
+.profileName {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.profileEdit {
+  display: flex;
+  align-items: center;
+  gap: var(--ovni-space-1);
+  flex-shrink: 0;
+  color: var(--ovni-text-secondary);
+  font-size: var(--ovni-text-sm);
 }
 
 .error {
@@ -29,10 +76,18 @@
   color: var(--ovni-danger);
 }
 
+/* T13.1.1 — at the new, larger Home scale, the bare `EmptyState` default padding read as an
+   unfinished afterthought; a real bounded surface with extra breathing room reads intentional. */
+.emptyStateWrap {
+  padding: var(--ovni-space-8) 0;
+  border: 1px dashed var(--ovni-border);
+  border-radius: var(--ovni-radius-lg);
+}
+
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
-  gap: var(--ovni-space-4);
+  grid-template-columns: repeat(auto-fill, minmax(116px, 1fr));
+  gap: var(--ovni-space-5);
 }
 
 .tile {
@@ -40,11 +95,12 @@
   flex-direction: column;
   align-items: center;
   gap: var(--ovni-space-2);
-  padding: var(--ovni-space-3);
+  padding: var(--ovni-space-4) var(--ovni-space-3);
   border: 1px solid transparent;
-  border-radius: var(--ovni-radius-md);
+  border-radius: var(--ovni-radius-lg);
   background: transparent;
   color: var(--ovni-text-primary);
+  transition: background-color var(--ovni-transition-fast);
 }
 
 .tile:hover {
@@ -55,11 +111,14 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 64px;
-  height: 64px;
+  width: 80px;
+  height: 80px;
   border-radius: var(--ovni-radius-full);
   border: 2px dashed var(--ovni-border);
   color: var(--ovni-text-secondary);
+  transition:
+    border-color var(--ovni-transition-fast),
+    color var(--ovni-transition-fast);
 }
 
 .addTile:hover .addIcon {
@@ -68,7 +127,7 @@
 }
 
 .tileName {
-  max-width: 96px;
+  max-width: 112px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

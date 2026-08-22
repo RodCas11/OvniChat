@@ -17,8 +17,12 @@
 }
 
 .small {
-  width: 28px;
-  height: 28px;
+  /* T13.1.1 — the visible icon stays compact (16px, unchanged) but the clickable/tappable area is
+     a little larger than the original 28px, a real (not merely cosmetic) hit-target improvement
+     across every `size="small"` `IconButton` in the app (channel-row actions, member-panel toggle,
+     modal close button, etc). */
+  width: 32px;
+  height: 32px;
 }
 
 .button:not(:disabled):hover {
@@ -30,19 +34,27 @@
   opacity: 0.4;
 }
 
+/* T13.1.1 — a real, always-on background tint (not merely an icon color change) for a toggled-on
+   positive state (camera on, screen sharing) so it reads as a clear positive/active state at a
+   glance, not a subtle color shift a user could miss. */
 .active {
+  background: rgba(62, 207, 110, 0.14);
   color: var(--ovni-accent);
 }
 
 .active:not(:disabled):hover {
+  background: rgba(62, 207, 110, 0.22);
   color: var(--ovni-accent-hover);
 }
 
+/* Same treatment for a toggled-on destructive/muted state (muted microphone, deafened) — always-on
+   background, never hover-only, so "you are muted" is immediately obvious. */
 .danger {
+  background: rgba(229, 72, 77, 0.14);
   color: var(--ovni-danger);
 }
 
 .danger:not(:disabled):hover {
-  background: rgba(229, 72, 77, 0.12);
+  background: rgba(229, 72, 77, 0.22);
   color: var(--ovni-danger-hover);
 }

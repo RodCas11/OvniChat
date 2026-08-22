@@ -1,22 +1,93 @@
+/* T13.1.1 — sidebar-navigation layout, filling the `ui/Modal.tsx` `size="xlarge"` body exactly
+ * (see `Modal.module.css`'s `.xlarge .body` override: full height, no padding, hidden overflow —
+ * this component owns its own two independently-scrolling columns instead). */
 .container {
   display: flex;
+  height: 100%;
+  min-height: 0;
+}
+
+.nav {
+  display: flex;
   flex-direction: column;
-  gap: var(--ovni-space-6);
+  gap: 2px;
+  width: 200px;
+  flex-shrink: 0;
+  padding: var(--ovni-space-4) var(--ovni-space-2);
+  border-right: 1px solid var(--ovni-border);
+  overflow-y: auto;
+}
+
+.navItem {
+  display: flex;
+  align-items: center;
+  height: 36px;
+  padding: 0 var(--ovni-space-3);
+  border: none;
+  border-radius: var(--ovni-radius-sm);
+  background: transparent;
+  color: var(--ovni-text-secondary);
+  font-size: var(--ovni-text-base);
+  font-weight: 500;
+  text-align: left;
+}
+
+.navItem:hover {
+  background: var(--ovni-bg-hover);
+  color: var(--ovni-text-primary);
+}
+
+.navItemActive {
+  background: var(--ovni-bg-selected);
+  color: var(--ovni-text-primary);
+  font-weight: 600;
+}
+
+.content {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: var(--ovni-space-6);
 }
 
 .section {
   display: flex;
   flex-direction: column;
-  gap: var(--ovni-space-3);
+  gap: var(--ovni-space-4);
+  max-width: 560px;
 }
 
 .sectionTitle {
   margin: 0;
-  padding-bottom: var(--ovni-space-2);
+  padding-bottom: var(--ovni-space-3);
   border-bottom: 1px solid var(--ovni-border);
-  font-size: var(--ovni-text-md);
+  font-size: var(--ovni-text-lg);
 }
 
+.subsection {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ovni-space-3);
+  padding-bottom: var(--ovni-space-4);
+  border-bottom: 1px solid var(--ovni-border);
+}
+
+.subsection:last-child {
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
+.subsectionTitle {
+  margin: 0;
+  font-size: var(--ovni-text-sm);
+  font-weight: 700;
+  color: var(--ovni-text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* Every labeled field group stacks its label above the control (never a cramped single line like
+ * "Microphone [select] Speaker [select]") — real breathing room between each field. */
 .field {
   display: flex;
   flex-direction: column;
@@ -25,14 +96,26 @@
   color: var(--ovni-text-secondary);
 }
 
-.field input,
-.field select {
-  height: 34px;
+.fieldLabel {
+  font-weight: 600;
+  color: var(--ovni-text-primary);
+}
+
+.select,
+.input {
+  height: 38px;
   padding: 0 var(--ovni-space-3);
   border: 1px solid var(--ovni-border);
   border-radius: var(--ovni-radius-md);
   background: var(--ovni-bg-base);
   color: var(--ovni-text-primary);
+  font-size: var(--ovni-text-base);
+  transition: border-color var(--ovni-transition-fast);
+}
+
+.select:hover,
+.input:hover {
+  border-color: var(--ovni-text-tertiary);
 }
 
 .checkboxField {
@@ -46,6 +129,60 @@
   margin: 0;
   color: var(--ovni-text-tertiary);
   font-size: var(--ovni-text-xs);
+}
+
+.status {
+  margin: 0;
+  color: var(--ovni-text-secondary);
+  font-size: var(--ovni-text-xs);
+}
+
+.alert {
+  margin: 0;
+  color: var(--ovni-danger);
+  font-size: var(--ovni-text-xs);
+}
+
+.testRow {
+  display: flex;
+  align-items: center;
+  gap: var(--ovni-space-3);
+}
+
+/* Styled mic-level meter (real live `AnalyserNode` data from `useMicLevelMeter`, see
+ * `SettingsPanel.tsx`) — a design-system bar instead of the bare native `<meter>`. */
+.meterTrack {
+  flex: 1;
+  height: 8px;
+  border-radius: var(--ovni-radius-full);
+  background: var(--ovni-bg-surface-alt);
+  overflow: hidden;
+}
+
+.meterFill {
+  height: 100%;
+  border-radius: var(--ovni-radius-full);
+  background: var(--ovni-accent);
+  transition: width 80ms linear;
+}
+
+.cameraPreviewBox {
+  width: 100%;
+  max-width: 360px;
+  aspect-ratio: 16 / 9;
+  border-radius: var(--ovni-radius-md);
+  background: var(--ovni-bg-base);
+  border: 1px solid var(--ovni-border);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.cameraPreviewBox video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .diagnostics {

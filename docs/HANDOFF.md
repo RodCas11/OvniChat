@@ -558,11 +558,14 @@ product boundary (T8), server-local groups/permissions/tokens/bans (T9), persist
 chat (T10 — server-wide and per-voice-channel, real restart persistence, no message editing/deletion
 yet), local device management/bookmarks/automatic reconnect (T11), Windows per-application audio
 capture (T12 — real native WASAPI process-loopback, this repository's first native/compiled code),
-and the Renderer's visual/interaction foundation (T13.1 — design tokens, CSS Modules, `lucide-react`
+the Renderer's visual/interaction foundation (T13.1 — design tokens, CSS Modules, `lucide-react`
 icons, server-home/rail/channel-sidebar/chat/member-panel/bottom-control-bar layout, replacing the
-previous unstyled UI with no protocol/IPC/persistence change) are all implemented,
-mechanism-verified, and live-verified end to end. The product is now marketed as **OvniChat** (see
-[`PRODUCT.md`](PRODUCT.md)); the internal `@disco-voador/*` package namespace is unchanged.
+previous unstyled UI with no protocol/IPC/persistence change), and its visual polish/UX refinement
+(T13.1.1 — a substantial Settings information-architecture redesign, a Home with real presence,
+quieter hover-revealed channel actions, a Member Panel duplicate-heading fix — presentation only, no
+new capability) are all implemented, mechanism-verified, and live-verified end to end. The product is
+now marketed as **OvniChat** (see [`PRODUCT.md`](PRODUCT.md)); the internal `@disco-voador/*` package
+namespace is unchanged.
 
 ## What should happen next?
 
@@ -934,6 +937,40 @@ satisfied. See [`tasks/T13_1_VISUAL_FOUNDATION.md`](tasks/T13_1_VISUAL_FOUNDATIO
 record, and [`adr/0018-renderer-ui-foundation-css-modules-and-component-layering.md`](adr/0018-renderer-ui-foundation-css-modules-and-component-layering.md)
 for the styling/component-architecture decision, including the real `TS2882`/pattern-ambient-module
 diagnostic trail and the React-19-batching remount-key fix.
+
+T13.1.1’s clean-state evidence is the same gate with 1122 Vitest tests (up from T13.1’s 1085; the
+same one pre-existing, already-allowlisted high-severity dependency advisory — T13.1.1 introduced
+zero new npm dependencies, pure CSS/JSX/data) — formatting, lint, whole-repo typecheck, `vitest run`,
+composite build, `verify-repository.mjs`, and the dependency audit all pass via one canonical
+`corepack pnpm check` run — plus its own required real-runtime evidence: `e2e:product-shell-smoke`,
+`e2e:settings-persistence`, and `e2e:text-chat-persistence` re-run against the final, fully-fixed
+build all pass; `e2e:voice-smoke`, `e2e:camera-smoke`, `e2e:screen-smoke`, `e2e:screen-audio-smoke`,
+`e2e:connection-smoke`, `e2e:identity-auth`, `e2e:identity-persistence`, `e2e:authorization`, and
+`e2e:reconnect-smoke` all passed against a T13.1.1 build differing from the final one only in
+`SettingsPanel.tsx`/`IdentityPanel.tsx`/`ServerHome.tsx` (none of those nine scripts’ own code paths
+touch those files). `e2e:process-audio-smoke` failed identically on five consecutive attempts during
+this task’s final regression sweep; `git log` confirms neither T13.1 nor T13.1.1 touched
+`packages/windows-media`, `main/process-audio.ts`, or the script itself since T12’s own completion —
+recorded as a pre-existing, machine-specific limitation of this session’s environment, the same
+non-blocking-flakiness class T6/T11 already documented for `e2e:camera-smoke`, not a T13.1.1
+regression. Ten real screenshots from an actual packaged Electron instance (Home; connected workspace
+at 1920×1080, 1366×768, and the required intermediate 1600×900; Settings’ three redesigned sections;
+the collapsed Member Panel; the Add Server dialog; and a real multi-sender chat with grouping/
+wrapping/emoji) were captured and personally visually reviewed twice — once before and once after two
+real defects the first review pass surfaced. **T13.1.1 is marked COMPLETE in
+[`tasks/STATUS.md`](tasks/STATUS.md)** — its polish pass is implemented, reviewed (`security-reviewer`
+found two real, low-severity, non-blocking issues, both fixed: a mic-test capture left running with no
+visible stop control after switching Settings sections, and the cryptographic Identity ID/"Regenerate
+Identity" being reachable from Home with no Advanced-equivalent framing, unlike the same content
+inside Settings — fixed by giving `IdentityPanel` a closed-by-default disclosure for exactly this
+case; `qa-engineer` found and fixed one further real bug — two Settings fields nesting their hint text
+inside the same `<label>` as the control, polluting the accessible name announced to screen readers),
+and the task’s own visual-review pass independently found and fixed the same two security-review
+defects via real screenshot inspection before the formal review even ran. All Definition of Done items
+are satisfied except the one honestly-recorded, diff-unrelated `e2e:process-audio-smoke` limitation
+above. See [`tasks/T13_1_1_VISUAL_POLISH.md`](tasks/T13_1_1_VISUAL_POLISH.md)’s handoff notes and
+[`architecture/PRODUCT_UI_FOUNDATION.md`](architecture/PRODUCT_UI_FOUNDATION.md)’s own T13.1.1 section
+for the full record.
 
 Then perform the task’s required manual/platform checks. Apply
 [`DEFINITION_OF_DONE.md`](DEFINITION_OF_DONE.md) and update status only when every applicable item

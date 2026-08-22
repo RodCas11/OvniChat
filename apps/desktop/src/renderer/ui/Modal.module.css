@@ -30,6 +30,29 @@
   width: 680px;
 }
 
+/* T13.1.1 — a real desktop-scale surface for Settings: wide/tall enough at 1920x1080 for a
+   sidebar-nav + content two-column layout to both stay visible without feeling cramped, while
+   `max-height: 85vh` above still caps it sensibly at a smaller viewport (e.g. 1366x768). */
+.xlarge {
+  width: 920px;
+  height: 640px;
+}
+
+.xlarge .body {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0;
+}
+
+.closeButtonWrap button {
+  color: var(--ovni-text-tertiary);
+}
+
+.closeButtonWrap button:hover {
+  color: var(--ovni-text-primary);
+}
+
 .header {
   display: flex;
   align-items: center;

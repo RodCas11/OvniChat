@@ -1,9 +1,9 @@
-# Product UI foundation (T13.1)
+# Product UI foundation (T13.1, refined by T13.1.1)
 
-> This document describes the Renderer's visual/interaction foundation as of T13.1. It supersedes
-> nothing structural in [`ARCHITECTURE.md`](../ARCHITECTURE.md) — Main/Preload/RTC/media/protocol
-> ownership and trust boundaries are unchanged. This is a Renderer-internal presentation-layer
-> record.
+> This document describes the Renderer's visual/interaction foundation established by T13.1 and
+> visually refined by T13.1.1. It supersedes nothing structural in
+> [`ARCHITECTURE.md`](../ARCHITECTURE.md) — Main/Preload/RTC/media/protocol ownership and trust
+> boundaries are unchanged by either task. This is a Renderer-internal presentation-layer record.
 
 ## Why this exists
 
@@ -204,6 +204,70 @@ scraping/Playwright-style automation was introduced.
 All four were fixed and re-verified (typecheck, lint, the full Vitest suite, and — for the two
 UI-visible fixes — a fresh real-Electron screenshot). `corepack pnpm audit --audit-level high` remains
 exactly the one pre-existing allowlisted advisory; no new findings from any dependency this task added.
+
+## T13.1.1 — visual polish and UX refinement
+
+A direct visual review of T13.1's own final screenshots (not just its handoff report) found real
+finish gaps beyond what T13.1's Definition of Done required: Home under-used available desktop space,
+typography/control scale felt undersized at 1920×1080, Settings was visually far behind the main
+workspace, Channel rows had too many permanently-visible competing actions, and the Member Panel
+repeated its own heading. T13.1.1 is a Renderer-only refinement pass over T13.1's architecture — no
+new capability, no protocol/IPC/persistence change, no T13.2+ functionality.
+
+**Settings — full information-architecture redesign.** `SettingsPanel.tsx` moved from one
+long vertically-scrolling column to a sidebar-navigation layout (Profile / Voice & Video /
+Screen Share / Advanced) inside a new, larger `ui/Modal` `size="xlarge"` variant (920×640) — a real
+desktop-scale settings surface, each section independently scrollable. "User & Identity" was renamed
+"Profile" and now holds only the "Voice display name" field; `IdentityPanel` (Nickname, Identity ID,
+Regenerate Identity) moved entirely into Advanced, with Regenerate Identity now in its own
+visually-separated, red-tinted "Danger zone" subsection — the existing `window.confirm` warning is
+unchanged. Native `<select>`/`<input>` elements are now visually styled and stacked (label above
+control, never a cramped single line); the camera-off state uses `ui/EmptyState` inside a bounded
+aspect-ratio box instead of plain text; the mic-level meter is a styled bar fed by the same real
+`useMicLevelMeter` data.
+
+**Home — bounded composition with real presence.** `ServerHome.tsx` gained a bounded, centered content
+container, a nickname/profile row (avatar-fallback + nickname + a "Profile & Settings" link opening a
+`Modal`-wrapped `IdentityPanel` — never the identityId directly on Home), and larger server-avatar
+tiles (`ui/Avatar`'s `large` size raised 64→80px) with matching Add-Server-tile sizing.
+
+**Channel rows — hover-revealed secondary actions.** The chat-open icon and Join/Leave control are now
+CSS-`opacity`-hidden by default (never `display:none`/`disabled` — still in the tab order and reachable
+via `:focus-within`), revealed on hover/focus, or forced visible via a `.actionsVisible` class when a
+row `isJoined || isSelected` (ambient state worth always showing, unlike a hover-only affordance). The
+leading per-row icon (`Volume2` when joined, `MessageSquare` otherwise, inside the always-visible
+`selectButton`) is never hover-gated — it is the row's persistent "this is a channel, chat is
+available" signal. No handler, testid, or the underlying single-click-never-joins-voice behavior
+changed; `tests/desktop/components/channel-row.test.tsx` passed unmodified against the restyle.
+
+**Member Panel — duplicate heading removed.** The fallback single-group rendering path previously
+built one group literally labeled `'Members'` and rendered its own `"{label} — {count}"` immediately
+below the panel's own `"Members — {count}"` header — a pure, real duplication. Fixed by suppressing
+the group-label row specifically for that one-group fallback case; a real, distinctly-labeled `groups`
+prop (future T13.3 role grouping) still renders each group's own label and count.
+
+**Chat — a dev-only fixture and real message-density polish.** `workspace/chat-dev-fixture.ts` provides
+representative fixture messages (consecutive-sender grouping, a long wrapping message, Unicode/emoji,
+multiple senders), toggled by typing `/fixture` into the composer, gated by `import.meta.env.DEV` — a
+Vite compile-time constant that is `false` for any `vite build` output, so the entire toggle branch is
+dead code eliminated from a packaged build; this needed no new Main/Preload/IPC surface at all, unlike
+the codebase's existing `!app.isPackaged`-plus-env-var E2E convention. **Empirically confirmed, not
+just reasoned:** this session ran the exact command against a real `electron-forge package` build and
+observed `/fixture` fall through to a real `sendChatMessage('channel', 'games', '/fixture')` call,
+which the server correctly rejected ("Must be in this voice channel to send chat there") since the
+composing client was not actually joined to that channel's voice — proof the fixture path is genuinely
+unreachable in a packaged artifact, not merely theorized. The final required screenshot evidence
+(message density/grouping/wrapping) was produced with real messages sent through the real production
+composer/`sendChatMessage` action instead of the fixture, avoiding any fixture-related risk in the
+evidence itself.
+
+**Design tokens.** Typography scale increased (`--ovni-text-lg/xl/2xl`, new `--ovni-text-3xl` for the
+Home brand heading only) and panel widths tuned — token edits, not per-component overrides. Icon-button
+hit targets grew slightly (28→32px for `small`); active/danger states on `IconButton` now carry an
+always-on background tint rather than only a hover/color change.
+
+See [`tasks/T13_1_1_VISUAL_POLISH.md`](../tasks/T13_1_1_VISUAL_POLISH.md) for the full evidence record
+(screenshots, security/QA review findings, regression results).
 
 ## What T13.1 deliberately does not do
 

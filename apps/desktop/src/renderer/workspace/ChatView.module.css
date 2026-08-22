@@ -20,19 +20,28 @@
 
 .group {
   display: flex;
+  align-items: flex-start;
   gap: var(--ovni-space-3);
   padding: var(--ovni-space-2) 0;
+}
+
+.group + .group {
+  margin-top: 2px;
 }
 
 .groupBody {
   flex: 1;
   min-width: 0;
+  /* T13.1.1 — aligns the sender name's baseline with the avatar's visual center rather than its
+     hard top edge (a 40px avatar vs a ~20px text line otherwise reads slightly high). */
+  padding-top: 2px;
 }
 
 .groupHeader {
   display: flex;
   align-items: baseline;
   gap: var(--ovni-space-2);
+  margin-bottom: 2px;
 }
 
 .sender {
@@ -46,27 +55,67 @@
 }
 
 .messageBody {
-  margin: 2px 0 0;
+  margin: 3px 0 0;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
   word-break: break-word;
+  line-height: 1.5;
   color: var(--ovni-text-primary);
+}
+
+.composerArea {
+  border-top: 1px solid var(--ovni-border);
+  padding: var(--ovni-space-3) var(--ovni-space-4);
 }
 
 .composer {
   display: flex;
+  align-items: center;
   gap: var(--ovni-space-2);
-  padding: var(--ovni-space-3) var(--ovni-space-4);
-  border-top: 1px solid var(--ovni-border);
 }
 
 .composerInput {
   flex: 1;
-  height: 40px;
-  padding: 0 var(--ovni-space-3);
+  height: 44px;
+  padding: 0 var(--ovni-space-4);
   border: 1px solid var(--ovni-border);
-  border-radius: var(--ovni-radius-md);
+  border-radius: var(--ovni-radius-lg);
   background: var(--ovni-bg-surface-alt);
   color: var(--ovni-text-primary);
+  font-size: var(--ovni-text-base);
+  transition: border-color var(--ovni-transition-fast);
+}
+
+.composerInput::placeholder {
+  color: var(--ovni-text-tertiary);
+}
+
+.composerInput:focus-visible {
+  border-color: var(--ovni-accent);
+}
+
+.composerInput:disabled {
+  opacity: 0.6;
+}
+
+/* Send is a real, but not oversized, primary action — a compact square around the icon rather
+   than `Button`'s default horizontally-padded shape. */
+.sendButton {
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  flex-shrink: 0;
+  border-radius: var(--ovni-radius-lg);
+}
+
+.devHint {
+  margin: var(--ovni-space-2) 0 0;
+  color: var(--ovni-text-tertiary);
+  font-size: var(--ovni-text-xs);
+}
+
+.devHint code {
+  color: var(--ovni-text-secondary);
 }
 
 .noPermission {

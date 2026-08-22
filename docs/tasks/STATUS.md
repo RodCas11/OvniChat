@@ -16,6 +16,7 @@
 | [T11](T11_DAILY_USE_UX.md)          | COMPLETE    | Devices, bookmarks, reconnect, and product UX                   |
 | [T12](T12_WINDOWS_PROCESS_AUDIO.md) | COMPLETE    | Windows per-process/game audio                                  |
 | [T13.1](T13_1_VISUAL_FOUNDATION.md) | COMPLETE    | Visual foundation & main application layout                     |
+| [T13.1.1](T13_1_1_VISUAL_POLISH.md) | COMPLETE    | Visual polish & UX refinement                                   |
 | T13.2                               | NOT STARTED | Channels & server administration                                |
 | T13.3                               | NOT STARTED | Profiles / avatars / members / presence                         |
 | T13.4                               | NOT STARTED | Gamer voice experience                                          |

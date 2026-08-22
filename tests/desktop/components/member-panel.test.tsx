@@ -63,4 +63,66 @@ describe('MemberPanel (T13.1)', () => {
     );
     expect(screen.getByTestId('member-panel-collapse-toggle')).toHaveAccessibleName();
   });
+
+  describe('T13.1.1 dedup fix — the default fallback group must not repeat the header count', () => {
+    it('the default fallback single "Members" group renders no second "Members — N" label below the header', () => {
+      render(
+        <MemberPanel
+          inChannel
+          participants={[
+            createParticipant(),
+            createParticipant({ participantId: 'p2', displayName: 'Bob' }),
+          ]}
+          selfParticipantId={undefined}
+        />,
+      );
+
+      expect(screen.getByTestId('member-panel-title')).toHaveTextContent('Members — 2');
+      // Exactly one occurrence of the count text anywhere in the rendered output — the fallback
+      // group's own label must not duplicate the header immediately above it.
+      expect(screen.getAllByText('Members — 2')).toHaveLength(1);
+    });
+
+    it("a real, distinctly-labeled `groups` prop DOES render each group's own label (future T13.3 real-role-grouping case)", () => {
+      const alice = createParticipant();
+      const bob = createParticipant({ participantId: 'p2', displayName: 'Bob' });
+
+      render(
+        <MemberPanel
+          inChannel
+          participants={[alice, bob]}
+          selfParticipantId={undefined}
+          groups={[
+            { label: 'Officers', members: [alice] },
+            { label: 'Guests', members: [bob] },
+          ]}
+        />,
+      );
+
+      expect(screen.getByTestId('member-panel-title')).toHaveTextContent('Members — 2');
+      expect(screen.getByText('Officers — 1')).toBeInTheDocument();
+      expect(screen.getByText('Guests — 1')).toBeInTheDocument();
+      // The header's own "Members — 2" text is still exactly once — the multi-group case does not
+      // reintroduce the duplicate either, it just adds real, distinct per-group labels beside it.
+      expect(screen.getAllByText('Members — 2')).toHaveLength(1);
+    });
+
+    it('a single-entry `groups` prop still renders that one real label (the dedup fix only suppresses the *fabricated fallback* label, never a real one)', () => {
+      const alice = createParticipant();
+
+      render(
+        <MemberPanel
+          inChannel
+          participants={[alice]}
+          selfParticipantId={undefined}
+          groups={[{ label: 'Members', members: [alice] }]}
+        />,
+      );
+
+      expect(screen.getByTestId('member-panel-title')).toHaveTextContent('Members — 1');
+      // Here a real "Members — 1" label legitimately appears twice (header + the one real,
+      // explicitly-supplied group) — this is the honest distinguishing case the fix relies on.
+      expect(screen.getAllByText('Members — 1')).toHaveLength(2);
+    });
+  });
 });

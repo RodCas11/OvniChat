@@ -549,7 +549,16 @@ export function App(): ReactElement {
         />
       );
     }
-    return <ServerHome onConnect={connectTo} connectionError={undefined} />;
+    return (
+      <ServerHome
+        onConnect={connectTo}
+        connectionError={undefined}
+        identity={publicIdentity}
+        nickname={currentNickname}
+        onNicknameChange={identity.setNickname}
+        onRegenerateIdentity={identity.regenerate}
+      />
+    );
   }
 
   // T13.1 — `key` changes on every connection sequence (see `switchServer`'s and

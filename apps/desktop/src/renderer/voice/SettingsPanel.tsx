@@ -1,14 +1,29 @@
 import { useEffect, useRef, useState, type ChangeEvent, type ReactElement } from 'react';
+import { VideoOff } from 'lucide-react';
 
 import type { ScreenQualityPreset } from '@disco-voador/media-core';
 
 import type { DesktopIdentity } from '../../shared/ipc-contract.js';
 import { useBookmarks } from '../connection/use-bookmarks.js';
 import { IdentityPanel } from '../identity/IdentityPanel.js';
+import { Button } from '../ui/Button.js';
+import { EmptyState } from '../ui/EmptyState.js';
 import type { VoiceChannelActions, VoiceChannelState } from './use-voice-channel.js';
 import { useMediaDevices, type EnumeratedDevice } from './device-enumeration.js';
 import { LocalCameraPreview } from './LocalCameraPreview.js';
 import styles from './SettingsPanel.module.css';
+
+/** T13.1.1 — the four truthful sections `SettingsPanel` actually has real content for. Deliberately
+ * no "Appearance" section — no such functionality exists in this app; adding one here would be the
+ * exact kind of fabricated-capability UI `docs/DEFINITION_OF_DONE.md` forbids. */
+type SettingsSection = 'profile' | 'voice' | 'screen' | 'advanced';
+
+const SETTINGS_SECTIONS: readonly { readonly id: SettingsSection; readonly label: string }[] = [
+  { id: 'profile', label: 'Profile' },
+  { id: 'voice', label: 'Voice & Video' },
+  { id: 'screen', label: 'Screen Share' },
+  { id: 'advanced', label: 'Advanced' },
+];
 
 interface SettingsPanelProps {
   readonly state: VoiceChannelState;
@@ -83,9 +98,10 @@ function DeviceSelect({
   }
 
   return (
-    <label>
-      {label}
+    <label className={styles.field}>
+      <span className={styles.fieldLabel}>{label}</span>
       <select
+        className={styles.select}
         value={deviceOptionValue(selectedDeviceId)}
         onChange={handleChange}
         disabled={disabled}
@@ -258,10 +274,11 @@ function useOutputTestTone(): {
 }
 
 /**
- * T11 device management + screen-share quality preference, restyled for T13.1 into User & Identity /
- * Voice & Video / Advanced sections and rendered inside `ui/Modal.tsx` by `VoiceChannelView.tsx` —
- * a sibling of `AuthorizationPanel.tsx` rather than folded into the already-large
- * `VoiceChannelView.tsx`.
+ * T11 device management + screen-share quality preference, restyled for T13.1 (single scrolling
+ * column) then redesigned for T13.1.1 into a sidebar-navigation layout across four truthful
+ * sections (Profile / Voice & Video / Screen Share / Advanced), rendered inside `ui/Modal.tsx`
+ * (`size="xlarge"`) by `VoiceChannelView.tsx` — a sibling of `AuthorizationPanel.tsx` rather than
+ * folded into the already-large `VoiceChannelView.tsx`.
  *
  * **`setSinkId` support finding**: confirmed present in this app's pinned Electron 43.4.0 build
  * (Chromium ~150 per Electron's own release notes) — `HTMLMediaElement.prototype.setSinkId` is
@@ -292,6 +309,7 @@ export function SettingsPanel({
   voiceDisplayName,
   onVoiceDisplayNameChange,
 }: SettingsPanelProps): ReactElement {
+  const [activeSection, setActiveSection] = useState<SettingsSection>('profile');
   const devices = useMediaDevices();
   const [preferredMicDeviceId, setPreferredMicDeviceId] = useState<string | null>(null);
   const [preferredCameraDeviceId, setPreferredCameraDeviceId] = useState<string | null>(null);
@@ -378,154 +396,246 @@ export function SettingsPanel({
       });
   }
 
+  const cameraPreviewActive = state.cameraEnabled && state.localCameraStream;
+
   return (
     <div data-role="settings-panel" className={styles.container}>
-      <section className={styles.section}>
-        <h3 className={styles.sectionTitle}>User &amp; Identity</h3>
-        <label className={styles.field}>
-          <span>Voice display name</span>
-          <input
-            value={voiceDisplayName}
-            onChange={(event) => {
-              onVoiceDisplayNameChange(event.target.value);
+      {/* T13.1.1 — sidebar-navigation information architecture: only sections with real, truthful
+          content (no fabricated "Appearance" section). Identity/cryptography content stays under
+          Advanced, unchanged from T13.1's own fix. */}
+      <nav className={styles.nav} aria-label="Settings sections">
+        {SETTINGS_SECTIONS.map((section) => (
+          <button
+            key={section.id}
+            type="button"
+            className={`${styles.navItem} ${
+              activeSection === section.id ? styles.navItemActive : ''
+            }`}
+            aria-current={activeSection === section.id ? 'true' : undefined}
+            onClick={() => {
+              // Security review (T13.1.1): the microphone test's stop control and level meter only
+              // render inside the "Voice & Video" section — without this, navigating away while a
+              // test is running left a real `getUserMedia` capture active with no visible indicator
+              // and no reachable way to stop it short of closing Settings entirely.
+              if (section.id !== 'voice') setMicTesting(false);
+              setActiveSection(section.id);
             }}
-            maxLength={32}
-          />
-          <span className={styles.hint}>
-            Shown to others when you join a voice channel — independent of your identity nickname,
-            found under Advanced below.
-          </span>
-        </label>
-      </section>
+            data-testid={`settings-nav-${section.id}`}
+          >
+            {section.label}
+          </button>
+        ))}
+      </nav>
 
-      <section className={styles.section}>
-        <h3 className={styles.sectionTitle}>Voice &amp; Video</h3>
-        <section>
-          <h4>Audio</h4>
-          <DeviceSelect
-            label="Microphone"
-            devices={devices.audioInputs}
-            selectedDeviceId={preferredMicDeviceId}
-            onChange={handleMicChange}
-          />
-          {state.micUsingFallback && (
-            <p role="status">Preferred microphone unavailable — using the system default.</p>
-          )}
-          {state.micDisconnected && (
-            <p role="alert">Microphone disconnected unexpectedly. Pick a device to resume.</p>
-          )}
-          <DeviceSelect
-            label="Speaker"
-            devices={devices.audioOutputs}
-            selectedDeviceId={outputDeviceId}
-            disabled={!outputDeviceSelectionSupported}
-            onChange={handleOutputChange}
-          />
-          {!outputDeviceSelectionSupported && (
-            <p>Speaker selection is not supported on this build.</p>
-          )}
-          <div>
-            <button
-              type="button"
-              onClick={() => {
-                setMicTesting((prev) => !prev);
-              }}
-            >
-              {micTesting ? 'Stop microphone test' : 'Test microphone'}
-            </button>
-            {micTesting && <meter data-role="mic-level-meter" min={0} max={1} value={micLevel} />}
-          </div>
-          <div>
-            <button
-              type="button"
-              disabled={!outputDeviceSelectionSupported}
-              onClick={() => {
-                if (outputTestTone.playing) outputTestTone.stop();
-                else outputTestTone.play(outputDeviceId);
-              }}
-            >
-              {outputTestTone.playing ? 'Stop test tone' : 'Play test tone'}
-            </button>
-          </div>
-        </section>
+      <div className={styles.content}>
+        {activeSection === 'profile' && (
+          <section className={styles.section}>
+            <h3 className={styles.sectionTitle}>Profile</h3>
+            {/* T13.1.1 QA fix: the hint is a sibling of the <label> (this outer wrapper reuses
+                `.field`'s own flex/gap so the visual stacking is unchanged), not nested inside it —
+                matching every other hint in this file (e.g. the microphone/camera fallback notices
+                below). Nesting it inside the <label> would make the input's implicit accessible
+                name the full hint sentence concatenated after "Voice display name" instead of just
+                the field name itself, every time a screen reader announces this control. */}
+            <div className={styles.field}>
+              <label className={styles.field}>
+                <span className={styles.fieldLabel}>Voice display name</span>
+                <input
+                  className={styles.input}
+                  value={voiceDisplayName}
+                  onChange={(event) => {
+                    onVoiceDisplayNameChange(event.target.value);
+                  }}
+                  maxLength={32}
+                />
+              </label>
+              <span className={styles.hint}>
+                Shown to others when you join a voice channel — independent of your identity
+                nickname, found under Advanced.
+              </span>
+            </div>
+          </section>
+        )}
 
-        <section>
-          <h4>Video</h4>
-          <DeviceSelect
-            label="Camera"
-            devices={devices.videoInputs}
-            selectedDeviceId={preferredCameraDeviceId}
-            onChange={handleCameraChange}
-          />
-          {state.cameraUsingFallback && (
-            <p role="status">Preferred camera unavailable — using the system default.</p>
-          )}
-          {state.cameraEnabled && state.localCameraStream ? (
-            <LocalCameraPreview stream={state.localCameraStream} />
-          ) : (
-            <p>Enable the camera to preview it here.</p>
-          )}
-        </section>
+        {activeSection === 'voice' && (
+          <section className={styles.section}>
+            <h3 className={styles.sectionTitle}>Voice &amp; Video</h3>
 
-        <section>
-          <h4>Screen sharing</h4>
-          <label className={styles.field}>
-            <span>Default quality</span>
-            <select value={screenQualityPreset} onChange={handleQualityChange}>
-              {QUALITY_OPTIONS.map((preset) => (
-                <option key={preset} value={preset}>
-                  {QUALITY_LABELS[preset]}
-                </option>
-              ))}
-            </select>
-          </label>
-        </section>
-      </section>
+            <section className={styles.subsection}>
+              <h4 className={styles.subsectionTitle}>Audio</h4>
+              <DeviceSelect
+                label="Microphone"
+                devices={devices.audioInputs}
+                selectedDeviceId={preferredMicDeviceId}
+                onChange={handleMicChange}
+              />
+              {state.micUsingFallback && (
+                <p className={styles.status} role="status">
+                  Preferred microphone unavailable — using the system default.
+                </p>
+              )}
+              {state.micDisconnected && (
+                <p className={styles.alert} role="alert">
+                  Microphone disconnected unexpectedly. Pick a device to resume.
+                </p>
+              )}
 
-      <section className={styles.section}>
-        <h3 className={styles.sectionTitle}>Advanced</h3>
-        {/* T13.1 (visual QA follow-up): the cryptographic Identity ID and the destructive
-            "Regenerate Identity" action must not be prominent in the main settings flow — moved
-            here from "User & Identity" verbatim (same `IdentityPanel`, same hooks/handlers, only
-            its position changed). Nickname editing stays inside `IdentityPanel` rather than being
-            split out, since it is genuinely part of the same identity record as the id/regenerate
-            action it sits beside. */}
-        <IdentityPanel
-          nickname={nickname}
-          identity={identity}
-          onNicknameChange={onNicknameChange}
-          onRegenerate={onRegenerateIdentity}
-        />
-        <label className={styles.checkboxField}>
-          <input
-            type="checkbox"
-            checked={connectOnStartup}
-            onChange={(event) => {
-              bookmarkActions.setConnectOnStartup(event.target.checked);
-            }}
-          />
-          Connect automatically on startup
-        </label>
-        <p className={styles.hint}>
-          Reconnects to the last server you connected to, using the same identity as always — never
-          a new account or credential.
-        </p>
+              <div className={styles.testRow}>
+                <Button
+                  variant="secondary"
+                  onClick={() => {
+                    setMicTesting((prev) => !prev);
+                  }}
+                >
+                  {micTesting ? 'Stop microphone test' : 'Test microphone'}
+                </Button>
+                {micTesting && (
+                  <div className={styles.meterTrack} data-role="mic-level-meter">
+                    <div
+                      className={styles.meterFill}
+                      style={{ width: `${String(Math.min(100, Math.round(micLevel * 100)))}%` }}
+                    />
+                  </div>
+                )}
+              </div>
 
-        <h4>Diagnostics</h4>
-        <dl className={styles.diagnostics}>
-          <dt>Electron</dt>
-          <dd>{versionInfo?.electronVersion ?? '…'}</dd>
-          <dt>App version</dt>
-          <dd>{versionInfo?.appVersion ?? '…'}</dd>
-        </dl>
+              <DeviceSelect
+                label="Speaker"
+                devices={devices.audioOutputs}
+                selectedDeviceId={outputDeviceId}
+                disabled={!outputDeviceSelectionSupported}
+                onChange={handleOutputChange}
+              />
+              {!outputDeviceSelectionSupported && (
+                <p className={styles.hint}>Speaker selection is not supported on this build.</p>
+              )}
+              <div className={styles.testRow}>
+                <Button
+                  variant="secondary"
+                  disabled={!outputDeviceSelectionSupported}
+                  onClick={() => {
+                    if (outputTestTone.playing) outputTestTone.stop();
+                    else outputTestTone.play(outputDeviceId);
+                  }}
+                >
+                  {outputTestTone.playing ? 'Stop test tone' : 'Play test tone'}
+                </Button>
+              </div>
+            </section>
 
-        <h4>Not implemented yet</h4>
-        <ul className={styles.notImplemented}>
-          {NOT_IMPLEMENTED.map((item) => (
-            <li key={item}>{item}</li>
-          ))}
-        </ul>
-      </section>
+            <section className={styles.subsection}>
+              <h4 className={styles.subsectionTitle}>Video</h4>
+              <DeviceSelect
+                label="Camera"
+                devices={devices.videoInputs}
+                selectedDeviceId={preferredCameraDeviceId}
+                onChange={handleCameraChange}
+              />
+              {state.cameraUsingFallback && (
+                <p className={styles.status} role="status">
+                  Preferred camera unavailable — using the system default.
+                </p>
+              )}
+              <div className={styles.cameraPreviewBox}>
+                {cameraPreviewActive && state.localCameraStream ? (
+                  <LocalCameraPreview stream={state.localCameraStream} />
+                ) : (
+                  <EmptyState
+                    icon={VideoOff}
+                    title="Camera is off"
+                    description="Enable the camera to preview it here."
+                  />
+                )}
+              </div>
+            </section>
+          </section>
+        )}
+
+        {activeSection === 'screen' && (
+          <section className={styles.section}>
+            <h3 className={styles.sectionTitle}>Screen Share</h3>
+            {/* T13.1.1 QA fix: sibling of the <label>, not nested inside it — see the matching fix
+                and doc comment on the "Voice display name" field above for why. */}
+            <div className={styles.field}>
+              <label className={styles.field}>
+                <span className={styles.fieldLabel}>Default quality</span>
+                <select
+                  className={styles.select}
+                  value={screenQualityPreset}
+                  onChange={handleQualityChange}
+                >
+                  {QUALITY_OPTIONS.map((preset) => (
+                    <option key={preset} value={preset}>
+                      {QUALITY_LABELS[preset]}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <span className={styles.hint}>
+                Pre-selects this quality the next time you open the screen-share picker — you can
+                still change it per-share.
+              </span>
+            </div>
+          </section>
+        )}
+
+        {activeSection === 'advanced' && (
+          <section className={styles.section}>
+            <h3 className={styles.sectionTitle}>Advanced</h3>
+
+            <section className={styles.subsection}>
+              <h4 className={styles.subsectionTitle}>Startup</h4>
+              <label className={styles.checkboxField}>
+                <input
+                  type="checkbox"
+                  checked={connectOnStartup}
+                  onChange={(event) => {
+                    bookmarkActions.setConnectOnStartup(event.target.checked);
+                  }}
+                />
+                Connect automatically on startup
+              </label>
+              <p className={styles.hint}>
+                Reconnects to the last server you connected to, using the same identity as always —
+                never a new account or credential.
+              </p>
+            </section>
+
+            {/* T13.1 (visual QA follow-up, reaffirmed T13.1.1): the cryptographic Identity ID and
+                the destructive "Regenerate Identity" action stay out of the main settings flow —
+                `IdentityPanel` itself now visually separates its own routine controls from the
+                Regenerate danger zone (see `identity/IdentityPanel.tsx`). */}
+            <section className={styles.subsection}>
+              <h4 className={styles.subsectionTitle}>Identity</h4>
+              <IdentityPanel
+                nickname={nickname}
+                identity={identity}
+                onNicknameChange={onNicknameChange}
+                onRegenerate={onRegenerateIdentity}
+              />
+            </section>
+
+            <section className={styles.subsection}>
+              <h4 className={styles.subsectionTitle}>Diagnostics</h4>
+              <dl className={styles.diagnostics}>
+                <dt>Electron</dt>
+                <dd>{versionInfo?.electronVersion ?? '…'}</dd>
+                <dt>App version</dt>
+                <dd>{versionInfo?.appVersion ?? '…'}</dd>
+              </dl>
+            </section>
+
+            <section className={styles.subsection}>
+              <h4 className={styles.subsectionTitle}>Not implemented yet</h4>
+              <ul className={styles.notImplemented}>
+                {NOT_IMPLEMENTED.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+            </section>
+          </section>
+        )}
+      </div>
     </div>
   );
 }

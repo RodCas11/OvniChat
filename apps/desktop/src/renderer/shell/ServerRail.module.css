@@ -16,13 +16,17 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 48px;
-  height: 48px;
+  width: 52px;
+  height: 52px;
   border: none;
   border-radius: var(--ovni-radius-full);
   background: var(--ovni-bg-surface-alt);
   color: var(--ovni-text-secondary);
   flex-shrink: 0;
+  transition:
+    background-color var(--ovni-transition-fast),
+    color var(--ovni-transition-fast),
+    border-radius var(--ovni-transition-fast);
 }
 
 .homeButton:hover,
@@ -58,17 +62,45 @@
   justify-content: center;
   border: none;
   background: transparent;
-  padding: 0;
+  padding: 6px;
   border-radius: var(--ovni-radius-full);
+  transition:
+    background-color var(--ovni-transition-fast),
+    border-radius var(--ovni-transition-fast);
+}
+
+/* T13.1.1 — strengthens the active-server signal beyond `activeIndicator`'s marker bar alone: a
+   subtle surface behind the avatar, plus the same circle-to-squircle shape shift the Home/Add
+   buttons use on hover, so "this is the connected server" reads even at a glance, not just on
+   close inspection of a thin left bar. */
+.tile:hover,
+.tile[data-active='true'] {
+  background: var(--ovni-bg-hover);
+  border-radius: var(--ovni-radius-lg);
+}
+
+/* A shorter, dimmer version of the active marker on hover of a *non*-active tile — mirrors
+   Discord-familiar rail affordances (a short pill grows into a tall one) without adding a second
+   DOM element just for the hover case. */
+.tile:not([data-active='true']):hover::before {
+  content: '';
+  position: absolute;
+  left: -10px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 4px;
+  height: 20px;
+  border-radius: var(--ovni-radius-full);
+  background: var(--ovni-text-tertiary);
 }
 
 .activeIndicator {
   position: absolute;
-  left: -6px;
+  left: -10px;
   top: 50%;
   transform: translateY(-50%);
   width: 4px;
-  height: 24px;
+  height: 36px;
   border-radius: var(--ovni-radius-full);
   background: var(--ovni-accent);
 }

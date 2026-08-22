@@ -2,7 +2,12 @@
   display: flex;
   align-items: center;
   gap: var(--ovni-space-2);
-  padding: 4px var(--ovni-space-2) 4px var(--ovni-space-8);
+  /* T13.1.1 — a touch more indentation than a plain `--ovni-space-8`, plus a thin connecting guide
+     (`border-left`) so participants read as clearly nested under their channel, not merely
+     shifted right by padding alone. */
+  padding: 5px var(--ovni-space-2) 5px 30px;
+  margin-left: var(--ovni-space-4);
+  border-left: 2px solid var(--ovni-border);
   list-style: none;
   font-size: var(--ovni-text-sm);
   color: var(--ovni-text-secondary);

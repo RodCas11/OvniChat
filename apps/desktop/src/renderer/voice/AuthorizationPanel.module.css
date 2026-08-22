@@ -4,10 +4,24 @@
   gap: var(--ovni-space-4);
 }
 
+.myGroups {
+  margin: 0;
+  color: var(--ovni-text-secondary);
+  font-size: var(--ovni-text-sm);
+}
+
 .redeemForm {
   display: flex;
   align-items: flex-end;
   gap: var(--ovni-space-2);
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--ovni-space-3);
+  margin-top: var(--ovni-space-2);
 }
 
 .field {
@@ -18,7 +32,13 @@
   color: var(--ovni-text-secondary);
 }
 
-.field input {
+.fieldLabel {
+  font-weight: 600;
+  color: var(--ovni-text-primary);
+}
+
+.input,
+.select {
   height: 34px;
   padding: 0 var(--ovni-space-3);
   border: 1px solid var(--ovni-border);
@@ -27,7 +47,83 @@
   color: var(--ovni-text-primary);
 }
 
+.success {
+  margin: 0;
+  color: var(--ovni-accent);
+  font-size: var(--ovni-text-sm);
+}
+
 .section {
   padding-top: var(--ovni-space-3);
   border-top: 1px solid var(--ovni-border);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--ovni-space-2);
+}
+
+.sectionTitle {
+  margin: 0;
+  font-size: var(--ovni-text-sm);
+  font-weight: 700;
+  color: var(--ovni-text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.listRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ovni-space-3);
+  padding: var(--ovni-space-2) 0;
+  border-bottom: 1px solid var(--ovni-border);
+  font-size: var(--ovni-text-sm);
+}
+
+.listRow:last-child {
+  border-bottom: none;
+}
+
+.listRowActions {
+  display: flex;
+  align-items: center;
+  gap: var(--ovni-space-2);
+  flex-shrink: 0;
+}
+
+.checkboxGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--ovni-space-2) var(--ovni-space-4);
+}
+
+.checkboxField {
+  display: flex;
+  align-items: center;
+  gap: var(--ovni-space-2);
+  font-size: var(--ovni-text-sm);
+  color: var(--ovni-text-secondary);
+}
+
+.tokenReveal {
+  padding: var(--ovni-space-2) var(--ovni-space-3);
+  border-radius: var(--ovni-radius-sm);
+  background: var(--ovni-bg-base);
+  border: 1px solid var(--ovni-border);
+  font-size: var(--ovni-text-sm);
+  word-break: break-all;
+}
+
+.tokenReveal code {
+  font-family: ui-monospace, 'Cascadia Code', 'Consolas', monospace;
 }

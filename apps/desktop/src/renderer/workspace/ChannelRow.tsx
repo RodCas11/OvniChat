@@ -54,9 +54,25 @@ export function ChannelRow({
   onJoin,
   onLeave,
 }: ChannelRowProps): ReactElement {
+  // T13.1.1 — secondary actions (the chat-bubble icon, Join/Leave) stay visually quiet until the
+  // row is hovered/focused, selected, or already joined; the channel name itself never competes
+  // with them. `isJoined`/`isSelected` force the actions fully visible even without hover, since
+  // "I am in this channel's voice" (and "this is what I'm currently viewing") are both meaningful
+  // ambient state, not merely a hover affordance — CSS (`:hover`/`:focus-within`) handles the
+  // hover/focus case; this class handles the other two. Purely a visual (opacity) change: every
+  // handler/testid below is completely unchanged, so the existing "click never joins voice"
+  // invariant (`tests/desktop/components/channel-row.test.tsx`) is unaffected.
+  const actionsClassName = [styles.actions, isJoined || isSelected ? styles.actionsVisible : '']
+    .filter(Boolean)
+    .join(' ');
+
   return (
     <li className={styles.container} data-testid={`channel-row-${channel.channelId}`}>
-      <div className={`${styles.row} ${isSelected ? styles.selected : ''}`}>
+      <div
+        className={`${styles.row} ${isSelected ? styles.selected : ''} ${
+          isJoined ? styles.joined : ''
+        }`}
+      >
         <button
           type="button"
           className={styles.selectButton}
@@ -71,7 +87,7 @@ export function ChannelRow({
           <span className={styles.name}>{channel.name}</span>
         </button>
 
-        <div className={styles.actions}>
+        <div className={actionsClassName}>
           <IconButton
             icon={MessageSquare}
             ariaLabel={`Open ${channel.name} chat`}

@@ -1,12 +1,24 @@
 import { useEffect, useState, type ReactElement } from 'react';
+import { ChevronDown, ChevronRight, Copy } from 'lucide-react';
 
 import type { DesktopIdentity } from '../../shared/ipc-contract.js';
+import { Button } from '../ui/Button.js';
+import styles from './IdentityPanel.module.css';
 
 interface IdentityPanelProps {
   readonly nickname: string;
   readonly identity: DesktopIdentity;
   readonly onNicknameChange: (nickname: string) => Promise<boolean>;
   readonly onRegenerate: () => Promise<void>;
+  /** Security review (T13.1.1): `false` (default) preserves this component's original behavior,
+   * used by `SettingsPanel.tsx`'s own `Advanced` section — Identity ID and Regenerate Identity
+   * render immediately, since reaching this component there already required navigating into
+   * Advanced. `true` additionally collapses the Identity ID / Regenerate Identity block behind its
+   * own closed-by-default disclosure (mirroring `AddServerDialog.tsx`'s existing Advanced toggle) —
+   * used by `ServerHome.tsx`'s disconnected "Profile" modal, which has no separate Advanced tab to
+   * gate this behind, so it needs its own explicit extra step per the task's "identity must not be
+   * prominent outside an explicit advanced area" rule. */
+  readonly identityDetailsCollapsed?: boolean;
 }
 
 const REGENERATE_CONFIRM_MESSAGE =
@@ -24,12 +36,14 @@ export function IdentityPanel({
   identity,
   onNicknameChange,
   onRegenerate,
+  identityDetailsCollapsed = false,
 }: IdentityPanelProps): ReactElement {
   const [nicknameInput, setNicknameInput] = useState(nickname);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | undefined>(undefined);
   const [copied, setCopied] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
 
   useEffect(() => {
     setNicknameInput(nickname);
@@ -77,15 +91,19 @@ export function IdentityPanel({
   };
 
   return (
-    <section>
-      {/* T13.1: this panel now renders inside Settings > Advanced, alongside sibling `h4`
-          subsections ("Diagnostics", "Not implemented yet") — `h4` here keeps that hierarchy
-          consistent (this was a bare `h2` from before those sections existed). */}
-      <h4>Identity</h4>
-      <p>
-        <label>
-          Nickname{' '}
+    <div className={styles.container}>
+      {/* A plain `<div>`, not `<label>`, wraps each field — the row contains *two* interactive
+          elements (an input/display plus a button), and nesting a `<button>` inside a real
+          `<label>` risks confusing label-click-forwarding behavior; the input still gets a real
+          accessible name via `aria-label` below. */}
+      <div className={styles.field}>
+        <span className={styles.fieldLabel} id="identity-nickname-label">
+          Nickname
+        </span>
+        <div className={styles.row}>
           <input
+            className={styles.input}
+            aria-labelledby="identity-nickname-label"
             value={nicknameInput}
             onChange={(event) => {
               setNicknameInput(event.target.value);
@@ -93,27 +111,68 @@ export function IdentityPanel({
             maxLength={32}
             disabled={saving}
           />
-        </label>{' '}
+          <Button
+            variant="secondary"
+            onClick={handleSaveNickname}
+            disabled={saving || nicknameInput === nickname}
+          >
+            Save
+          </Button>
+        </div>
+        {saveError && (
+          <p className={styles.error} role="alert">
+            {saveError}
+          </p>
+        )}
+      </div>
+
+      {identityDetailsCollapsed && (
         <button
           type="button"
-          onClick={handleSaveNickname}
-          disabled={saving || nicknameInput === nickname}
+          className={styles.advancedToggle}
+          aria-expanded={detailsOpen}
+          onClick={() => {
+            setDetailsOpen((prev) => !prev);
+          }}
         >
-          Save
+          {detailsOpen ? (
+            <ChevronDown size={14} aria-hidden="true" />
+          ) : (
+            <ChevronRight size={14} aria-hidden="true" />
+          )}
+          Advanced (cryptographic identity)
         </button>
-        {saveError && <span role="alert"> {saveError}</span>}
-      </p>
-      <p>
-        Identity ID: <code>{identity.identityId}</code>{' '}
-        <button type="button" onClick={handleCopyId}>
-          {copied ? 'Copied' : 'Copy ID'}
-        </button>
-      </p>
-      <p>
-        <button type="button" onClick={handleRegenerate} disabled={regenerating}>
-          {regenerating ? 'Regenerating…' : 'Regenerate Identity'}
-        </button>
-      </p>
-    </section>
+      )}
+
+      {(!identityDetailsCollapsed || detailsOpen) && (
+        <>
+          <div className={styles.field}>
+            <span className={styles.fieldLabel}>Identity ID</span>
+            <div className={styles.row}>
+              <code className={styles.identityId}>{identity.identityId}</code>
+              <Button variant="ghost" onClick={handleCopyId}>
+                <Copy size={14} aria-hidden="true" />
+                {copied ? 'Copied' : 'Copy ID'}
+              </Button>
+            </div>
+          </div>
+
+          {/* T13.1.1 — visually separated, danger-tinted subsection: further from the routine
+              controls above, using `ui/Button`'s `danger` variant. The underlying `window.confirm`
+              warning is unchanged/unweakened — see `REGENERATE_CONFIRM_MESSAGE` above. */}
+          <div className={styles.dangerZone}>
+            <p className={styles.dangerZoneTitle}>Danger zone</p>
+            <p className={styles.dangerZoneHint}>
+              Creates a brand-new cryptographic identity. Servers you have connected to before will
+              see this as unrecognized, and you may lose any permissions tied to the old one. This
+              cannot be undone.
+            </p>
+            <Button variant="danger" onClick={handleRegenerate} disabled={regenerating}>
+              {regenerating ? 'Regenerating…' : 'Regenerate Identity'}
+            </Button>
+          </div>
+        </>
+      )}
+    </div>
   );
 }

@@ -1057,7 +1057,7 @@ export function VoiceChannelView({
             setShowSettings(false);
           }}
           title="Settings"
-          size="large"
+          size="xlarge"
           testId="settings-modal"
         >
           <SettingsPanel

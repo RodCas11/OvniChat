@@ -1,9 +1,16 @@
 .row {
   display: flex;
   align-items: center;
-  gap: var(--ovni-space-2);
-  padding: var(--ovni-space-1) var(--ovni-space-2);
+  gap: var(--ovni-space-3);
+  padding: 6px var(--ovni-space-4);
+  margin: 0 var(--ovni-space-2);
+  border-radius: var(--ovni-radius-sm);
   list-style: none;
+  transition: background-color var(--ovni-transition-fast);
+}
+
+.row:hover {
+  background: var(--ovni-bg-hover);
 }
 
 .name {

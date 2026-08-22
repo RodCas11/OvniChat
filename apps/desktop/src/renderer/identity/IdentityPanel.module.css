@@ -1,0 +1,103 @@
+.container {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ovni-space-4);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ovni-space-1);
+  font-size: var(--ovni-text-sm);
+  color: var(--ovni-text-secondary);
+}
+
+.fieldLabel {
+  font-weight: 600;
+  color: var(--ovni-text-primary);
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--ovni-space-2);
+}
+
+.input {
+  flex: 1;
+  min-width: 0;
+  height: 38px;
+  padding: 0 var(--ovni-space-3);
+  border: 1px solid var(--ovni-border);
+  border-radius: var(--ovni-radius-md);
+  background: var(--ovni-bg-base);
+  color: var(--ovni-text-primary);
+  font-size: var(--ovni-text-base);
+}
+
+.error {
+  margin: 0;
+  color: var(--ovni-danger);
+  font-size: var(--ovni-text-xs);
+}
+
+.identityId {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: var(--ovni-space-2) var(--ovni-space-3);
+  border-radius: var(--ovni-radius-sm);
+  background: var(--ovni-bg-base);
+  border: 1px solid var(--ovni-border);
+  color: var(--ovni-text-secondary);
+  font-family: ui-monospace, 'Cascadia Code', 'Consolas', monospace;
+  font-size: var(--ovni-text-sm);
+}
+
+/* T13.1.1 (security review) — the closed-by-default disclosure used only when
+ * `identityDetailsCollapsed` is set (currently `ServerHome.tsx`'s disconnected Profile modal, which
+ * has no separate Advanced tab of its own to gate this behind) — same visual language as
+ * `AddServerDialog.module.css`'s own `.advancedToggle`. */
+.advancedToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ovni-space-1);
+  align-self: flex-start;
+  border: none;
+  background: transparent;
+  color: var(--ovni-text-secondary);
+  font-size: var(--ovni-text-sm);
+  font-weight: 600;
+}
+
+.advancedToggle:hover {
+  color: var(--ovni-text-primary);
+}
+
+/* T13.1.1 — the destructive "Regenerate Identity" action gets its own visually-separated,
+ * danger-tinted subsection, further from the routine nickname/copy-id controls above (still the
+ * same real `window.confirm` warning, unweakened). */
+.dangerZone {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ovni-space-2);
+  padding: var(--ovni-space-3);
+  border: 1px solid rgba(229, 72, 77, 0.35);
+  border-radius: var(--ovni-radius-md);
+  background: rgba(229, 72, 77, 0.06);
+}
+
+.dangerZoneTitle {
+  margin: 0;
+  font-size: var(--ovni-text-sm);
+  font-weight: 700;
+  color: var(--ovni-danger);
+}
+
+.dangerZoneHint {
+  margin: 0;
+  color: var(--ovni-text-secondary);
+  font-size: var(--ovni-text-xs);
+}

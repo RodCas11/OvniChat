@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, render, screen } from '@testing-library/react';
-import { afterEach, describe, expect, it } from 'vitest';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ChatView } from '../../../apps/desktop/src/renderer/workspace/ChatView.js';
 import { chatThreadKey } from '../../../apps/desktop/src/renderer/voice/use-voice-channel.js';
@@ -14,6 +14,7 @@ import {
 
 afterEach(() => {
   cleanup();
+  vi.unstubAllEnvs();
 });
 
 describe('ChatView (T13.1)', () => {
@@ -103,5 +104,56 @@ describe('ChatView (T13.1)', () => {
     );
 
     expect(screen.getByText('No messages yet')).toBeInTheDocument();
+  });
+});
+
+// T13.1.1 — `CHAT_FIXTURE_COMMAND` ('/fixture') is gated on `import.meta.env.DEV` alone (a
+// Vite/Vitest runtime-mutable property, not statically inlined outside a real `vite build` — see
+// `chat-dev-fixture.ts`'s own doc comment). `vi.stubEnv('DEV', ...)` is Vitest's own sanctioned
+// mechanism for flipping this exact flag at runtime (its type signature special-cases
+// 'DEV'/'PROD'/'SSR' to booleans), so this genuinely exercises both branches of the real gate rather
+// than just asserting today's default test-runner mode.
+describe('ChatView — /fixture is dev/test-only-gated, never silently dropped in production (T13.1.1)', () => {
+  it('with import.meta.env.DEV=true, "/fixture" toggles the local preview only and is never sent as a real chat message', () => {
+    vi.stubEnv('DEV', true);
+    const actions = createVoiceActions();
+    const state = createVoiceState({ myPermissions: ['chat.server.send'] });
+    render(<ChatView state={state} actions={actions} scope="server" channelId={undefined} />);
+
+    const input = screen.getByPlaceholderText('Message…');
+    fireEvent.change(input, { target: { value: '/fixture' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+
+    expect(actions.sendChatMessage).not.toHaveBeenCalled();
+    expect(input).toHaveValue('');
+  });
+
+  it('with import.meta.env.DEV=false (the packaged/production path), "/fixture" is treated like any other message and genuinely sent via the real sendChatMessage action — never silently dropped, never fabricating data with no trace', () => {
+    vi.stubEnv('DEV', false);
+    const actions = createVoiceActions();
+    const state = createVoiceState({ myPermissions: ['chat.server.send'] });
+    render(<ChatView state={state} actions={actions} scope="server" channelId={undefined} />);
+
+    const input = screen.getByPlaceholderText('Message…');
+    fireEvent.change(input, { target: { value: '/fixture' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+
+    expect(actions.sendChatMessage).toHaveBeenCalledTimes(1);
+    expect(actions.sendChatMessage).toHaveBeenCalledWith('server', undefined, '/fixture');
+  });
+
+  it('with import.meta.env.DEV=false, the dev-only hint text is never rendered', () => {
+    vi.stubEnv('DEV', false);
+    const state = createVoiceState({ myPermissions: ['chat.server.send'] });
+    render(
+      <ChatView
+        state={state}
+        actions={createVoiceActions()}
+        scope="server"
+        channelId={undefined}
+      />,
+    );
+
+    expect(screen.queryByText(/Dev only: type/)).not.toBeInTheDocument();
   });
 });

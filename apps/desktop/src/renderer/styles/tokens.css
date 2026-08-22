@@ -58,9 +58,13 @@
   --ovni-text-sm: 12px;
   --ovni-text-base: 14px;
   --ovni-text-md: 15px;
-  --ovni-text-lg: 16px;
-  --ovni-text-xl: 20px;
-  --ovni-text-2xl: 24px;
+  --ovni-text-lg: 17px;
+  --ovni-text-xl: 22px;
+  --ovni-text-2xl: 26px;
+  /* T13.1.1 — a dedicated brand/hero size, used only by `ServerHome`'s "OvniChat" heading: the
+     workspace's own headers (channel/chat/member-panel titles) intentionally stay at `--ovni-text-lg`
+     and below, so this never leaks into ordinary UI chrome. */
+  --ovni-text-3xl: 34px;
 
   /* Elevation — subtle only. This app does real-time WebRTC media; heavy blur/backdrop-filter
      anywhere in the UI would compete with video/screen-share/audio for GPU budget, so shadows stay
@@ -79,9 +83,9 @@
   --ovni-transition-base: 150ms ease;
 
   /* Panel sizing */
-  --ovni-rail-width: 72px;
-  --ovni-sidebar-width: 260px;
-  --ovni-member-panel-width: 240px;
+  --ovni-rail-width: 76px;
+  --ovni-sidebar-width: 272px;
+  --ovni-member-panel-width: 256px;
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -770,6 +770,12 @@ function armE2EScreenshotWorkspaceCapture(window: BrowserWindow): void {
         await wait(400);
         await saveCapture('03-workspace-1366x768.png');
 
+        // T13.1.1 — one intermediate desktop resolution, per the task's own "do not tune solely
+        // for two screenshots" requirement.
+        window.setBounds({ width: 1600, height: 900 });
+        await wait(400);
+        await saveCapture('03b-workspace-1600x900.png');
+
         window.setBounds({ width: 1920, height: 1080 });
         await wait(400);
 
@@ -789,6 +795,84 @@ function armE2EScreenshotWorkspaceCapture(window: BrowserWindow): void {
         );
         await wait(400);
         await saveCapture('05-member-panel-collapsed.png');
+
+        // T13.1.1 screenshot-capture extension — same real-button-click technique as above, adding
+        // the Settings sub-tabs, the Add Server dialog, and a genuinely different-channel chat
+        // selection (proving "select ≠ join" survives the redesign) to the evidence set.
+        await window.webContents.executeJavaScript(
+          `document.querySelector('[data-testid="member-panel-expand-toggle"]')?.click();`,
+        );
+        await wait(300);
+
+        await window.webContents.executeJavaScript(
+          `document.querySelector('[data-testid="user-control-settings"]')?.click();`,
+        );
+        await wait(500);
+        await window.webContents.executeJavaScript(
+          `document.querySelector('[data-testid="settings-nav-voice"]')?.click();`,
+        );
+        await wait(400);
+        await saveCapture('06-settings-voice.png');
+
+        await window.webContents.executeJavaScript(
+          `document.querySelector('[data-testid="settings-nav-advanced"]')?.click();`,
+        );
+        await wait(400);
+        await saveCapture('07-settings-advanced.png');
+
+        await window.webContents.executeJavaScript(
+          `document.querySelector('[aria-label="Close"]')?.click();`,
+        );
+        await wait(300);
+
+        await window.webContents.executeJavaScript(
+          `document.querySelector('[data-testid="server-rail-add"]')?.click();`,
+        );
+        await wait(400);
+        await saveCapture('08-add-server-dialog.png');
+
+        await window.webContents.executeJavaScript(
+          `document.querySelector('[data-testid="add-server-dialog"] [aria-label="Close"]')?.click();`,
+        );
+        await wait(300);
+
+        // Select "games" (a different channel from the one we're actually joined to, "general") —
+        // proves the redesigned row still only *views* a channel's chat on click, never joins it —
+        // then switch back to General's own chat (the channel we're actually joined to) to send
+        // real representative messages via the real composer/production `sendChatMessage` action,
+        // never a fixture: this is genuine message density/grouping evidence, sent exactly the way
+        // a human would type it.
+        await window.webContents.executeJavaScript(
+          `document.querySelector('[data-testid="channel-row-select-games"]')?.click();`,
+        );
+        await wait(400);
+        await window.webContents.executeJavaScript(
+          `document.querySelector('[data-testid="channel-row-select-general"]')?.click();`,
+        );
+        await wait(400);
+
+        async function sendRealMessage(body: string): Promise<void> {
+          await window.webContents.executeJavaScript(`
+            (function () {
+              const input = document.querySelector('input[placeholder="Message…"]');
+              if (!input) return;
+              const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+              setter.call(input, ${JSON.stringify(body)});
+              input.dispatchEvent(new Event('input', { bubbles: true }));
+              input.closest('form')?.requestSubmit();
+            })();
+          `);
+          await wait(350);
+        }
+
+        await sendRealMessage('Bora jogar?');
+        await sendRealMessage('Tô entrando no mapa');
+        await sendRealMessage(
+          'Esse mapa novo tá bem maior que o anterior, precisa upar a sensibilidade do mouse pra não ficar lento girando a câmera toda hora',
+        );
+        await sendRealMessage('😄🔥 boa!');
+        await wait(600);
+        await saveCapture('09-chat-messages-general.png');
 
         console.info('E2E_SCREENSHOT_CAPTURE_DONE');
         setTimeout(() => app.exit(0), 250);

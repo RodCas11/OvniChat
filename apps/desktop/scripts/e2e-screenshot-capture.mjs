@@ -187,6 +187,9 @@ function spawnBackgroundParticipant(realtimeUrl) {
       DISCO_VOADOR_E2E_FAKE_MEDIA: '1',
       DISCO_VOADOR_E2E_VOICE_AUTO_JOIN_CHANNEL: CHANNEL_ID,
       DISCO_VOADOR_E2E_VOICE_DISPLAY_NAME: 'BackgroundParticipant',
+      // Real second-sender message (via the existing T10 auto-chat-send E2E hook, not a fixture)
+      // so the 09-chat-messages-general.png capture shows genuine multi-sender grouping.
+      DISCO_VOADOR_E2E_CHAT_SEND_CHANNEL: 'bora',
     }),
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -235,10 +238,20 @@ async function captureWorkspace() {
     console.info('02-workspace-1920x1080.png saved.');
     await instance.waitFor('E2E_SCREENSHOT_SAVED:03-workspace-1366x768.png');
     console.info('03-workspace-1366x768.png saved.');
+    await instance.waitFor('E2E_SCREENSHOT_SAVED:03b-workspace-1600x900.png');
+    console.info('03b-workspace-1600x900.png saved.');
     await instance.waitFor('E2E_SCREENSHOT_SAVED:04-settings.png');
     console.info('04-settings.png saved.');
     await instance.waitFor('E2E_SCREENSHOT_SAVED:05-member-panel-collapsed.png');
     console.info('05-member-panel-collapsed.png saved.');
+    await instance.waitFor('E2E_SCREENSHOT_SAVED:06-settings-voice.png');
+    console.info('06-settings-voice.png saved.');
+    await instance.waitFor('E2E_SCREENSHOT_SAVED:07-settings-advanced.png');
+    console.info('07-settings-advanced.png saved.');
+    await instance.waitFor('E2E_SCREENSHOT_SAVED:08-add-server-dialog.png');
+    console.info('08-add-server-dialog.png saved.');
+    await instance.waitFor('E2E_SCREENSHOT_SAVED:09-chat-messages-general.png');
+    console.info('09-chat-messages-general.png saved.');
     await instance.waitFor('E2E_SCREENSHOT_CAPTURE_DONE');
     await instance.waitForExit(10_000);
   } finally {
@@ -268,14 +281,19 @@ async function main() {
     '01-server-home.png',
     '02-workspace-1920x1080.png',
     '03-workspace-1366x768.png',
+    '03b-workspace-1600x900.png',
     '04-settings.png',
     '05-member-panel-collapsed.png',
+    '06-settings-voice.png',
+    '07-settings-advanced.png',
+    '08-add-server-dialog.png',
+    '09-chat-messages-general.png',
   ];
   const allOk = names.map(reportFile).every(Boolean);
   if (!allOk) {
     fail('One or more screenshots are missing or implausibly small.');
   }
-  console.info('\nAll 5 screenshots captured successfully.');
+  console.info(`\nAll ${String(names.length)} screenshots captured successfully.`);
   process.exit(0);
 }
 

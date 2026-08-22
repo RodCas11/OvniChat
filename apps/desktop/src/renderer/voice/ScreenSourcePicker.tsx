@@ -275,6 +275,7 @@ export function ScreenSourcePicker({
       <div role="tablist" className={styles.tabs}>
         <button
           type="button"
+          className={`${styles.tab} ${activeTab === 'screen' ? styles.tabActive : ''}`}
           data-role="screen-source-tab-screen"
           aria-pressed={activeTab === 'screen'}
           onClick={() => {
@@ -285,6 +286,7 @@ export function ScreenSourcePicker({
         </button>
         <button
           type="button"
+          className={`${styles.tab} ${activeTab === 'window' ? styles.tabActive : ''}`}
           data-role="screen-source-tab-window"
           aria-pressed={activeTab === 'window'}
           onClick={() => {
@@ -295,15 +297,22 @@ export function ScreenSourcePicker({
         </button>
       </div>
 
-      {loading && <p>Loading sources…</p>}
-      {loadError && <p role="alert">{loadError}</p>}
+      {loading && <p className={styles.hint}>Loading sources…</p>}
+      {loadError && (
+        <p className={styles.alert} role="alert">
+          {loadError}
+        </p>
+      )}
 
       {!loading && !loadError && (
-        <ul data-role="screen-source-list">
+        <ul data-role="screen-source-list" className={styles.sourceGrid}>
           {visibleSources.map((source) => (
             <li key={source.id}>
               <button
                 type="button"
+                className={`${styles.sourceOption} ${
+                  selectedSourceId === source.id ? styles.sourceOptionSelected : ''
+                }`}
                 data-role="screen-source-option"
                 data-source-id={source.id}
                 aria-pressed={selectedSourceId === source.id}
@@ -311,28 +320,40 @@ export function ScreenSourcePicker({
                   setSelectedSourceId(source.id);
                 }}
               >
-                {source.thumbnailDataUrl && (
-                  <img src={source.thumbnailDataUrl} alt="" width={160} height={90} />
+                {source.thumbnailDataUrl ? (
+                  <img
+                    src={source.thumbnailDataUrl}
+                    alt=""
+                    width={160}
+                    height={90}
+                    className={styles.sourceThumb}
+                  />
+                ) : (
+                  <div className={styles.sourceThumbPlaceholder} />
                 )}
-                {source.appIconDataUrl && (
-                  <img src={source.appIconDataUrl} alt="" width={16} height={16} />
-                )}
-                {/* Source names/titles are untrusted, sensitive text (see docs/SECURITY.md) —
-                    rendered as plain text content here, never interpolated into markup/attributes
-                    beyond this. */}
-                <span>{source.name}</span>
+                <div className={styles.sourceLabel}>
+                  {source.appIconDataUrl && (
+                    <img src={source.appIconDataUrl} alt="" width={16} height={16} />
+                  )}
+                  {/* Source names/titles are untrusted, sensitive text (see docs/SECURITY.md) —
+                      rendered as plain text content here, never interpolated into markup/attributes
+                      beyond this. */}
+                  <span>{source.name}</span>
+                </div>
               </button>
             </li>
           ))}
           {visibleSources.length === 0 && (
-            <li>No {activeTab === 'screen' ? 'screens' : 'windows'} available.</li>
+            <li className={styles.hint}>
+              No {activeTab === 'screen' ? 'screens' : 'windows'} available.
+            </li>
           )}
         </ul>
       )}
 
-      <label>
-        Quality
-        <select value={quality} onChange={handleQualityChange}>
+      <label className={styles.field}>
+        <span className={styles.fieldLabel}>Quality</span>
+        <select className={styles.select} value={quality} onChange={handleQualityChange}>
           {QUALITY_OPTIONS.map((preset) => (
             <option key={preset} value={preset}>
               {QUALITY_LABELS[preset]}
@@ -341,9 +362,9 @@ export function ScreenSourcePicker({
         </select>
       </label>
 
-      <fieldset data-role="screen-share-audio-mode">
-        <legend>Audio</legend>
-        <label>
+      <fieldset data-role="screen-share-audio-mode" className={styles.fieldset}>
+        <legend className={styles.legend}>Audio</legend>
+        <label className={styles.radioField}>
           <input
             type="radio"
             name="screen-share-audio-mode"
@@ -355,7 +376,7 @@ export function ScreenSourcePicker({
           />
           No audio
         </label>
-        <label>
+        <label className={styles.radioField}>
           <input
             type="radio"
             name="screen-share-audio-mode"
@@ -367,7 +388,7 @@ export function ScreenSourcePicker({
           />
           System audio
         </label>
-        <label>
+        <label className={styles.radioField}>
           <input
             type="radio"
             name="screen-share-audio-mode"
@@ -386,21 +407,30 @@ export function ScreenSourcePicker({
         // T6 platform finding (see docs/architecture/WEBRTC_SCREEN_AUDIO.md): Windows system-audio
         // loopback captures everything currently playing on the machine, not audio scoped to the
         // selected window — stated plainly here rather than implying window-specific audio.
-        <p>Shares all system sound currently playing, not audio from a specific window.</p>
+        <p className={styles.hint}>
+          Shares all system sound currently playing, not audio from a specific window.
+        </p>
       )}
 
       {!processAudioSupported && processAudioUnsupportedReason && (
-        <p data-role="process-audio-unsupported">{processAudioUnsupportedReason}</p>
+        <p className={styles.hint} data-role="process-audio-unsupported">
+          {processAudioUnsupportedReason}
+        </p>
       )}
 
       {audioModeChoice === 'process' && processAudioSupported && (
         <div data-role="process-audio-picker">
-          {processCandidatesLoading && <p>Loading running applications…</p>}
-          {processCandidatesError && <p role="alert">{processCandidatesError}</p>}
+          {processCandidatesLoading && <p className={styles.hint}>Loading running applications…</p>}
+          {processCandidatesError && (
+            <p className={styles.alert} role="alert">
+              {processCandidatesError}
+            </p>
+          )}
           {!processCandidatesLoading && !processCandidatesError && (
-            <label>
-              Application
+            <label className={styles.field}>
+              <span className={styles.fieldLabel}>Application</span>
               <select
+                className={styles.select}
                 data-role="process-audio-select"
                 value={selectedPid ?? ''}
                 onChange={(event) => {
@@ -421,11 +451,17 @@ export function ScreenSourcePicker({
           )}
           {!processCandidatesLoading &&
             !processCandidatesError &&
-            processCandidates.length === 0 && <p>No audio-capable applications found.</p>}
+            processCandidates.length === 0 && (
+              <p className={styles.hint}>No audio-capable applications found.</p>
+            )}
         </div>
       )}
 
-      {shareError && <p role="alert">{shareError}</p>}
+      {shareError && (
+        <p className={styles.alert} role="alert">
+          {shareError}
+        </p>
+      )}
 
       <div className={styles.actions}>
         <Button variant="ghost" type="button" onClick={onCancel}>

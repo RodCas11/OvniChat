@@ -5,7 +5,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ServerHome } from '../../../apps/desktop/src/renderer/shell/ServerHome.js';
 import { ToastProvider } from '../../../apps/desktop/src/renderer/ui/ToastProvider.js';
-import { createClientSettings, installDesktopAppMock } from '../fixtures/desktop-app-mock.js';
+import {
+  createClientSettings,
+  createIdentity,
+  installDesktopAppMock,
+} from '../fixtures/desktop-app-mock.js';
 
 // RTL's automatic post-test cleanup only self-registers when it detects a *global* `afterEach`
 // (i.e. `test.globals: true` in `vitest.config.ts`, deliberately left `false` for this repo's
@@ -120,5 +124,54 @@ describe('ServerHome (T13.1)', () => {
     renderServerHome({ onConnect: vi.fn(), connectionError: 'Could not reach that server' });
 
     expect(await screen.findByRole('alert')).toHaveTextContent('Could not reach that server');
+  });
+
+  describe('T13.1.1 — nickname/profile row (optional identity props)', () => {
+    it('omits the nickname/profile row entirely when identity props are not supplied (the existing tests above, which never pass them, keep working)', async () => {
+      installDesktopAppMock({
+        getClientSettings: vi.fn().mockResolvedValue(createClientSettings({ bookmarks: [] })),
+      });
+
+      renderServerHome({ onConnect: vi.fn(), connectionError: undefined });
+
+      await screen.findByText('No servers yet');
+      expect(screen.queryByTestId('server-home-profile')).not.toBeInTheDocument();
+    });
+
+    it('renders the nickname/profile row and opens the real IdentityPanel modal when identity props ARE supplied (the realistic connected-app case)', async () => {
+      installDesktopAppMock({
+        getClientSettings: vi.fn().mockResolvedValue(createClientSettings({ bookmarks: [] })),
+      });
+      const identity = createIdentity();
+      const onNicknameChange = vi.fn().mockResolvedValue(true);
+      const onRegenerateIdentity = vi.fn().mockResolvedValue(undefined);
+
+      renderServerHome({
+        onConnect: vi.fn(),
+        connectionError: undefined,
+        identity,
+        nickname: 'Nova',
+        onNicknameChange,
+        onRegenerateIdentity,
+      });
+
+      const profileRow = await screen.findByTestId('server-home-profile');
+      expect(profileRow).toHaveTextContent('Nova');
+      expect(screen.queryByTestId('server-home-profile-modal')).not.toBeInTheDocument();
+
+      fireEvent.click(profileRow);
+
+      const modal = screen.getByTestId('server-home-profile-modal');
+      expect(modal).toBeInTheDocument();
+      // Security-review fix (concurrent with this task): Home has no separate "Advanced" tab the
+      // way Settings does, so the cryptographic Identity ID / Regenerate action stay behind their
+      // own closed-by-default disclosure here (`IdentityPanel`'s `identityDetailsCollapsed` prop) —
+      // not visible until that disclosure is explicitly opened.
+      expect(modal).not.toHaveTextContent(identity.identityId);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Advanced (cryptographic identity)' }));
+
+      expect(modal).toHaveTextContent(identity.identityId);
+    });
   });
 });

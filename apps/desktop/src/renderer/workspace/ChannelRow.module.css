@@ -18,6 +18,17 @@
   background: var(--ovni-bg-selected);
 }
 
+/* T13.1.1 — a persistent, subtle tint for "I am in this channel's voice" that survives even when
+   the row is neither hovered nor selected-for-chat — the `Volume2` icon (see `.joinedIcon` below)
+   is the primary non-color signal; this tint is a secondary, ambient reinforcement of it. */
+.joined {
+  background: rgba(62, 207, 110, 0.06);
+}
+
+.joined.selected {
+  background: var(--ovni-bg-selected);
+}
+
 .selectButton {
   display: flex;
   align-items: center;
@@ -37,10 +48,12 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: var(--ovni-text-base);
+  font-weight: 500;
+  color: var(--ovni-text-primary);
 }
 
 .selected .name {
-  color: var(--ovni-text-primary);
+  font-weight: 600;
 }
 
 .joinedIcon {
@@ -58,6 +71,18 @@
   align-items: center;
   gap: var(--ovni-space-1);
   flex-shrink: 0;
+  /* T13.1.1 — quiet by default; brought to full prominence on hover/focus of the row, or when
+     `.actionsVisible` is applied (selected-for-chat or actually joined — see `ChannelRow.tsx`).
+     Opacity only, never `display:none`/`visibility:hidden` — the Join/Leave/chat controls stay in
+     the tab order and reachable by keyboard regardless of hover state. */
+  opacity: 0;
+  transition: opacity var(--ovni-transition-fast);
+}
+
+.row:hover .actions,
+.row:focus-within .actions,
+.actionsVisible {
+  opacity: 1;
 }
 
 .participants {
