@@ -43,6 +43,7 @@ describe('ChannelAclEditor (T13.2)', () => {
       <ChannelAclEditor
         state={state}
         actions={createVoiceActions()}
+        kind="voice"
         parentId={undefined}
         value={DEFAULT_ACL}
         onChange={vi.fn()}
@@ -59,6 +60,7 @@ describe('ChannelAclEditor (T13.2)', () => {
       <ChannelAclEditor
         state={state}
         actions={createVoiceActions()}
+        kind="voice"
         parentId={undefined}
         value={DEFAULT_ACL}
         onChange={vi.fn()}
@@ -90,6 +92,7 @@ describe('ChannelAclEditor (T13.2)', () => {
       <ChannelAclEditor
         state={state}
         actions={createVoiceActions()}
+        kind="voice"
         parentId={undefined}
         value={value}
         onChange={vi.fn()}
@@ -100,6 +103,11 @@ describe('ChannelAclEditor (T13.2)', () => {
     expect(screen.getByText('Moderator')).toBeInTheDocument();
     expect(screen.queryByText('g-member')).not.toBeInTheDocument();
     expect(screen.queryByText('g-mod')).not.toBeInTheDocument();
+
+    // T13.2.1 QA — each group checkbox's accessible name is the real group name, confirming the
+    // wrapping `<label>` association actually works for assistive tech, not just visual proximity.
+    expect(screen.getByLabelText('Member')).toBeInstanceOf(HTMLInputElement);
+    expect(screen.getByLabelText('Moderator')).toBeInstanceOf(HTMLInputElement);
   });
 
   it('resolves an inherit-chain to the nearest explicit ancestor, showing group names once resolved', async () => {
@@ -129,6 +137,7 @@ describe('ChannelAclEditor (T13.2)', () => {
       <ChannelAclEditor
         state={state}
         actions={actions}
+        kind="voice"
         parentId="games"
         value={DEFAULT_ACL}
         onChange={vi.fn()}
@@ -158,6 +167,7 @@ describe('ChannelAclEditor (T13.2)', () => {
       <ChannelAclEditor
         state={state}
         actions={createVoiceActions()}
+        kind="voice"
         parentId={undefined}
         value={value}
         onChange={vi.fn()}
@@ -188,6 +198,7 @@ describe('ChannelAclEditor (T13.2)', () => {
       <ChannelAclEditor
         state={state}
         actions={actions}
+        kind="voice"
         parentId="games"
         value={DEFAULT_ACL}
         onChange={vi.fn()}
@@ -199,5 +210,65 @@ describe('ChannelAclEditor (T13.2)', () => {
     });
     expect(screen.getByText(/Inherited from .GAMES./)).toBeInTheDocument();
     expect(screen.queryByText(/Allowed:/)).not.toBeInTheDocument();
+  });
+
+  describe('T13.2.1 — category vs. voice-channel copy', () => {
+    it('voice kind renders the unchanged channel legends', () => {
+      render(
+        <ChannelAclEditor
+          state={createVoiceState()}
+          actions={createVoiceActions()}
+          kind="voice"
+          parentId={undefined}
+          value={DEFAULT_ACL}
+          onChange={vi.fn()}
+        />,
+      );
+
+      expect(screen.getByText('Who can see this channel?')).toBeInTheDocument();
+      expect(screen.getByText('Who can join this channel?')).toBeInTheDocument();
+      expect(screen.getByText('Who can manage this channel?')).toBeInTheDocument();
+      expect(screen.queryByText(/this category/i)).not.toBeInTheDocument();
+    });
+
+    it('category kind never claims a category is directly joinable', () => {
+      render(
+        <ChannelAclEditor
+          state={createVoiceState()}
+          actions={createVoiceActions()}
+          kind="category"
+          parentId={undefined}
+          value={DEFAULT_ACL}
+          onChange={vi.fn()}
+        />,
+      );
+
+      expect(screen.getByText('Who can see this category?')).toBeInTheDocument();
+      expect(screen.getByText('Who can join channels inside this category?')).toBeInTheDocument();
+      expect(screen.getByText('Who can manage this category?')).toBeInTheDocument();
+      expect(screen.queryByText('Who can join this channel?')).not.toBeInTheDocument();
+      expect(
+        screen.getByText('Child channels inherit this unless they set their own join policy.'),
+      ).toBeInTheDocument();
+    });
+
+    it('the top-level "Same as parent" caveat is a short, honest note, never a raw permission key', () => {
+      render(
+        <ChannelAclEditor
+          state={createVoiceState()}
+          actions={createVoiceActions()}
+          kind="voice"
+          parentId={undefined}
+          value={DEFAULT_ACL}
+          onChange={vi.fn()}
+        />,
+      );
+
+      expect(screen.getAllByText('Same as parent').length).toBeGreaterThan(0);
+      expect(
+        screen.getByText(/no parent — only server administrators can manage it/),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/channels\.manage/)).not.toBeInTheDocument();
+    });
   });
 });

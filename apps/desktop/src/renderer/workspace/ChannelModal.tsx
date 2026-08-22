@@ -490,6 +490,7 @@ export function ChannelModal({
           <ChannelAclEditor
             state={state}
             actions={actions}
+            kind="voice"
             parentId={parentId}
             value={acl}
             onChange={(patch) => {

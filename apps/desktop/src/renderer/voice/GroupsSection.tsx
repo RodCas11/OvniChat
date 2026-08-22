@@ -4,29 +4,18 @@ import type { PermissionKey } from '@disco-voador/protocol';
 
 import { Button } from '../ui/Button.js';
 import type { VoiceChannelActions, VoiceChannelState } from './use-voice-channel.js';
+import {
+  allPermissionsByCategory,
+  groupPermissionsByCategory,
+  isFullPermissionSet,
+  PERMISSION_PRESENTATION,
+} from './permission-presentation.js';
 import styles from './AuthorizationPanel.module.css';
 
 interface GroupsSectionProps {
   readonly state: VoiceChannelState;
   readonly actions: VoiceChannelActions;
 }
-
-const PERMISSION_LABELS: Record<PermissionKey, string> = {
-  'voice.channel.join': 'Join voice channels',
-  'moderation.kick': 'Kick',
-  'moderation.ban': 'Ban',
-  'authorization.groups.manage': 'Manage groups',
-  'authorization.memberships.manage': 'Manage memberships',
-  'authorization.tokens.manage': 'Manage tokens',
-  'server.manage': 'Manage server',
-  'chat.server.send': 'Send server chat',
-  'chat.channel.send': 'Send channel chat',
-  'channels.create': 'Create channels',
-  'channels.manage': 'Manage all channels',
-  'channels.delete': 'Delete channels',
-  'channels.password.bypass': 'Bypass channel passwords',
-};
-const ALL_PERMISSION_KEYS = Object.keys(PERMISSION_LABELS) as readonly PermissionKey[];
 
 /**
  * T9/T13.2 — extracted from `AuthorizationPanel.tsx` (unchanged behavior/markup); see
@@ -73,9 +62,10 @@ export function GroupsSection({ state, actions }: GroupsSectionProps): ReactElem
           <ul className={styles.list}>
             {(state.groups ?? []).map((group) => (
               <li key={group.groupId} className={styles.listRow}>
-                <span>
-                  {group.name} ({group.permissions.join(', ') || 'no permissions'})
-                </span>
+                <div className={styles.groupSummary}>
+                  <span className={styles.groupName}>{group.name}</span>
+                  <GroupPermissionSummary permissions={group.permissions} />
+                </div>
                 {!group.protectedGroup && (
                   <Button
                     variant="danger"
@@ -102,18 +92,29 @@ export function GroupsSection({ state, actions }: GroupsSectionProps): ReactElem
                 maxLength={64}
               />
             </label>
-            <div className={styles.checkboxGrid}>
-              {ALL_PERMISSION_KEYS.map((permission) => (
-                <label key={permission} className={styles.checkboxField}>
-                  <input
-                    type="checkbox"
-                    checked={newGroupPermissions.includes(permission)}
-                    onChange={() => {
-                      togglePermission(permission);
-                    }}
-                  />
-                  {PERMISSION_LABELS[permission]}
-                </label>
+            <div className={styles.permissionCategories}>
+              {allPermissionsByCategory().map((group) => (
+                <div key={group.category} className={styles.permissionCategory}>
+                  <h5 className={styles.permissionCategoryTitle}>{group.category}</h5>
+                  <div className={styles.checkboxGrid}>
+                    {group.keys.map((permission) => (
+                      <label
+                        key={permission}
+                        className={styles.checkboxField}
+                        title={PERMISSION_PRESENTATION[permission].description}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={newGroupPermissions.includes(permission)}
+                          onChange={() => {
+                            togglePermission(permission);
+                          }}
+                        />
+                        {PERMISSION_PRESENTATION[permission].label}
+                      </label>
+                    ))}
+                  </div>
+                </div>
               ))}
             </div>
             <Button variant="secondary" type="submit" disabled={newGroupName.trim().length === 0}>
@@ -186,5 +187,37 @@ export function GroupsSection({ state, actions }: GroupsSectionProps): ReactElem
           </section>
         )}
     </>
+  );
+}
+
+/**
+ * T13.2.1 — replaces the previous raw `permissions.join(', ')` dump: a group holding literally every
+ * current permission (the built-in `server-admin` group, or any custom group an operator happens to
+ * build up to the same set) gets a one-line "Full server administration" summary instead of a
+ * 13-item list, computed via {@link isFullPermissionSet} (a real comparison against the full
+ * registry, never a hardcoded group id/name check — a custom group can legitimately reach this same
+ * state). Every other group renders its categorized, human-readable permission list, omitting any
+ * category it holds nothing in — never a raw permission-key substring.
+ */
+function GroupPermissionSummary({
+  permissions,
+}: {
+  readonly permissions: readonly PermissionKey[];
+}): ReactElement {
+  if (permissions.length === 0) {
+    return <span className={styles.groupPermissions}>No permissions</span>;
+  }
+  if (isFullPermissionSet(permissions)) {
+    return <span className={styles.groupPermissions}>Full server administration</span>;
+  }
+  return (
+    <span className={styles.groupPermissions}>
+      {groupPermissionsByCategory(permissions)
+        .map(
+          (group) =>
+            `${group.category}: ${group.keys.map((key) => PERMISSION_PRESENTATION[key].label).join(', ')}`,
+        )
+        .join(' • ')}
+    </span>
   );
 }

@@ -83,6 +83,14 @@
   color: var(--ovni-text-primary);
 }
 
+/* T13.2.1 — the "no parent" caveat split out of the inherit option's own label (see
+   `ChannelAclEditor.tsx`'s `AclAxisOption.caveat` doc comment): muted and smaller than the primary
+   label it follows, never its own separate line. */
+.radioCaveat {
+  color: var(--ovni-text-tertiary);
+  font-size: var(--ovni-text-xs);
+}
+
 .checkboxGrid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

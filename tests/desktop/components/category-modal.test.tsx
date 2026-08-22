@@ -55,7 +55,10 @@ describe('CategoryModal (T13.2)', () => {
     expect(screen.queryByText(/permanent/i)).not.toBeInTheDocument();
     // Still has the real fields it does own.
     expect(screen.getByTestId('category-modal-name')).toBeInTheDocument();
-    expect(screen.getByText('Who can see this channel?')).toBeInTheDocument();
+    expect(screen.getByText('Who can see this category?')).toBeInTheDocument();
+    expect(screen.queryByText('Who can see this channel?')).not.toBeInTheDocument();
+    // T13.2.1 — a category is never joinable itself; the Join axis legend must not imply otherwise.
+    expect(screen.queryByText('Who can join this channel?')).not.toBeInTheDocument();
   });
 
   it('never shows a parent picker — categories are always top-level', () => {

@@ -567,8 +567,11 @@ administration (T13.2 — categories, voice channels, subchannels, TeamSpeak-sty
 group-based Visibility/Join/Manage access control with inheritance, optional user limits and scrypt
 passwords, tombstone deletion, live per-connection-filtered catalog updates, and a full Renderer admin
 UI reusing the T13.1/T13.1.1 design system — all administered live from the Client, no server restart,
-no hand-edited config) are all implemented, mechanism-verified, and live-verified end to end. The
-product is now marketed as **OvniChat** (see [`PRODUCT.md`](PRODUCT.md)); the internal
+no hand-edited config), and that admin experience's own presentation polish (T13.2.1 — human-readable
+permission labels replacing raw `PermissionKey` strings in Groups & Permissions, and category-accurate
+ACL wording replacing channel-specific copy on the non-joinable Category form — presentation only, no
+authorization/protocol/storage change) are all implemented, mechanism-verified, and live-verified end
+to end. The product is now marketed as **OvniChat** (see [`PRODUCT.md`](PRODUCT.md)); the internal
 `@disco-voador/*` package namespace is unchanged.
 
 ## What should happen next?
@@ -578,7 +581,7 @@ task into a five-part Product Experience series (T13.1-T13.5) — see
 [`tasks/STATUS.md`](tasks/STATUS.md) for the full renumbering (production self-hosting is now T14,
 installer/releases T15, private-beta polish T16, SFU T17, hardening/release-candidate T18).
 **T13.3 — Profiles / Avatars / Members / Presence** is next, building on the channel administration
-system T13.2 established. Do not implement it until its own task document exists.
+system T13.2/T13.2.1 established. Do not implement it until its own task document exists.
 
 Non-blocking follow-ups still open, cheap relative to the risk they guard against: (1) ~~a
 frequency-domain (e.g. dominant-frequency-near-440Hz) check for `e2e:screen-audio-smoke`'s
@@ -1030,6 +1033,41 @@ handoff notes and
 [`architecture/CHANNELS_AND_SERVER_ADMINISTRATION.md`](architecture/CHANNELS_AND_SERVER_ADMINISTRATION.md)
 for the full record, including the storage/ACL/password/temporary-channel/tombstone design (ADR 0019),
 the security-fix detail, and the Renderer admin-UI summary.
+
+T13.2.1’s clean-state evidence is the same gate with 1273 Vitest tests (up from T13.2’s 1258; the same
+one pre-existing, already-allowlisted high-severity dependency advisory — T13.2.1 introduced zero new
+npm dependencies and touched no `services/realtime`/`services/dedicated-server`/`packages/protocol`
+file) — formatting, lint, whole-repo typecheck, `vitest run`, composite build, and
+`verify-repository.mjs` all pass. This was a small, presentation-only follow-up fixing two product-
+language problems T13.2’s own handoff notes and final review surfaced: the Groups & Permissions panel
+rendered raw, comma-joined `PermissionKey` strings (e.g. `authorization.groups.manage,
+chat.channel.send`) instead of human labels, and `ChannelAclEditor.tsx` used channel-specific wording
+(“Who can join this channel?”) even when editing a category, which is never itself joinable. A new,
+pure `permission-presentation.ts` module maps all 13 current permission keys to a label/description/
+category (completeness enforced by both a `Record<PermissionKey, ...>` literal’s own type-checking and
+a dedicated runtime test), `GroupsSection.tsx` now renders a categorized, human-readable summary per
+group (a “Full server administration” special case computed by real comparison against the full
+registry, never a hardcoded group id), and `ChannelAclEditor.tsx` gained a `kind: NodeKind` prop
+branching its three axis legends correctly for categories vs. channels — the wire value sent to
+`createGroup`/`updateGroup` is completely unchanged throughout; only rendered labels changed. Its own
+required real-runtime evidence: `e2e:authorization`, `e2e:channel-admin-smoke`,
+`e2e:product-shell-smoke`, and `e2e:channel-hidden-smoke` were all re-run against the final,
+freshly-rebuilt Electron + Dedicated Server and pass — no regression, confirming (per this task’s own
+explicit requirement) that a presentation-only Renderer change left every T9/T13.2 authorization and
+hidden-channel invariant intact. Fourteen real screenshots from an actual packaged Electron instance
+were captured and personally visually reviewed twice (once before, once after two real findings were
+fixed) — no raw permission key is visible anywhere in the final set. **T13.2.1 is marked COMPLETE in
+[`tasks/STATUS.md`](tasks/STATUS.md)** — `qa-engineer` found and fixed one real, confirmed gap (the
+task’s own explicitly-required 1366×768 screenshot of Groups & Permissions had never actually been
+captured — the existing capture point resized only _after_ the relevant modal had already closed;
+fixed by adding a new, correctly-timed capture point to the same E2E-only, `!app.isPackaged`-gated
+Main-process screenshot instrumentation already in place) and correctly reported, rather than guessed
+a fix for, one copy inconsistency (`authorization.memberships.manage`’s label said “roles” while every
+other surface in the same panel says “groups”) — resolved by this task renaming the label to “Manage
+member groups” and re-capturing all screenshots to confirm the corrected wording. All Definition of
+Done items are satisfied. See
+[`tasks/T13_2_1_ADMIN_UX_POLISH.md`](tasks/T13_2_1_ADMIN_UX_POLISH.md)’s handoff notes for the full
+record.
 
 Then perform the task’s required manual/platform checks. Apply
 [`DEFINITION_OF_DONE.md`](DEFINITION_OF_DONE.md) and update status only when every applicable item

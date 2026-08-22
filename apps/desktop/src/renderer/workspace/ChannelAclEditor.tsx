@@ -1,6 +1,11 @@
 import { useEffect, useRef, useState, type ReactElement, type ReactNode } from 'react';
 
-import type { AclPolicyKind, ChannelNodeAdminView, ManagePolicyKind } from '@disco-voador/protocol';
+import type {
+  AclPolicyKind,
+  ChannelNodeAdminView,
+  ManagePolicyKind,
+  NodeKind,
+} from '@disco-voador/protocol';
 
 import type { VoiceChannelActions, VoiceChannelState } from '../voice/use-voice-channel.js';
 import {
@@ -23,6 +28,13 @@ export interface ChannelAclValue {
 interface ChannelAclEditorProps {
   readonly state: VoiceChannelState;
   readonly actions: VoiceChannelActions;
+  /** T13.2.1 — `'voice'` (from `ChannelModal.tsx`) or `'category'` (from `CategoryModal.tsx`).
+   * Categories are never joinable themselves — a category's "Join" axis is really the default a
+   * descendant channel inherits, not something a participant does to the category directly — so this
+   * selects legend/copy only; it never changes the underlying ACL fields, wire shape, or resolution
+   * algorithm, which are identical for both node kinds (`channelNodeSchema` does not distinguish
+   * them). */
+  readonly kind: NodeKind;
   /** The node's real parent (Edit), or the intended parent (Create) — `undefined` for a top-level
    * node. Used only to resolve what "Same as parent" would currently mean, exactly mirroring
    * `ChannelPort`'s own nearest-non-inherit-ancestor walk via `channel-tree.ts`'s read-only mirror
@@ -42,6 +54,7 @@ interface ChannelAclEditorProps {
 export function ChannelAclEditor({
   state,
   actions,
+  kind,
   parentId,
   value,
   onChange,
@@ -101,13 +114,12 @@ export function ChannelAclEditor({
       <h4 className={styles.sectionTitle}>Permissions</h4>
 
       <AclAxis
-        legend="Who can see this channel?"
+        legend={kind === 'category' ? 'Who can see this category?' : 'Who can see this channel?'}
         options={[
           {
             value: 'inherit',
-            label: parentId
-              ? 'Same as parent'
-              : 'Same as parent (defaults to Everyone — no parent)',
+            label: 'Same as parent',
+            ...(parentId ? {} : { caveat: 'defaults to Everyone — no parent' }),
           },
           { value: 'everyone', label: 'Everyone' },
           { value: 'selected-groups', label: 'Selected groups' },
@@ -137,13 +149,19 @@ export function ChannelAclEditor({
       </AclAxis>
 
       <AclAxis
-        legend="Who can join this channel?"
+        legend={
+          kind === 'category'
+            ? 'Who can join channels inside this category?'
+            : 'Who can join this channel?'
+        }
+        {...(kind === 'category'
+          ? { hint: 'Child channels inherit this unless they set their own join policy.' }
+          : {})}
         options={[
           {
             value: 'inherit',
-            label: parentId
-              ? 'Same as parent'
-              : 'Same as parent (defaults to Everyone — no parent)',
+            label: 'Same as parent',
+            ...(parentId ? {} : { caveat: 'defaults to Everyone — no parent' }),
           },
           { value: 'everyone', label: 'Everyone' },
           { value: 'selected-groups', label: 'Selected groups' },
@@ -173,13 +191,14 @@ export function ChannelAclEditor({
       </AclAxis>
 
       <AclAxis
-        legend="Who can manage this channel?"
+        legend={
+          kind === 'category' ? 'Who can manage this category?' : 'Who can manage this channel?'
+        }
         options={[
           {
             value: 'inherit',
-            label: parentId
-              ? 'Same as parent'
-              : 'Same as parent (no parent — only Server Admins with the global Manage permission)',
+            label: 'Same as parent',
+            ...(parentId ? {} : { caveat: 'no parent — only server administrators can manage it' }),
           },
           { value: 'selected-groups', label: 'Selected groups' },
         ]}
@@ -213,10 +232,16 @@ export function ChannelAclEditor({
 interface AclAxisOption {
   readonly value: string;
   readonly label: string;
+  /** T13.2.1 — the "no parent" caveat for the `'inherit'` option, split out of the option's own
+   * `label` (previously a single long string, e.g. "Same as parent (defaults to Everyone — no
+   * parent)") into a short primary label plus this muted secondary note, shown only when relevant
+   * (i.e. only the caller passes it, which it does only when `parentId` is `undefined`). */
+  readonly caveat?: string;
 }
 
 function AclAxis({
   legend,
+  hint,
   options,
   selected,
   onSelect,
@@ -224,6 +249,10 @@ function AclAxis({
   children,
 }: {
   readonly legend: string;
+  /** T13.2.1 — optional clarifying text rendered under the legend, above the radio options
+   * (currently used only by the category-kind Join axis, to explain that this sets a default for
+   * descendant channels rather than a "join the category" permission). */
+  readonly hint?: string;
   readonly options: readonly AclAxisOption[];
   readonly selected: string;
   readonly onSelect: (value: string) => void;
@@ -233,6 +262,7 @@ function AclAxis({
   return (
     <fieldset className={styles.field} style={{ border: 'none', margin: 0, padding: 0 }}>
       <legend className={styles.fieldLabel}>{legend}</legend>
+      {hint && <p className={styles.hint}>{hint}</p>}
       <div className={styles.radioGroup}>
         {options.map((option) => (
           <label key={option.value} className={styles.radioOption}>
@@ -245,7 +275,10 @@ function AclAxis({
                 onSelect(option.value);
               }}
             />
-            {option.label}
+            <span>
+              {option.label}
+              {option.caveat && <span className={styles.radioCaveat}> ({option.caveat})</span>}
+            </span>
           </label>
         ))}
       </div>

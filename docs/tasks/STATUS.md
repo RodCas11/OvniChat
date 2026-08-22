@@ -18,6 +18,7 @@
 | [T13.1](T13_1_VISUAL_FOUNDATION.md)      | COMPLETE    | Visual foundation & main application layout                     |
 | [T13.1.1](T13_1_1_VISUAL_POLISH.md)      | COMPLETE    | Visual polish & UX refinement                                   |
 | [T13.2](T13_2_CHANNEL_ADMINISTRATION.md) | COMPLETE    | Channels & server administration                                |
+| [T13.2.1](T13_2_1_ADMIN_UX_POLISH.md)    | COMPLETE    | Administration UX polish (permission labels, category ACL copy) |
 | T13.3                                    | NOT STARTED | Profiles / avatars / members / presence                         |
 | T13.4                                    | NOT STARTED | Gamer voice experience                                          |
 | T13.5                                    | NOT STARTED | Streams / camera / product integration                          |

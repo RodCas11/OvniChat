@@ -113,6 +113,51 @@
   gap: var(--ovni-space-2);
   font-size: var(--ovni-text-sm);
   color: var(--ovni-text-secondary);
+  /* T13.2.1 — same fix `ChannelAdminForm.module.css`'s own `.checkboxField` already carries from
+     T13.2's QA pass: a group name (up to 64 chars, no spaces) or a permission label must wrap rather
+     than overflow its `minmax(0, 1fr)` grid track. */
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.groupSummary {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.groupName {
+  color: var(--ovni-text-primary);
+  font-weight: 600;
+}
+
+.groupPermissions {
+  color: var(--ovni-text-secondary);
+  font-size: var(--ovni-text-xs);
+}
+
+.permissionCategories {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ovni-space-3);
+  width: 100%;
+}
+
+.permissionCategory {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ovni-space-1);
+}
+
+.permissionCategoryTitle {
+  margin: 0;
+  font-size: var(--ovni-text-xs);
+  font-weight: 700;
+  color: var(--ovni-text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
 .tokenReveal {

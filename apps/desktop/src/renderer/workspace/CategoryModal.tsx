@@ -178,6 +178,7 @@ export function CategoryModal({
           <ChannelAclEditor
             state={state}
             actions={actions}
+            kind="category"
             parentId={undefined}
             value={acl}
             onChange={(patch) => {

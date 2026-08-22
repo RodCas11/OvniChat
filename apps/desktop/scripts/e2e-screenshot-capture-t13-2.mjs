@@ -449,6 +449,7 @@ async function main() {
       '07-channel-permissions.png',
       '06-move-channel.png',
       '11-server-settings-permissions.png',
+      '14-server-settings-permissions-1366x768.png',
       '13-admin-1366x768.png',
     ];
     for (const name of adminScreenshots) {
@@ -489,6 +490,7 @@ async function main() {
       '11-server-settings-permissions.png',
       '12-channel-sidebar-normal-user.png',
       '13-admin-1366x768.png',
+      '14-server-settings-permissions-1366x768.png',
     ];
     const allOk = allNames.map(reportFile).every(Boolean);
     if (!allOk) {

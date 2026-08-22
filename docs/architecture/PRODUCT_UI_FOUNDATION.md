@@ -269,6 +269,32 @@ always-on background tint rather than only a hover/color change.
 See [`tasks/T13_1_1_VISUAL_POLISH.md`](../tasks/T13_1_1_VISUAL_POLISH.md) for the full evidence record
 (screenshots, security/QA review findings, regression results).
 
+## T13.2.1 — administration UX polish
+
+T13.2's own handoff notes recorded, as an accepted out-of-scope rough edge, that the reused T9 Groups
+& Permissions panel rendered raw `PermissionKey` strings (e.g. `chat.channel.send,
+voice.channel.join`) rather than human-readable labels. T13.2.1 is the follow-up: a new, pure
+presentation module, `apps/desktop/src/renderer/voice/permission-presentation.ts`, maps every current
+`PermissionKey` to a human-readable label, an optional one-line description, and one of four
+categories (Voice & Chat / Channels / Moderation / Server Management) — completeness enforced both by
+a `Record<PermissionKey, ...>` literal's own type-checking and a dedicated runtime test enumerating
+the real registry. `GroupsSection.tsx` now renders each group's permissions as a categorized,
+human-readable summary (a "Full server administration" special case for a group holding literally
+every permission, computed by real comparison against the registry, not a hardcoded group id), and the
+Create Group form's checkbox grid is grouped under the same category headings — the wire value sent to
+`createGroup`/`updateGroup` is unchanged.
+
+A second, independently-found issue was fixed in the same task: `ChannelAclEditor.tsx` is shared
+unchanged between `ChannelModal.tsx` (voice channels) and `CategoryModal.tsx` (categories), and
+hardcoded channel-specific legends ("Who can join this channel?") for both, even though a category is
+never joinable itself — its "Join" axis is really the default a descendant channel inherits.
+`ChannelAclEditor` now takes a required `kind: NodeKind` prop branching the three axis legends
+accordingly, with a helper note under the category Join axis clarifying the inheritance relationship.
+The "Same as parent" inherit option's caveat ("no parent" case) was also split into a short primary
+label plus a muted secondary note, verified truthful against `channel-port.ts`'s own ACL-resolution
+doc comment rather than guessed. See
+[`tasks/T13_2_1_ADMIN_UX_POLISH.md`](../tasks/T13_2_1_ADMIN_UX_POLISH.md) for the full record.
+
 ## What T13.1 deliberately does not do
 
 Channel create/edit/delete/hierarchy and richer server admin UX (T13.2); real server/user avatar

@@ -1211,6 +1211,19 @@ function armE2EChannelAdminScreenshotCapture(window: BrowserWindow): void {
         await wait(500);
         await saveCapture('11-server-settings-permissions.png');
 
+        // T13.2.1 — T13.2's own DoD named a 1366x768 admin screenshot showing "Groups & Permissions
+        // or Category ACL" specifically (never satisfied: the prior `13-admin-1366x768.png` below
+        // resizes only after the Server Settings modal is already closed, so it never actually shows
+        // this surface at this resolution). Captured here, before the modal closes, at the same
+        // Groups & Permissions state screenshot 11 already captured at 1920x1080 — proving the
+        // "Owner" group's long, categorized permission summary line wraps rather than overflows at
+        // the smaller width.
+        window.setBounds({ width: 1366, height: 768 });
+        await wait(500);
+        await saveCapture('14-server-settings-permissions-1366x768.png');
+        window.setBounds({ width: 1920, height: 1080 });
+        await wait(300);
+
         await closeModal('server-settings-modal');
         await wait(400);
 
