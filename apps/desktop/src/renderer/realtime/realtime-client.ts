@@ -2,10 +2,13 @@ import {
   CURRENT_PROTOCOL_VERSION,
   parseServerMessage,
   type AclPolicyKind,
+  type AvatarImageFormat,
+  type AvatarRef,
   type ChatScope,
   type ClientMessage,
   type ManagePolicyKind,
   type PermissionKey,
+  type PresenceStatus,
   type ServerAuthorizationAckMessage,
   type ServerAuthorizationBansMessage,
   type ServerAuthorizationGroupsMessage,
@@ -22,6 +25,11 @@ import {
   type ServerIdentityChallengeMessage,
   type ServerMediaTrackSourceMessage,
   type ServerMessage,
+  type ServerPresenceRemovedMessage,
+  type ServerPresenceSnapshotMessage,
+  type ServerPresenceUpdatedMessage,
+  type ServerProfileAvatarDataMessage,
+  type ServerProfileSelfUpdatedMessage,
   type ServerVoiceCatalogMessage,
   type ServerVoiceJoinedMessage,
   type ServerVoiceLeftMessage,
@@ -51,6 +59,10 @@ export type RealtimeConnectionState = 'connecting' | 'authenticating' | 'open' |
 export interface ServerInfo {
   readonly serverName: string;
   readonly serverCapabilities: readonly ServerCapability[];
+  /** T13.3 — the server's own current avatar, if any, known at connect time without a round trip
+   * (`server:hello`'s optional `serverAvatarRef` field). `undefined` means the server has no avatar
+   * set — never fabricated/guessed. */
+  readonly serverAvatarRef: AvatarRef | undefined;
 }
 
 /** The raw WebSocket close code/reason for the most recent close — see `reconnect-policy.ts` for
@@ -107,6 +119,20 @@ interface RealtimeClientEvents {
   /** T13.2 — this connection was force-removed from a voice channel by a live ACL/group change,
    * distinct from a self-initiated leave or a moderation kick/ban. */
   voiceRemovedByPolicy: (message: ServerVoiceRemovedByPolicyMessage) => void;
+  /** T13.3 — reply to a self-service `client:profile-*` mutation, or (by extension, since the
+   * server reuses this same reply shape) the actor's own ack for a `target: 'server'`/`'member'`
+   * mutation — see `packages/protocol/src/messages/profile.ts`'s own doc comment on why there is no
+   * separate ack type. */
+  profileSelfUpdated: (message: ServerProfileSelfUpdatedMessage) => void;
+  /** T13.3 — reply to `client:profile-request-avatar`. */
+  profileAvatarData: (message: ServerProfileAvatarDataMessage) => void;
+  /** T13.3 — the full online-member presence snapshot, sent once when this connection becomes
+   * `ready`. */
+  presenceSnapshot: (message: ServerPresenceSnapshotMessage) => void;
+  /** T13.3 — a member came online, or had a live profile/presence mutation. */
+  presenceUpdated: (message: ServerPresenceUpdatedMessage) => void;
+  /** T13.3 — a member's last live connection closed. */
+  presenceRemoved: (message: ServerPresenceRemovedMessage) => void;
 }
 
 /** T13.2 — a leave-unchanged/set/clear-shaped patch for `client:channel-update`, mirroring that
@@ -177,6 +203,11 @@ export class RealtimeClient implements SignalingPort {
       channelAck: new Set(),
       channelEditableNode: new Set(),
       voiceRemovedByPolicy: new Set(),
+      profileSelfUpdated: new Set(),
+      profileAvatarData: new Set(),
+      presenceSnapshot: new Set(),
+      presenceUpdated: new Set(),
+      presenceRemoved: new Set(),
     };
 
   constructor(
@@ -582,6 +613,77 @@ export class RealtimeClient implements SignalingPort {
     return id;
   }
 
+  // --- T13.3 profile/avatar/presence ----------------------------------------------------------
+  // Every method returns the generated request `id`, mirroring the T13.2 channel-administration
+  // methods above exactly — the server always derives the actor's identity/permissions from the
+  // authenticated connection itself, never from any field these methods send.
+
+  /** `target: 'self'` needs no special permission; `target: 'server'` requires `server.manage`
+   * (the server rejects otherwise with an ordinary `server:error`). */
+  setAvatar(target: 'self' | 'server', format: AvatarImageFormat, imageBase64: string): string {
+    const id = generateMessageId();
+    this.send({ type: 'client:profile-set-avatar', id, target, format, imageBase64 });
+    return id;
+  }
+
+  clearSelfAvatar(): string {
+    const id = generateMessageId();
+    this.send({ type: 'client:profile-clear-avatar', id, target: 'self' });
+    return id;
+  }
+
+  /** Requires `server.manage`. */
+  clearServerAvatar(): string {
+    const id = generateMessageId();
+    this.send({ type: 'client:profile-clear-avatar', id, target: 'server' });
+    return id;
+  }
+
+  /** Requires `moderation.profile.clear`; clears only — never sets another member's avatar. */
+  clearMemberAvatar(memberRef: string): string {
+    const id = generateMessageId();
+    this.send({ type: 'client:profile-clear-avatar', id, target: 'member', memberRef });
+    return id;
+  }
+
+  /** Self-service only — omitting/empty `customStatus` clears it. */
+  setCustomStatus(customStatus?: string): string {
+    const id = generateMessageId();
+    this.send({
+      type: 'client:profile-set-status',
+      id,
+      ...(customStatus !== undefined ? { customStatus } : {}),
+    });
+    return id;
+  }
+
+  /** Requires `moderation.profile.clear`; clears only — never sets another member's status. */
+  clearMemberStatus(memberRef: string): string {
+    const id = generateMessageId();
+    this.send({ type: 'client:profile-clear-member-status', id, memberRef });
+    return id;
+  }
+
+  /** Self-service only — sets this connection's own manual presence preference. */
+  setPresence(presence: PresenceStatus): string {
+    const id = generateMessageId();
+    this.send({ type: 'client:profile-set-presence', id, presence });
+    return id;
+  }
+
+  /** Pull-based avatar byte fetch — a `memberRef` naming a currently-offline/unknown member
+   * replies with the non-fatal `MEMBER_NOT_FOUND`. */
+  requestAvatar(target: 'self' | 'server' | 'member', memberRef?: string): string {
+    const id = generateMessageId();
+    this.send({
+      type: 'client:profile-request-avatar',
+      id,
+      target,
+      ...(memberRef !== undefined ? { memberRef } : {}),
+    });
+    return id;
+  }
+
   private send(message: ClientMessage): void {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
       console.error('realtime-client: dropped a message because the socket is not open', {
@@ -625,6 +727,7 @@ export class RealtimeClient implements SignalingPort {
         this.emit('serverInfo', {
           serverName: message.serverName,
           serverCapabilities: message.serverCapabilities,
+          serverAvatarRef: message.serverAvatarRef,
         });
         this.emit('stateChange', 'open');
         return;
@@ -698,6 +801,21 @@ export class RealtimeClient implements SignalingPort {
         return;
       case 'server:voice-removed-by-policy':
         this.emit('voiceRemovedByPolicy', message);
+        return;
+      case 'server:profile-self-updated':
+        this.emit('profileSelfUpdated', message);
+        return;
+      case 'server:profile-avatar-data':
+        this.emit('profileAvatarData', message);
+        return;
+      case 'server:presence-snapshot':
+        this.emit('presenceSnapshot', message);
+        return;
+      case 'server:presence-updated':
+        this.emit('presenceUpdated', message);
+        return;
+      case 'server:presence-removed':
+        this.emit('presenceRemoved', message);
         return;
     }
   }

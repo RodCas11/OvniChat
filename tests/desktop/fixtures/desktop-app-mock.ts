@@ -62,6 +62,10 @@ export function createDesktopAppMock(overrides: Partial<DesktopApi> = {}): Deskt
       ),
     updateBookmark: vi.fn().mockResolvedValue(true),
     removeBookmark: vi.fn().mockResolvedValue(true),
+    selectAvatarImageFile: vi.fn().mockResolvedValue(undefined),
+    validateAvatarImageBytes: vi
+      .fn()
+      .mockResolvedValue({ ok: true, format: 'png', width: 64, height: 64 }),
     ...overrides,
   } as unknown as DesktopApi;
 }

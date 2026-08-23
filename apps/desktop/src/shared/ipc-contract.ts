@@ -1,3 +1,4 @@
+import type { AvatarImageFormat } from '@disco-voador/protocol';
 import type { RtcIceServerConfig } from '@disco-voador/rtc-core';
 
 /**
@@ -51,6 +52,9 @@ export const IPC_CHANNELS = {
   addBookmark: 'app:add-bookmark',
   updateBookmark: 'app:update-bookmark',
   removeBookmark: 'app:remove-bookmark',
+  // T13.3 — profile/avatar image handling. See `main/avatar-images.ts`.
+  selectAvatarImageFile: 'app:select-avatar-image-file',
+  validateAvatarImageBytes: 'app:validate-avatar-image-bytes',
 } as const;
 
 export interface DesktopVersionInfo {
@@ -417,6 +421,60 @@ export interface DesktopBookmarkInput {
   readonly serverAddress: string;
 }
 
+/**
+ * T13.3 — the pixel-dimension ceiling a specific avatar-validation call should enforce: 512 for a
+ * user (`'self'`/a member's) avatar, 1024 for the server avatar — mirrors
+ * `packages/protocol/src/profile.ts`'s own documented ceilings exactly (the byte budget is the same
+ * for both; only this ceiling differs). A closed two-value union, not a bare `number`, so Main can
+ * cheaply reject a nonsensical value at the IPC boundary without needing to duplicate the actual
+ * business reasoning for why these two values are the only legitimate ones.
+ */
+export type AvatarMaxDimension = 512 | 1024;
+
+/** The failure shapes `@disco-voador/shared`'s `validateAvatarImage` can produce, plus
+ * `'AVATAR_TOO_LARGE'` (a raw-byte-length check that function does not itself perform — see
+ * `main/avatar-images.ts`). Deliberately a closed subset of `ErrorCode`, not the whole enum — only
+ * ever produced by this app's own local image validation, never round-tripped from the wire. */
+export type AvatarValidationFailureCode =
+  | 'AVATAR_TOO_LARGE'
+  | 'AVATAR_INVALID_FORMAT'
+  | 'AVATAR_DIMENSIONS_TOO_LARGE'
+  | 'AVATAR_ANIMATED_NOT_ALLOWED';
+
+/** The shared failure branch both {@link DesktopAvatarValidationResult} and
+ * {@link DesktopAvatarPickResult} use — factored out so a helper that only ever produces a failure
+ * (e.g. a shared raw-byte-length check) can declare a return type that is actually assignable to
+ * either caller's own success/failure union, rather than the two independently-declared failure
+ * shapes silently drifting apart or forcing an unsafe cast at a shared call site. */
+export interface AvatarValidationFailure {
+  readonly ok: false;
+  readonly code: AvatarValidationFailureCode;
+  readonly message: string;
+}
+
+export type DesktopAvatarValidationResult =
+  | {
+      readonly ok: true;
+      readonly format: AvatarImageFormat;
+      readonly width: number;
+      readonly height: number;
+    }
+  | AvatarValidationFailure;
+
+/** Result of `selectAvatarImageFile` — `undefined` means the user dismissed the picker without
+ * choosing a file (not an error). A validation failure is reported the same shape
+ * {@link DesktopAvatarValidationResult} uses, plus the successfully-read bytes on the `ok` branch —
+ * **never a raw file path**, deliberately stricter than `DesktopScreenSource.id` (see this file's own
+ * `selectAvatarImageFile` doc comment on `DesktopApi` for why). */
+export type DesktopAvatarPickResult =
+  | {
+      readonly ok: true;
+      readonly format: AvatarImageFormat;
+      readonly byteLength: number;
+      readonly base64: string;
+    }
+  | AvatarValidationFailure;
+
 export interface DesktopApi {
   getVersionInfo: () => Promise<DesktopVersionInfo>;
   getRealtimeConfig: () => Promise<DesktopRealtimeConfig>;
@@ -511,4 +569,27 @@ export interface DesktopApi {
   updateBookmark: (bookmark: DesktopServerBookmark) => Promise<boolean>;
   /** Returns `false` (never throws) if `bookmarkId` does not match an existing bookmark. */
   removeBookmark: (bookmarkId: string) => Promise<boolean>;
+  /**
+   * T13.3 — opens a native file picker (image-extension filter is UX-only, never trusted) and, if
+   * the user chooses a file, reads it in Main and runs `@disco-voador/shared`'s `validateAvatarImage`
+   * against the real bytes before ever returning anything to the Renderer. Returns `undefined` if
+   * the user dismissed the picker; never returns a raw file path — see
+   * {@link DesktopAvatarPickResult}.
+   */
+  selectAvatarImageFile: (
+    maxDimension: AvatarMaxDimension,
+  ) => Promise<DesktopAvatarPickResult | undefined>;
+  /**
+   * T13.3 — re-validates avatar bytes the Renderer received FROM a remote Dedicated Server
+   * (`server:profile-avatar-data`) before they are ever cached or rendered — a hostile/compromised
+   * server operator is an untrusted input source into the local filesystem/renderer, so this must
+   * happen in Main (the same `validateAvatarImage` used for a locally-picked file), never trusted
+   * from the Renderer's own parsing of the wire message alone. `format`/`maxDimension` come from the
+   * already-schema-validated wire message this call is re-checking, not user-typed input.
+   */
+  validateAvatarImageBytes: (
+    base64: string,
+    format: AvatarImageFormat,
+    maxDimension: AvatarMaxDimension,
+  ) => Promise<DesktopAvatarValidationResult>;
 }

@@ -34,6 +34,10 @@ export const permissionKeySchema = z.enum([
   'authorization.groups.manage',
   'authorization.memberships.manage',
   'authorization.tokens.manage',
+  // T13.3 — this key's enforcement was "reserved for future server-level administration" prior to
+  // T13.3 (server-level administration with no concrete enforcement yet); it is now genuinely
+  // enforced for the first time, gating `client:profile-set-avatar{target:'server'}` /
+  // `client:profile-clear-avatar{target:'server'}` (see `messages/profile.ts`).
   'server.manage',
   // T10 — persistent server-side text chat. Reading history requires no permission (any `ready`
   // connection may request it; see `docs/architecture/PERSISTENT_TEXT_CHAT.md`), only sending does.
@@ -52,6 +56,13 @@ export const permissionKeySchema = z.enum([
   'channels.delete',
   /** Bypasses only the password *step* of `ChannelPort.checkJoin` — never visibility/join ACL. */
   'channels.password.bypass',
+  // T13.3 — profiles/avatars/members/presence. Deliberately separate from `moderation.kick`/
+  // `moderation.ban` (neither cleanly names "clear-only power over another member's presentation
+  // data") and from `server.manage` (server-level administration, not per-member moderation). Gates
+  // `client:profile-clear-avatar{target:'member'}`/`client:profile-clear-member-status` only —
+  // never lets the holder set arbitrary avatar/status content on another member's behalf, only
+  // clear it (see `messages/profile.ts`).
+  'moderation.profile.clear',
 ]);
 export type PermissionKey = z.infer<typeof permissionKeySchema>;
 

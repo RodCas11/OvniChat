@@ -11,7 +11,7 @@ import {
   VideoOff,
 } from 'lucide-react';
 
-import { Avatar } from '../ui/Avatar.js';
+import { UserAvatar } from '../ui/UserAvatar.js';
 import { IconButton } from '../ui/IconButton.js';
 import type { VoiceChannelActions, VoiceChannelState } from '../voice/use-voice-channel.js';
 import styles from './UserControlBar.module.css';
@@ -22,7 +22,15 @@ interface UserControlBarProps {
   readonly displayName: string;
   readonly onOpenSettings: () => void;
   readonly onOpenScreenPicker: () => void;
+  /** T13.3 — opens the Profile Editor (own avatar, custom status, presence). */
+  readonly onOpenProfile: () => void;
 }
+
+const PRESENCE_DOT_CLASS: Record<'online' | 'away' | 'dnd', string> = {
+  online: 'presenceOnline',
+  away: 'presenceAway',
+  dnd: 'presenceDnd',
+};
 
 /**
  * Bottom-persistent bar (T13.1) — wired to the existing, real mic-mute/deafen/camera/screen-share/
@@ -37,18 +45,42 @@ export function UserControlBar({
   displayName,
   onOpenSettings,
   onOpenScreenPicker,
+  onOpenProfile,
 }: UserControlBarProps): ReactElement {
   const inChannel = Boolean(state.currentChannelId);
+  const presenceDotClass = styles[PRESENCE_DOT_CLASS[state.selfPresence]];
 
   return (
     <div className={styles.bar}>
-      <div className={styles.identity}>
-        <Avatar name={displayName} />
+      <button
+        type="button"
+        className={styles.identityButton}
+        onClick={onOpenProfile}
+        aria-label="Open your profile"
+        data-testid="user-control-open-profile"
+      >
+        <span className={styles.avatarWrap}>
+          <UserAvatar
+            name={displayName}
+            avatarRef={state.selfAvatarRef}
+            avatarCache={state.avatarCache}
+            onRequestAvatar={() => {
+              actions.requestAvatar('self');
+            }}
+          />
+          {presenceDotClass && (
+            <span className={`${styles.presenceDot} ${presenceDotClass}`} aria-hidden="true" />
+          )}
+        </span>
         <div className={styles.names}>
           <span className={styles.displayName}>{displayName}</span>
-          <span className={styles.connectionStatus}>{state.connectionStatus}</span>
+          {state.selfCustomStatus ? (
+            <span className={styles.customStatus}>{state.selfCustomStatus}</span>
+          ) : (
+            <span className={styles.connectionStatus}>{state.connectionStatus}</span>
+          )}
         </div>
-      </div>
+      </button>
 
       <div className={styles.controls}>
         <IconButton

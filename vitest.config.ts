@@ -52,6 +52,10 @@ export default defineConfig({
         find: '@disco-voador/realtime',
         replacement: path.resolve(__dirname, 'services/realtime/src/index.ts'),
       },
+      {
+        find: '@disco-voador/shared',
+        replacement: path.resolve(__dirname, 'packages/shared/src/index.ts'),
+      },
     ],
   },
   test: {

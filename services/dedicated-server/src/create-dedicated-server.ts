@@ -13,6 +13,7 @@ import { AuthorizationStore } from './authorization/store.js';
 import { ChannelStore } from './channels/store.js';
 import { ChatStore } from './chat/store.js';
 import type { DedicatedServerConfig } from './config.js';
+import { SqliteProfileStore } from './profile/store.js';
 
 /**
  * The product-facing capability set this Dedicated Server offers — matches the media sources
@@ -53,6 +54,10 @@ export interface DedicatedServerDependencies {
    * `ChannelStore` at `<dataDir>/channels.sqlite` — its own physical file, entirely separate from
    * both other stores (see `channels/migrations.ts`'s own doc comment). */
   readonly channels?: ChannelStore;
+  /** T13.3 — injectable for the same reasons `authorization`/`chat`/`channels` are. Defaults to a
+   * real `SqliteProfileStore` at `<dataDir>/profiles.sqlite` — its own physical file, entirely
+   * separate from the other three stores (see `profile/migrations.ts`'s own doc comment). */
+  readonly profile?: SqliteProfileStore;
 }
 
 /**
@@ -101,12 +106,19 @@ export function createDedicatedServer(
   // through) — see `ChatPort.pruneOrphanedChannelHistory`'s own doc comment.
   chat.pruneOrphanedChannelHistory(channels.listActiveNodeIds());
 
+  // T13.3 — its own physical file, never shared with any other store (see `profile/migrations.ts`'s
+  // own doc comment): a profile-store problem can never jeopardize authorization/chat/channel state.
+  const profilePath =
+    config.dataDir === ':memory:' ? ':memory:' : path.join(config.dataDir, 'profiles.sqlite');
+  const profile = deps.profile ?? new SqliteProfileStore(profilePath);
+
   const realtimeServer = createRealtimeServer(config.realtime, {
     logger,
     serverMetadata: { name: config.name, capabilities: DEDICATED_SERVER_CAPABILITIES },
     authorization,
     chat,
     channels,
+    profile,
   });
 
   // Guards against a second `stop()` call re-closing already-closed store handles (`node:sqlite`'s
@@ -129,6 +141,7 @@ export function createDedicatedServer(
       authorization.close();
       chat.close();
       channels.close();
+      profile.close();
     },
   };
 }

@@ -15,10 +15,12 @@ import type {
   ChannelNodeView,
   GroupBadge,
   GroupSummary,
+  MemberPresence,
   PermissionKey,
 } from '@disco-voador/protocol';
 
 import type { ServerInfo } from '../../../apps/desktop/src/renderer/realtime/realtime-client.js';
+import type { MemberPanelEntry } from '../../../apps/desktop/src/renderer/workspace/member-presentation.js';
 import type {
   ChatThreadState,
   VoiceChannelActions,
@@ -98,7 +100,12 @@ export function createBan(overrides: Partial<BanSummary> = {}): BanSummary {
 }
 
 export function createServerInfo(overrides: Partial<ServerInfo> = {}): ServerInfo {
-  return { serverName: 'Test Server', serverCapabilities: [], ...overrides };
+  return {
+    serverName: 'Test Server',
+    serverCapabilities: [],
+    serverAvatarRef: undefined,
+    ...overrides,
+  };
 }
 
 export function createChatMessage(overrides: Partial<ChatMessageView> = {}): ChatMessageView {
@@ -111,6 +118,35 @@ export function createChatMessage(overrides: Partial<ChatMessageView> = {}): Cha
   };
   const merged = { ...base, ...overrides };
   return merged as ChatMessageView;
+}
+
+export function createMemberPresence(overrides: Partial<MemberPresence> = {}): MemberPresence {
+  return {
+    memberRef: 'member-1',
+    displayName: 'Bob',
+    presence: 'online',
+    ...overrides,
+  };
+}
+
+/** T13.3 — the redesigned `MemberPanel`/`MemberRow`'s own real view-model row (see
+ * `member-presentation.ts`), distinct from `createParticipant`'s voice-channel-scoped
+ * `VoiceParticipantView` — the two are no longer interchangeable now that `MemberPanel` widened from
+ * "in this voice channel" to "connected to this server at all." */
+export function createMemberPanelEntry(
+  overrides: Partial<MemberPanelEntry> = {},
+): MemberPanelEntry {
+  return {
+    key: 'member-1',
+    displayName: 'Alice',
+    isSelf: false,
+    presence: 'online',
+    customStatus: undefined,
+    avatarRef: undefined,
+    roleBucket: undefined,
+    canModerate: false,
+    ...overrides,
+  };
 }
 
 export function createChatThread(overrides: Partial<ChatThreadState> = {}): ChatThreadState {
@@ -161,6 +197,12 @@ export function createVoiceState(overrides: Partial<VoiceChannelState> = {}): Vo
     chatThreads: new Map(),
     channelPasswordPrompt: undefined,
     channelAccessRevokedNotice: undefined,
+    selfPresence: 'online',
+    selfCustomStatus: undefined,
+    selfAvatarRef: undefined,
+    selfMemberRef: undefined,
+    members: new Map(),
+    avatarCache: new Map(),
     ...overrides,
   };
 }
@@ -208,6 +250,14 @@ export function createVoiceActions(
     submitChannelPassword: vi.fn(),
     dismissChannelPasswordPrompt: vi.fn(),
     dismissChannelAccessRevokedNotice: vi.fn(),
+    setAvatar: vi.fn(),
+    clearSelfAvatar: vi.fn(),
+    clearServerAvatar: vi.fn(),
+    clearMemberAvatar: vi.fn(),
+    setCustomStatus: vi.fn(),
+    clearMemberStatus: vi.fn(),
+    setPresence: vi.fn(),
+    requestAvatar: vi.fn(),
     ...overrides,
   };
 }

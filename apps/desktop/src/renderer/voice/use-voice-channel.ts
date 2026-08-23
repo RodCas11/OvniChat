@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import type {
+  AvatarImageFormat,
+  AvatarRef,
   BanSummary,
   ChannelNodeAdminView,
   ChannelNodeView,
@@ -10,7 +12,9 @@ import type {
   GroupBadge,
   GroupSummary,
   IceCandidatePayload,
+  MemberPresence,
   PermissionKey,
+  PresenceStatus,
   ServerAuthorizationBansMessage,
   ServerAuthorizationGroupsMessage,
   ServerAuthorizationStateMessage,
@@ -23,6 +27,11 @@ import type {
   ServerChatMessageMessage,
   ServerErrorMessage,
   ServerMediaTrackSourceMessage,
+  ServerPresenceRemovedMessage,
+  ServerPresenceSnapshotMessage,
+  ServerPresenceUpdatedMessage,
+  ServerProfileAvatarDataMessage,
+  ServerProfileSelfUpdatedMessage,
   ServerVoiceCatalogMessage,
   ServerVoiceJoinedMessage,
   ServerVoiceParticipantJoinedMessage,
@@ -67,6 +76,7 @@ import type {
   ServerInfo,
 } from '../realtime/realtime-client.js';
 import { channelErrorMessage } from '../workspace/channel-error-copy.js';
+import { profileErrorMessage } from '../workspace/profile-error-copy.js';
 import {
   ReconnectController,
   type ConnectionFailedEvent,
@@ -297,6 +307,55 @@ export interface VoiceChannelState {
    * UI can render clearly different copy ("you can no longer access this channel," never "you were
    * kicked"). Cleared by `actions.dismissChannelAccessRevokedNotice` or the next successful join. */
   readonly channelAccessRevokedNotice: string | undefined;
+
+  // --- T13.3 profile/avatar/presence -----------------------------------------------------------
+  // Per-Dedicated-Server only — every field below is reset to its default whenever this connection
+  // reaches its terminal `'closed'` state (see the main effect's `onControllerStateChange`), and
+  // `members` (but not `avatarCache`, which is content-addressed by sha256 hash and safe to reuse
+  // across a same-server reconnect) is also cleared on an unexpected `'reconnecting'` loss, exactly
+  // mirroring `chatThreads`' own "never carry stale server-scoped state" discipline. A server switch
+  // discards this whole hook instance (`VoiceChannelView` remounts with a fresh `key` — see
+  // `App.tsx`), so nothing here can ever bleed from one Dedicated Server into a view of another.
+
+  /** This connection's own manual presence preference — defaults to `'online'` (the server's own
+   * documented default for a profile with no prior mutation — see
+   * `services/dedicated-server/src/profile/store.ts`) until the real value arrives. That happens on
+   * *every* connect/reconnect, not only after a mutation from this Client: `handleIdentityProof`
+   * proactively pushes a `server:profile-self-updated` carrying this identity's actual persisted
+   * presence/status/avatar as part of the same initial burst as `server:hello`/`voice:catalog`/
+   * `server:presence-snapshot` (see that handler's own comment), so a returning user's
+   * previously-set away/DND preference or custom status is accurate immediately, never a
+   * fabricated-then-corrected guess. */
+  readonly selfPresence: PresenceStatus;
+  readonly selfCustomStatus: string | undefined;
+  readonly selfAvatarRef: AvatarRef | undefined;
+  /** This connection's own `memberRef`, learned once from `server:presence-snapshot.selfMemberRef`
+   * and then held for the life of the connection (a fresh one is reassigned on every reconnect, via
+   * the next snapshot). Exists solely so `onPresenceUpdated`/`onPresenceSnapshot` below can recognize
+   * and filter out an update that is really about the local user's own identity — e.g. a moderator
+   * clearing this identity's own avatar/status broadcasts `server:presence-updated` naming exactly
+   * this `memberRef`, to every ready connection *including this one* (correctly — this connection
+   * still needs to learn its own status changed). Without this filter that update would land in
+   * `members` as if it were "another member," producing a visible duplicate of the local user
+   * alongside the separately-synthesized self entry. */
+  readonly selfMemberRef: string | undefined;
+  /** Every other currently-online member of the connected server, keyed by `memberRef` — sourced
+   * from `server:presence-snapshot`/`-updated`/`-removed`, never from voice-channel participation
+   * (T13.3 widens "who is shown" from "in this voice channel" to "connected to this server at
+   * all" — see `MemberPanel.tsx`). Never includes the local user's own entry — enforced by filtering
+   * any incoming member/update whose `memberRef` equals `selfMemberRef` (see `onPresenceSnapshot`/
+   * `onPresenceUpdated`), not merely assumed from the server's own snapshot exclusion, since a
+   * *later* `server:presence-updated` about this identity (triggered by someone else, e.g. a
+   * moderator clear) is not excluded the same way. `VoiceChannelView.tsx` synthesizes a self entry
+   * from `selfPresence`/`selfCustomStatus`/`selfAvatarRef`/`myGroups` instead, mirroring
+   * `participantsWithSelf`'s existing precedent. */
+  readonly members: ReadonlyMap<string, MemberPresence>;
+  /** A non-authoritative local cache of already-fetched-and-Main-re-validated avatar bytes, keyed by
+   * `AvatarRef.hash` (content-addressed — the same image reused by two different targets shares one
+   * cache entry) and resolved to a `data:` URI ready for `Avatar`'s `imageUrl` prop. Only ever
+   * populated by `actions.requestAvatar`'s own successful, re-validated reply — never written from
+   * anywhere else, and never contains bytes that failed `validateAvatarImageBytes` in Main. */
+  readonly avatarCache: ReadonlyMap<string, string>;
 }
 
 /** T13.2 — see `VoiceChannelState.channelPasswordPrompt`'s own doc comment. `isRestore` is `true`
@@ -323,6 +382,20 @@ export class ChannelRequestError extends Error {
   ) {
     super(message);
     this.name = 'ChannelRequestError';
+  }
+}
+
+/** T13.3 — mirrors `ChannelRequestError` exactly, for the Promise-returning `client:profile-*`
+ * mutation actions below (`setSelfAvatar`/`clearSelfAvatar`/etc.) — thrown when the server replies
+ * with `server:error` correlated (via `replyTo`) to that specific request. See
+ * `workspace/profile-error-copy.ts`'s `describeProfileError` for the matching catch-block funnel. */
+export class ProfileRequestError extends Error {
+  constructor(
+    readonly code: ErrorCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'ProfileRequestError';
   }
 }
 
@@ -421,6 +494,43 @@ export interface VoiceChannelActions {
   dismissChannelPasswordPrompt(): void;
   /** Clears `state.channelAccessRevokedNotice` once the user has seen it. */
   dismissChannelAccessRevokedNotice(): void;
+
+  // --- T13.3 profile/avatar/presence ------------------------------------------------------------
+  // Every mutation below returns a Promise (mirroring the T13.2 channel-administration actions
+  // above) so the Profile Editor / member popover can `await` it and show real, honest,
+  // error-code-mapped inline copy — rejects with `ProfileRequestError` when the server replies with
+  // a correlated `server:error`. The server remains the sole authority on whether any of these
+  // succeed (byte/dimension/format bounds are only ever pre-checked client-side for fast feedback,
+  // never trusted as the real enforcement).
+
+  /** `target: 'self'` needs no special permission; `target: 'server'` requires `server.manage` —
+   * `ServerSettingsModal` must hide (not merely disable) its own "Server Profile" section for a
+   * caller without it, matching this app's established honest-limits convention. */
+  setAvatar(
+    target: 'self' | 'server',
+    format: AvatarImageFormat,
+    imageBase64: string,
+  ): Promise<void>;
+  clearSelfAvatar(): Promise<void>;
+  /** Requires `server.manage`. */
+  clearServerAvatar(): Promise<void>;
+  /** Requires `moderation.profile.clear`; clears only — never sets another member's avatar. */
+  clearMemberAvatar(memberRef: string): Promise<void>;
+  /** Self-service only — omitting/passing `undefined` clears the current status. */
+  setCustomStatus(customStatus: string | undefined): Promise<void>;
+  /** Requires `moderation.profile.clear`; clears only — never sets another member's status. */
+  clearMemberStatus(memberRef: string): Promise<void>;
+  /** Self-service only. No `'invisible'` option exists on this wire protocol or in this UI — see
+   * `PresenceStatus`. */
+  setPresence(presence: PresenceStatus): Promise<void>;
+  /**
+   * Fire-and-forget: requests `target`'s current avatar bytes (a no-op if a request for the same
+   * target is already in flight, or if this exact content is already in `state.avatarCache`), and,
+   * once Main has re-validated the reply, populates `state.avatarCache` keyed by the resulting
+   * `AvatarRef.hash`. A `MEMBER_NOT_FOUND`/"no avatar set" reply is a normal, silent no-op — never
+   * surfaced as an error (the caller simply keeps seeing the initials fallback).
+   */
+  requestAvatar(target: 'self' | 'server' | 'member', memberRef?: string): void;
 }
 
 /**
@@ -519,6 +629,12 @@ const INITIAL_STATE: VoiceChannelState = {
   chatThreads: new Map(),
   channelPasswordPrompt: undefined,
   channelAccessRevokedNotice: undefined,
+  selfPresence: 'online',
+  selfCustomStatus: undefined,
+  selfAvatarRef: undefined,
+  selfMemberRef: undefined,
+  members: new Map(),
+  avatarCache: new Map(),
 };
 
 /**
@@ -674,6 +790,25 @@ export function useVoiceChannel(
     { readonly id: string; readonly channelId: string; readonly isRestore: boolean } | undefined
   >(undefined);
 
+  /** T13.3 — correlates a `client:profile-*` mutation request's generated id back to the Promise a
+   * caller (Profile Editor, member popover) is awaiting — mirrors `pendingChannelRequestsRef`
+   * exactly. Resolved by `onProfileSelfUpdated`; rejected (with a `ProfileRequestError`) by
+   * `onServerError` when a `server:error`'s `replyTo` matches a still-pending entry. */
+  const pendingProfileRequestsRef = useRef(
+    new Map<string, { readonly resolve: () => void; readonly reject: (error: Error) => void }>(),
+  );
+  /** T13.3 — correlates a `client:profile-request-avatar` request's generated id back to which
+   * *target key* (`'self'`, `'server'`, or `'member:<memberRef>'`) it was for — `onProfileAvatarData`
+   * needs this to know which dimension ceiling (512 vs. 1024) to re-validate against; `onServerError`
+   * needs it to recognize a `MEMBER_NOT_FOUND`/"no avatar" reply as this silent, non-fatal case
+   * rather than falling through to the generic error toast. */
+  const pendingAvatarRequestIdsRef = useRef(new Map<string, string>());
+  /** T13.3 — the set of target keys with an avatar request currently in flight, so
+   * `actions.requestAvatar` never sends a second concurrent request for the same target (e.g. a
+   * fast-scrolling member list re-rendering the same row). Cleared alongside the corresponding
+   * entry in `pendingAvatarRequestIdsRef`. */
+  const inFlightAvatarTargetKeysRef = useRef(new Set<string>());
+
   /**
    * T11 — loads persisted device/mute-on-launch preferences exactly once, at hook mount, per the
    * task's own "read settings once at hook-mount time for this — don't overengineer a live-sync
@@ -728,6 +863,10 @@ export function useVoiceChannel(
     // outstanding channel-admin requests or in-flight join to correlate against.
     pendingChannelRequestsRef.current = new Map();
     lastJoinRequestRef.current = undefined;
+    // T13.3 — mirrors the same reset for profile mutations/avatar-fetch bookkeeping.
+    pendingProfileRequestsRef.current = new Map();
+    pendingAvatarRequestIdsRef.current = new Map();
+    inFlightAvatarTargetKeysRef.current = new Set();
 
     // T11 — the controller owns exactly one `RealtimeClient` for this whole connection sequence,
     // including every automatic reconnect attempt (see `reconnect-controller.ts`'s doc comment for
@@ -882,6 +1021,15 @@ export function useVoiceChannel(
         }
         pendingChannelRequestsRef.current = new Map();
         lastJoinRequestRef.current = undefined;
+        // T13.3 — mirrors the channel-admin-request cleanup immediately above, for profile
+        // mutations; avatar-fetch bookkeeping has no Promise to reject (it is fire-and-forget) so it
+        // is simply cleared.
+        for (const pending of pendingProfileRequestsRef.current.values()) {
+          pending.reject(new Error('Disconnected before the server replied.'));
+        }
+        pendingProfileRequestsRef.current = new Map();
+        pendingAvatarRequestIdsRef.current = new Map();
+        inFlightAvatarTargetKeysRef.current = new Set();
       }
 
       const connectionStatus: VoiceConnectionStatus =
@@ -911,6 +1059,14 @@ export function useVoiceChannel(
               lastCreatedToken: undefined,
               lastRedeemedGroup: undefined,
               chatThreads: chatThreadsRef.current,
+              // T13.3 — per-Dedicated-Server profile/presence state must never survive past this
+              // connection's own terminal close (see `VoiceChannelState`'s own doc comment on this).
+              selfPresence: 'online' as const,
+              selfCustomStatus: undefined,
+              selfAvatarRef: undefined,
+              selfMemberRef: undefined,
+              members: new Map<string, MemberPresence>(),
+              avatarCache: new Map<string, string>(),
             }
           : {}),
       }));
@@ -957,6 +1113,17 @@ export function useVoiceChannel(
       }
       pendingChannelRequestsRef.current = new Map();
       lastJoinRequestRef.current = undefined;
+      // T13.3 — mirrors the channel-admin cleanup immediately above. `members` is cleared too (a
+      // fresh `server:presence-snapshot` always arrives once reconnected — see `onPresenceSnapshot`
+      // — so a stale membership list is never worth keeping across the gap); `avatarCache` is
+      // deliberately left untouched, since it is content-addressed by hash and still valid for the
+      // same server once reconnected.
+      for (const pending of pendingProfileRequestsRef.current.values()) {
+        pending.reject(new Error('Connection lost before the server replied.'));
+      }
+      pendingProfileRequestsRef.current = new Map();
+      pendingAvatarRequestIdsRef.current = new Map();
+      inFlightAvatarTargetKeysRef.current = new Set();
 
       // Public data only — see `onControllerStateChange`'s identical marker for the full
       // conventions this follows.
@@ -988,6 +1155,10 @@ export function useVoiceChannel(
         lastCreatedToken: undefined,
         lastRedeemedGroup: undefined,
         chatThreads: chatThreadsRef.current,
+        // T13.3 — a fresh `server:presence-snapshot` always arrives once reconnected (see
+        // `onPresenceSnapshot`); `avatarCache` is deliberately preserved (see the comment on
+        // `inFlightAvatarTargetKeysRef`'s reset immediately above).
+        members: new Map<string, MemberPresence>(),
       }));
     };
 
@@ -1242,6 +1413,34 @@ export function useVoiceChannel(
         return;
       }
 
+      // T13.3 — a `client:profile-*` mutation awaiting its own Promise settlement.
+      const pendingProfileRequest = message.replyTo
+        ? pendingProfileRequestsRef.current.get(message.replyTo)
+        : undefined;
+      if (pendingProfileRequest) {
+        pendingProfileRequestsRef.current.delete(message.replyTo as string);
+        pendingProfileRequest.reject(
+          new ProfileRequestError(
+            message.code,
+            profileErrorMessage(message.code) ?? message.message,
+          ),
+        );
+        return;
+      }
+
+      // T13.3 — a `client:profile-request-avatar` this hook itself issued. `MEMBER_NOT_FOUND` (also
+      // used, by extension, for "no avatar currently set" on a self/server request — see
+      // `handleProfileRequestAvatar`'s own doc comment server-side) is a normal, silent no-op here:
+      // the caller simply keeps seeing the initials fallback, never a visible error toast.
+      const avatarRequestTargetKey = message.replyTo
+        ? pendingAvatarRequestIdsRef.current.get(message.replyTo)
+        : undefined;
+      if (avatarRequestTargetKey !== undefined) {
+        pendingAvatarRequestIdsRef.current.delete(message.replyTo as string);
+        inFlightAvatarTargetKeysRef.current.delete(avatarRequestTargetKey);
+        return;
+      }
+
       // T13.2 — a `voice:join` this hook itself issued (a real user click, or a T11
       // reconnect-restore attempt) failing with a channel-domain code needs differentiated
       // handling; every other rejection (groups/tokens/chat/anything else) falls through to the
@@ -1298,6 +1497,116 @@ export function useVoiceChannel(
       }
 
       setState((prev) => ({ ...prev, lastError: message.message, joining: false }));
+    };
+
+    // --- T13.3 profile/avatar/presence --------------------------------------------------------
+
+    const onProfileSelfUpdated = (message: ServerProfileSelfUpdatedMessage) => {
+      const pending = pendingProfileRequestsRef.current.get(message.id);
+      if (pending) {
+        pendingProfileRequestsRef.current.delete(message.id);
+        pending.resolve();
+      }
+      setState((prev) => ({
+        ...prev,
+        // `message.presence` is `EffectivePresence` (includes `'offline'`); this reply is always the
+        // actor's own state while this very connection is live, so `'offline'` should never actually
+        // occur here — the fallback to the previous value is a defensive, never-fabricating guard,
+        // not a real expected path.
+        selfPresence: message.presence === 'offline' ? prev.selfPresence : message.presence,
+        selfCustomStatus: message.customStatus,
+        selfAvatarRef: message.avatarRef,
+      }));
+    };
+
+    /** Re-validates the received bytes in Main (`validateAvatarImageBytes`) before ever caching or
+     * rendering them — a hostile/compromised server operator is an untrusted input source into the
+     * local filesystem/renderer (see `main/avatar-images.ts`'s own doc comment). A failed
+     * (re-)validation is logged and silently dropped — never cached, never displayed — rather than
+     * surfaced as a user-visible error, mirroring `MEMBER_NOT_FOUND`'s own "just show initials"
+     * treatment for every other avatar-fetch failure mode. */
+    const onProfileAvatarData = (message: ServerProfileAvatarDataMessage) => {
+      const targetKey = pendingAvatarRequestIdsRef.current.get(message.id);
+      pendingAvatarRequestIdsRef.current.delete(message.id);
+      if (targetKey !== undefined) inFlightAvatarTargetKeysRef.current.delete(targetKey);
+
+      const maxDimension: 512 | 1024 = targetKey === 'server' ? 1024 : 512;
+      void (async () => {
+        let validation;
+        try {
+          validation = await window.desktopApp.validateAvatarImageBytes(
+            message.imageBase64,
+            message.format,
+            maxDimension,
+          );
+        } catch (error) {
+          console.error('voice: failed to validate avatar bytes received from the server', error);
+          return;
+        }
+        if (!validation.ok) {
+          console.error(
+            'voice: rejected avatar bytes received from the server',
+            validation.code,
+            validation.message,
+          );
+          return;
+        }
+        const dataUrl = `data:image/${message.format};base64,${message.imageBase64}`;
+        setState((prev) => {
+          const next = new Map(prev.avatarCache);
+          next.set(message.avatarRef.hash, dataUrl);
+          return { ...prev, avatarCache: next };
+        });
+      })();
+    };
+
+    /** The full online-member snapshot, sent once when this connection becomes `ready` — replaces
+     * `state.members` wholesale (never merges), matching `onCatalog`'s own "resend the whole small
+     * bounded thing" convention exactly. */
+    const onPresenceSnapshot = (message: ServerPresenceSnapshotMessage) => {
+      const next = new Map<string, MemberPresence>();
+      // Defensive, not load-bearing: the server already omits `selfMemberRef` from `message.members`
+      // (see `serverPresenceSnapshotMessageSchema`'s own doc comment) — this filter exists so the
+      // invariant holds structurally here too, matching `onPresenceUpdated` below, where it *is*
+      // load-bearing.
+      for (const member of message.members) {
+        if (member.memberRef !== message.selfMemberRef) next.set(member.memberRef, member);
+      }
+      setState((prev) => ({ ...prev, members: next, selfMemberRef: message.selfMemberRef }));
+    };
+
+    const onPresenceUpdated = (message: ServerPresenceUpdatedMessage) => {
+      setState((prev) => {
+        // A moderator clearing this identity's own avatar/status broadcasts this update to every
+        // ready connection including this one (correctly — see `selfMemberRef`'s own doc comment on
+        // `VoiceChannelState`). Route it into the self-* fields instead of `members` — the local user
+        // just learned their own avatar/status was cleared and should see that reflected immediately,
+        // and adding it to `members` too would render a duplicate of themselves. `message.member`'s
+        // `presence` is never actually `'offline'` here (it is always an online member's own
+        // preference — see `buildMemberPresenceView`), but the same defensive guard
+        // `onProfileSelfUpdated` already uses is mirrored for consistency rather than assumed.
+        if (message.member.memberRef === prev.selfMemberRef) {
+          return {
+            ...prev,
+            selfPresence:
+              message.member.presence === 'offline' ? prev.selfPresence : message.member.presence,
+            selfCustomStatus: message.member.customStatus,
+            selfAvatarRef: message.member.avatarRef,
+          };
+        }
+        const next = new Map(prev.members);
+        next.set(message.member.memberRef, message.member);
+        return { ...prev, members: next };
+      });
+    };
+
+    const onPresenceRemoved = (message: ServerPresenceRemovedMessage) => {
+      setState((prev) => {
+        if (!prev.members.has(message.memberRef)) return prev;
+        const next = new Map(prev.members);
+        next.delete(message.memberRef);
+        return { ...prev, members: next };
+      });
     };
 
     // --- T9 server-local authorization -------------------------------------------------------
@@ -1485,6 +1794,11 @@ export function useVoiceChannel(
     client.on('channelCreated', onChannelCreated);
     client.on('channelAck', onChannelAck);
     client.on('channelEditableNode', onChannelEditableNode);
+    client.on('profileSelfUpdated', onProfileSelfUpdated);
+    client.on('profileAvatarData', onProfileAvatarData);
+    client.on('presenceSnapshot', onPresenceSnapshot);
+    client.on('presenceUpdated', onPresenceUpdated);
+    client.on('presenceRemoved', onPresenceRemoved);
     transport.on('remoteTrack', onRemoteTrack);
     transport.on('localTrackMid', onLocalTrackMid);
     transport.on('peerStateChanged', onPeerStateChanged);
@@ -1493,6 +1807,18 @@ export function useVoiceChannel(
     controller.connect();
 
     return () => {
+      // This is a genuinely final teardown (unmount, or the user connected to a different
+      // server/address) — `controller.disconnect()` marks the sequence as deliberately ended, so no
+      // reconnect timer can fire after this point (T11 Section 39/57/82). It is called *before*
+      // detaching `'stateChange'` (unlike every other listener below) specifically so its
+      // synchronous `'closed'` emission still reaches `onControllerStateChange` — that handler's own
+      // `'closed'` branch is what actually clears per-Dedicated-Server profile/presence state
+      // (`members`/`avatarCache`/`selfPresence`/etc., T13.3) and rejects pending channel/profile
+      // requests. Detaching first would silently skip that reset on every real teardown path
+      // (this repo's own `AppShell` remount-by-connection-key currently masks the gap with a fresh
+      // `useState` anyway, but this handler should not rely on that to keep its own documented
+      // guarantee true).
+      controller.disconnect();
       controller.off('stateChange', onControllerStateChange);
       controller.off('reconnecting', onReconnecting);
       controller.off('reconnected', onReconnected);
@@ -1519,17 +1845,16 @@ export function useVoiceChannel(
       client.off('channelCreated', onChannelCreated);
       client.off('channelAck', onChannelAck);
       client.off('channelEditableNode', onChannelEditableNode);
+      client.off('profileSelfUpdated', onProfileSelfUpdated);
+      client.off('profileAvatarData', onProfileAvatarData);
+      client.off('presenceSnapshot', onPresenceSnapshot);
+      client.off('presenceUpdated', onPresenceUpdated);
+      client.off('presenceRemoved', onPresenceRemoved);
       transport.off('remoteTrack', onRemoteTrack);
       transport.off('localTrackMid', onLocalTrackMid);
       transport.off('peerStateChanged', onPeerStateChanged);
       unsubscribeProcessAudioEnded();
 
-      // This is a genuinely final teardown (unmount, or the user connected to a different
-      // server/address) — `controller.disconnect()` marks the sequence as deliberately ended, so no
-      // reconnect timer can fire after this point (T11 Section 39/57/82). An automatic reconnect
-      // cycle, by contrast, never reaches this cleanup at all: `realtimeConfig` does not change
-      // during one, so this effect simply keeps running, exactly as designed.
-      controller.disconnect();
       // The transport is discarded along with this effect run — permanent teardown is correct
       // here, unlike a mid-session channel switch (`onJoined`/`onLeft` above use
       // `removeParticipant`, never `closeAll`, since `closeAll` permanently disables the
@@ -2279,6 +2604,84 @@ export function useVoiceChannel(
     setState((prev) => ({ ...prev, channelAccessRevokedNotice: undefined }));
   }, []);
 
+  // --- T13.3 profile/avatar/presence ------------------------------------------------------------
+  // Mirrors `registerPendingChannelRequest`'s exact shape: pairs a `RealtimeClient` call (which
+  // returns the generated request id) with a Promise registered in `pendingProfileRequestsRef`
+  // under that same id — `onProfileSelfUpdated` resolves it, `onServerError` rejects it with a
+  // `ProfileRequestError`.
+
+  function registerPendingProfileRequest(requestId: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+      pendingProfileRequestsRef.current.set(requestId, { resolve, reject });
+    });
+  }
+
+  const setAvatar = useCallback(
+    (target: 'self' | 'server', format: AvatarImageFormat, imageBase64: string) => {
+      const client = clientRef.current;
+      if (!client) return Promise.reject(new Error('Not connected.'));
+      const requestId = client.setAvatar(target, format, imageBase64);
+      return registerPendingProfileRequest(requestId);
+    },
+    [],
+  );
+
+  const clearSelfAvatar = useCallback(() => {
+    const client = clientRef.current;
+    if (!client) return Promise.reject(new Error('Not connected.'));
+    const requestId = client.clearSelfAvatar();
+    return registerPendingProfileRequest(requestId);
+  }, []);
+
+  const clearServerAvatar = useCallback(() => {
+    const client = clientRef.current;
+    if (!client) return Promise.reject(new Error('Not connected.'));
+    const requestId = client.clearServerAvatar();
+    return registerPendingProfileRequest(requestId);
+  }, []);
+
+  const clearMemberAvatar = useCallback((memberRef: string) => {
+    const client = clientRef.current;
+    if (!client) return Promise.reject(new Error('Not connected.'));
+    const requestId = client.clearMemberAvatar(memberRef);
+    return registerPendingProfileRequest(requestId);
+  }, []);
+
+  const setCustomStatus = useCallback((customStatus: string | undefined) => {
+    const client = clientRef.current;
+    if (!client) return Promise.reject(new Error('Not connected.'));
+    const requestId = client.setCustomStatus(customStatus);
+    return registerPendingProfileRequest(requestId);
+  }, []);
+
+  const clearMemberStatus = useCallback((memberRef: string) => {
+    const client = clientRef.current;
+    if (!client) return Promise.reject(new Error('Not connected.'));
+    const requestId = client.clearMemberStatus(memberRef);
+    return registerPendingProfileRequest(requestId);
+  }, []);
+
+  const setPresence = useCallback((presence: PresenceStatus) => {
+    const client = clientRef.current;
+    if (!client) return Promise.reject(new Error('Not connected.'));
+    const requestId = client.setPresence(presence);
+    return registerPendingProfileRequest(requestId);
+  }, []);
+
+  const requestAvatar = useCallback((target: 'self' | 'server' | 'member', memberRef?: string) => {
+    const client = clientRef.current;
+    if (!client) return;
+    if (target === 'member' && !memberRef) return;
+    const targetKey = target === 'member' ? `member:${memberRef}` : target;
+    if (inFlightAvatarTargetKeysRef.current.has(targetKey)) return;
+    inFlightAvatarTargetKeysRef.current.add(targetKey);
+    const requestId =
+      target === 'member'
+        ? client.requestAvatar('member', memberRef)
+        : client.requestAvatar(target);
+    pendingAvatarRequestIdsRef.current.set(requestId, targetKey);
+  }, []);
+
   // Memoized so callers holding `actions` in a `useEffect` dependency array (e.g. the E2E
   // auto-camera-off timer in `VoiceChannelView.tsx`) get a stable reference instead of one that
   // changes on every render — each individual action is already a `useCallback` with empty deps,
@@ -2322,6 +2725,14 @@ export function useVoiceChannel(
       submitChannelPassword,
       dismissChannelPasswordPrompt,
       dismissChannelAccessRevokedNotice,
+      setAvatar,
+      clearSelfAvatar,
+      clearServerAvatar,
+      clearMemberAvatar,
+      setCustomStatus,
+      clearMemberStatus,
+      setPresence,
+      requestAvatar,
     }),
     [
       join,
@@ -2361,6 +2772,14 @@ export function useVoiceChannel(
       submitChannelPassword,
       dismissChannelPasswordPrompt,
       dismissChannelAccessRevokedNotice,
+      setAvatar,
+      clearSelfAvatar,
+      clearServerAvatar,
+      clearMemberAvatar,
+      setCustomStatus,
+      clearMemberStatus,
+      setPresence,
+      requestAvatar,
     ],
   );
 

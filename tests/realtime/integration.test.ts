@@ -58,6 +58,8 @@ const DEFAULT_TEST_CONFIG: RealtimeConfig = {
   chatSendRateLimit: { maxMessages: 100, windowMs: 10_000 },
   chatHistoryRateLimit: { maxMessages: 100, windowMs: 10_000 },
   channelPasswordRateLimit: { maxMessages: 100, windowMs: 10_000 },
+  profileMutationRateLimit: { maxMessages: 100, windowMs: 10_000 },
+  avatarFetchRateLimit: { maxMessages: 100, windowMs: 10_000 },
   logLevel: 'error',
 };
 
@@ -183,7 +185,12 @@ async function handshake(
   ws.send(JSON.stringify(hello));
   const challenge = await challengeReceived;
 
-  const readyReplies = nextMessages(ws, 3); // server:hello, server:authorization-state, voice:catalog
+  // server:hello, server:authorization-state, voice:catalog, server:presence-snapshot,
+  // server:profile-self-updated (T13.3's proactive push of this identity's own real persisted
+  // profile) — all five must be drained here, since the server sends them back-to-back in one
+  // synchronous loop that can arrive as a single TCP burst; leaving the fifth undrained risks it
+  // racing past whatever listener a caller attaches next.
+  const readyReplies = nextMessages(ws, 5);
   sendIdentityProof(ws, challenge, keyPair, {
     protocolVersion: hello['protocolVersion'] as number,
     nickname: hello['nickname'] as string,
@@ -386,7 +393,11 @@ describe('realtime server integration (real sockets)', () => {
     ws.send(JSON.stringify(hello));
     const challenge = await challengeReceived;
 
-    const helloAndCatalog = nextMessages(ws, 3);
+    // server:hello, server:authorization-state, voice:catalog, server:presence-snapshot,
+    // server:profile-self-updated — all five must be drained even though only two are used below,
+    // since the server sends them back-to-back in one synchronous loop that can arrive as a single
+    // TCP burst.
+    const helloAndCatalog = nextMessages(ws, 5);
     sendIdentityProof(ws, challenge, keyPair, {
       protocolVersion: hello['protocolVersion'] as number,
       nickname: hello['nickname'] as string,
@@ -660,7 +671,12 @@ describe('realtime server integration (real sockets)', () => {
   describe('voice channels and WebRTC signaling (real sockets)', () => {
     it('A and B join the same channel, learn about each other, and negotiate a full offer/answer/ICE exchange', async () => {
       const a = track((await connectAndHandshake(url)).ws);
+      // A is already `ready` when B's handshake completes below, so T13.3 presence delivers A a
+      // live `server:presence-updated` for B's arrival (a 0->1 online transition) — drained here,
+      // before it can otherwise be mistaken for the very next voice-signaling message A receives.
+      const bOnlineNotice = nextMessage(a);
       const b = track((await connectAndHandshake(url)).ws);
+      expect(await bOnlineNotice).toMatchObject({ type: 'server:presence-updated' });
 
       const { participantId: participantIdA, participants: aSnapshot } = await joinChannel(
         a,

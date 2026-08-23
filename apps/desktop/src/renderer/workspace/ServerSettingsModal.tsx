@@ -6,16 +6,10 @@ import { TokensSection } from '../voice/TokensSection.js';
 import type { VoiceChannelActions, VoiceChannelState } from '../voice/use-voice-channel.js';
 import type { ChannelAdminIntent } from './channel-admin-intent.js';
 import { ChannelsAdminPage } from './ChannelsAdminPage.js';
+import { ServerProfileSection } from './ServerProfileSection.js';
 import styles from '../voice/SettingsPanel.module.css';
 
-type ServerSettingsSection = 'channels' | 'groups' | 'invites' | 'bans';
-
-const SECTIONS: readonly { readonly id: ServerSettingsSection; readonly label: string }[] = [
-  { id: 'channels', label: 'Channels' },
-  { id: 'groups', label: 'Groups & Permissions' },
-  { id: 'invites', label: 'Invites' },
-  { id: 'bans', label: 'Bans' },
-];
+type ServerSettingsSection = 'channels' | 'profile' | 'groups' | 'invites' | 'bans';
 
 interface ServerSettingsModalProps {
   readonly state: VoiceChannelState;
@@ -44,10 +38,22 @@ export function ServerSettingsModal({
 }: ServerSettingsModalProps): ReactElement {
   const [activeSection, setActiveSection] = useState<ServerSettingsSection>('channels');
 
+  // T13.3 — "Server Profile" (server avatar Change/Remove) requires `server.manage`; hidden
+  // entirely (not merely disabled) for a caller without it, matching this app's established
+  // honest-limits convention (see `docs/tasks` for prior precedent, e.g. T13.2's channel-admin UI).
+  const canManageServerProfile = state.myPermissions.includes('server.manage');
+  const sections: readonly { readonly id: ServerSettingsSection; readonly label: string }[] = [
+    { id: 'channels', label: 'Channels' },
+    ...(canManageServerProfile ? [{ id: 'profile' as const, label: 'Server Profile' }] : []),
+    { id: 'groups', label: 'Groups & Permissions' },
+    { id: 'invites', label: 'Invites' },
+    { id: 'bans', label: 'Bans' },
+  ];
+
   return (
     <div className={styles.container}>
       <nav className={styles.nav} aria-label="Server settings sections">
-        {SECTIONS.map((section) => (
+        {sections.map((section) => (
           <button
             key={section.id}
             type="button"
@@ -71,6 +77,9 @@ export function ServerSettingsModal({
             <h3 className={styles.sectionTitle}>Channels</h3>
             <ChannelsAdminPage state={state} actions={actions} onAdminIntent={onAdminIntent} />
           </section>
+        )}
+        {activeSection === 'profile' && canManageServerProfile && (
+          <ServerProfileSection state={state} actions={actions} />
         )}
         {activeSection === 'groups' && (
           <section className={styles.section}>

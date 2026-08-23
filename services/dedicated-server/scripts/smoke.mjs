@@ -174,7 +174,14 @@ async function main() {
     });
     const signature = signWithIdentityKey(keyPair.privateKey, keyPair.publicKey, payload);
 
-    const repliesPromise = nextMessages(ws, 3); // server:hello, server:authorization-state, voice:catalog
+    // server:hello, server:authorization-state, voice:catalog, server:presence-snapshot,
+    // server:profile-self-updated (T13.3's proactive push of this identity's own real persisted
+    // profile) — all five must be drained here even though only three are used below, since the
+    // server sends them back-to-back in one synchronous loop that can arrive as a single TCP burst;
+    // leaving any undrained risks it racing past the next `nextMessage()` call below (exactly what
+    // broke here when this only drained 3: the leftover `server:presence-snapshot` was mistaken for
+    // the token-redemption reply).
+    const repliesPromise = nextMessages(ws, 5);
     ws.send(JSON.stringify({ type: 'client:identity-proof', id: 'proof-1', signature }));
     const [serverHello, authState, catalog] = await repliesPromise;
 

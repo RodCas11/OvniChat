@@ -53,6 +53,17 @@ const realtimeConfigSchema = z.object({
   // `CHAT_RATE_LIMITED`'s own precedent.
   REALTIME_CHANNEL_PASSWORD_RATE_LIMIT_MAX_MESSAGES: envPositiveInt().default(5),
   REALTIME_CHANNEL_PASSWORD_RATE_LIMIT_WINDOW_MS: envPositiveInt().default(60_000),
+  // T13.3 — separate, smaller buckets for profile self-service mutations (avatar/status/presence
+  // changes) specifically, mirroring `REALTIME_CHAT_SEND_RATE_LIMIT_*`'s own precedent. Generous
+  // for legitimate use (a user changing their avatar/status is an infrequent action), tight against
+  // spam. Non-fatal when exceeded (`PROFILE_RATE_LIMITED`).
+  REALTIME_PROFILE_MUTATION_RATE_LIMIT_MAX_MESSAGES: envPositiveInt().default(5),
+  REALTIME_PROFILE_MUTATION_RATE_LIMIT_WINDOW_MS: envPositiveInt().default(600_000),
+  // T13.3 — a separate, higher-throughput bucket for on-demand `client:profile-request-avatar`
+  // specifically, since populating a member panel legitimately fetches several members' avatars in
+  // a burst.
+  REALTIME_AVATAR_FETCH_RATE_LIMIT_MAX_MESSAGES: envPositiveInt().default(30),
+  REALTIME_AVATAR_FETCH_RATE_LIMIT_WINDOW_MS: envPositiveInt().default(60_000),
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
 });
 
@@ -81,6 +92,15 @@ export interface RealtimeConfig {
   };
   /** T13.2 — see the schema's own doc comment above. */
   readonly channelPasswordRateLimit: {
+    readonly maxMessages: number;
+    readonly windowMs: number;
+  };
+  /** T13.3 — see the schema's own doc comment above. */
+  readonly profileMutationRateLimit: {
+    readonly maxMessages: number;
+    readonly windowMs: number;
+  };
+  readonly avatarFetchRateLimit: {
     readonly maxMessages: number;
     readonly windowMs: number;
   };
@@ -116,6 +136,14 @@ export function loadRealtimeConfig(
     channelPasswordRateLimit: {
       maxMessages: parsed.REALTIME_CHANNEL_PASSWORD_RATE_LIMIT_MAX_MESSAGES,
       windowMs: parsed.REALTIME_CHANNEL_PASSWORD_RATE_LIMIT_WINDOW_MS,
+    },
+    profileMutationRateLimit: {
+      maxMessages: parsed.REALTIME_PROFILE_MUTATION_RATE_LIMIT_MAX_MESSAGES,
+      windowMs: parsed.REALTIME_PROFILE_MUTATION_RATE_LIMIT_WINDOW_MS,
+    },
+    avatarFetchRateLimit: {
+      maxMessages: parsed.REALTIME_AVATAR_FETCH_RATE_LIMIT_MAX_MESSAGES,
+      windowMs: parsed.REALTIME_AVATAR_FETCH_RATE_LIMIT_WINDOW_MS,
     },
     logLevel: parsed.LOG_LEVEL,
   };

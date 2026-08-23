@@ -16,6 +16,8 @@ import type { RealtimeConfig } from './config.js';
 import type { ConnectionState } from './connection-state.js';
 import type { Logger } from './logging.js';
 import { HeartbeatMonitor } from './heartbeat.js';
+import type { PresenceRegistry } from './presence/registry.js';
+import type { ProfilePort } from './profile-port.js';
 import {
   buildFilteredVoiceCatalogMessage,
   routeClientMessage,
@@ -94,6 +96,12 @@ export class Connection {
    * channel (see `HandlerContext.channelPasswordRateLimiter`'s own doc comment in
    * `protocol-handlers.ts`). */
   private readonly channelPasswordRateLimiter: RateLimiter;
+  /** T13.3 — separate, smaller buckets for profile self-service mutations and on-demand avatar
+   * fetches specifically (see `config.ts`'s doc comment), checked the same way
+   * `chatSendRateLimiter`/`chatHistoryRateLimiter` are: once the message type is known but before
+   * `routeClientMessage` ever runs. */
+  private readonly profileMutationRateLimiter: RateLimiter;
+  private readonly avatarFetchRateLimiter: RateLimiter;
   private readonly heartbeat: HeartbeatMonitor;
   private handshakeTimer: NodeJS.Timeout | undefined;
   private forceCloseTimer: NodeJS.Timeout | undefined;
@@ -125,6 +133,13 @@ export class Connection {
      * `voice/temporary-channels.ts`). Shared across every connection this server accepts (a single
      * process-wide registry, exactly like `voiceRegistry`). */
     private readonly temporaryChannels: TemporaryChannelRegistry,
+    /** T13.3 — server-local persistent profile state (see `profile-port.ts`). Composition config,
+     * shared across every connection this server accepts. */
+    private readonly profile: ProfilePort,
+    /** T13.3 — in-memory, non-persistent online-presence registry (see
+     * `presence/registry.ts`). Shared across every connection this server accepts (a single
+     * process-wide registry, exactly like `voiceRegistry`). */
+    private readonly presenceRegistry: PresenceRegistry,
     /** Sends a message to a *different* connection, looked up by id, if it still exists. */
     private readonly deliverToConnection: (connectionId: string, message: ServerMessage) => void,
     /** T9 — forcibly closes a *different* connection, looked up by id, with a `server:error` +
@@ -146,6 +161,13 @@ export class Connection {
     private readonly broadcastToReadyPersonalized: (
       buildMessage: (identityId: string) => ServerMessage | undefined,
     ) => void,
+    /** T13.3 — `broadcastToReadyConnections`'s counterpart that excludes one connection id (the
+     * connecting one itself, for a freshly-online identity's `server:presence-updated` — see
+     * `protocol-handlers.ts`'s `'broadcast-ready-except-self'` `OutgoingAction`). */
+    private readonly broadcastToReadyExceptConnection: (
+      excludeConnectionId: string,
+      message: ServerMessage,
+    ) => void,
     private readonly onClosed: (connection: Connection) => void,
     private readonly now: () => Date = () => new Date(),
   ) {
@@ -157,6 +179,8 @@ export class Connection {
     this.chatSendRateLimiter = new RateLimiter(config.chatSendRateLimit);
     this.chatHistoryRateLimiter = new RateLimiter(config.chatHistoryRateLimit);
     this.channelPasswordRateLimiter = new RateLimiter(config.channelPasswordRateLimit);
+    this.profileMutationRateLimiter = new RateLimiter(config.profileMutationRateLimit);
+    this.avatarFetchRateLimiter = new RateLimiter(config.avatarFetchRateLimit);
     this.heartbeat = new HeartbeatMonitor(config.heartbeatIntervalMs, config.heartbeatTimeoutMs, {
       sendPing: () => {
         // Not currently reachable with a throw in `ws@8.21.3` (`ping()` only throws while
@@ -277,6 +301,35 @@ export class Connection {
       return;
     }
 
+    // T13.3 — separate, smaller rate-limit buckets for profile mutations and on-demand avatar
+    // fetches specifically, checked the same way chat's own buckets are: once the message type is
+    // known but before `routeClientMessage` ever runs. Non-fatal (`PROFILE_RATE_LIMITED`).
+    const isProfileMutation =
+      parsed.message.type === 'client:profile-set-avatar' ||
+      parsed.message.type === 'client:profile-clear-avatar' ||
+      parsed.message.type === 'client:profile-set-status' ||
+      parsed.message.type === 'client:profile-clear-member-status' ||
+      parsed.message.type === 'client:profile-set-presence';
+    if (isProfileMutation && !this.profileMutationRateLimiter.tryConsume()) {
+      this.rejectOrWarn(
+        'PROFILE_RATE_LIMITED',
+        'Profile mutation rate limit exceeded',
+        parsed.message.id,
+      );
+      return;
+    }
+    if (
+      parsed.message.type === 'client:profile-request-avatar' &&
+      !this.avatarFetchRateLimiter.tryConsume()
+    ) {
+      this.rejectOrWarn(
+        'PROFILE_RATE_LIMITED',
+        'Avatar fetch rate limit exceeded',
+        parsed.message.id,
+      );
+      return;
+    }
+
     // Everything past this point operates on an already-validated message, but this is a
     // single-process service shared by every connected client: an uncaught exception here would
     // crash the process and drop every connection, not just this one. Contain any unexpected
@@ -300,6 +353,8 @@ export class Connection {
         channels: this.channels,
         temporaryChannels: this.temporaryChannels,
         channelPasswordRateLimiter: this.channelPasswordRateLimiter,
+        profile: this.profile,
+        presenceRegistry: this.presenceRegistry,
         identityId: this._identityId,
         nickname: this._nickname,
       });
@@ -330,6 +385,8 @@ export class Connection {
           this.broadcastToReadyConnections(action.message);
         } else if (action.kind === 'broadcast-ready-personalized') {
           this.broadcastToReadyPersonalized(action.buildMessage);
+        } else if (action.kind === 'broadcast-ready-except-self') {
+          this.broadcastToReadyExceptConnection(this.id, action.message);
         } else {
           this.closeOtherConnection(action.connectionId, action.code, action.message);
         }
@@ -408,6 +465,7 @@ export class Connection {
     this.clearForceCloseTimer();
     this.heartbeat.stop();
     this.cleanupVoiceMembership();
+    this.cleanupPresence();
     this.logger.info('connection_closed', {
       connectionId: this.id,
       code,
@@ -466,6 +524,31 @@ export class Connection {
         ),
       );
     }
+  }
+
+  /**
+   * T13.3 — mirrors `cleanupVoiceMembership`'s "never wait for an explicit leave message" guarantee:
+   * whenever this connection's socket disappears, this identity's presence must not linger. Only
+   * broadcasts `server:presence-removed` on a genuine 1->0 transition (this connection was the
+   * identity's *last* live connection) — deregistering one of several simultaneous connections for
+   * the same identity is silent, since the identity is still visibly online via the other(s).
+   */
+  private cleanupPresence(): void {
+    const deregistered = this.presenceRegistry.deregisterConnection(this.id);
+    if (!deregistered?.becameOffline) return;
+
+    this.logger.info('presence_offline_on_disconnect', {
+      connectionId: this.id,
+      memberRef: deregistered.memberRef,
+    });
+
+    // `broadcastToReadyConnections` already filters to `state === 'ready'`, and this connection's
+    // own state was set to `'closed'` above, so it never receives its own removal notice.
+    this.broadcastToReadyConnections({
+      type: 'server:presence-removed',
+      id: randomUUID(),
+      memberRef: deregistered.memberRef,
+    });
   }
 
   private clearHandshakeTimer(): void {

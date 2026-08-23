@@ -43,10 +43,17 @@ import {
   type ClientMediaTrackSourceMessage,
   type ClientMessage,
   type ClientPingMessage,
+  type ClientProfileClearAvatarMessage,
+  type ClientProfileClearMemberStatusMessage,
+  type ClientProfileRequestAvatarMessage,
+  type ClientProfileSetAvatarMessage,
+  type ClientProfileSetPresenceMessage,
+  type ClientProfileSetStatusMessage,
   type ClientVoiceJoinMessage,
   type ClientVoiceLeaveMessage,
   type ClientWebrtcMessage,
   type ErrorCode,
+  type MemberPresence,
   type ServerCapability,
   type ServerMessage,
 } from '@disco-voador/protocol';
@@ -55,6 +62,9 @@ import type { AuthorizationPort, AuthorizationSnapshot } from './authorization-p
 import type { ChannelPort } from './channel-port.js';
 import type { ChatPort } from './chat-port.js';
 import type { ConnectionState } from './connection-state.js';
+import { deriveMemberRoleBucket } from './presence/role-bucket.js';
+import type { PresenceRegistry } from './presence/registry.js';
+import type { ProfilePort } from './profile-port.js';
 import type { RateLimiter } from './rate-limiter.js';
 import {
   maybeDestroyEmptyTemporaryChannel,
@@ -107,6 +117,10 @@ export interface HandlerContext {
    * `channel-port.ts`'s doc comment on the accepted blocking-cost tradeoff). Constructed once per
    * `Connection`, mirroring `chatSendRateLimiter`/`chatHistoryRateLimiter`. */
   readonly channelPasswordRateLimiter: RateLimiter;
+  /** T13.3 — server-local persistent profile state (see `profile-port.ts`). */
+  readonly profile: ProfilePort;
+  /** T13.3 — in-memory, non-persistent online-presence registry (see `presence/registry.ts`). */
+  readonly presenceRegistry: PresenceRegistry;
   /** T9 — this connection's own server-verified identity, once known. `undefined` before the
    * identity proof succeeds; always defined for every message reachable only from `ready`
    * (enforced structurally by `routeClientMessage`'s own dispatch below, not re-checked in every
@@ -158,6 +172,15 @@ export type OutgoingAction =
        * it returns `undefined` receives nothing. */
       readonly kind: 'broadcast-ready-personalized';
       readonly buildMessage: (identityId: string) => ServerMessage | undefined;
+    }
+  | {
+      /** T13.3 — pushes `message` to every currently-`ready` connection *except* the one that
+       * triggered it (`Connection` excludes itself by its own connection id — see `connection.ts`).
+       * Used exactly once: a freshly-online identity's `server:presence-updated`, since the
+       * connecting connection itself receives the full `server:presence-snapshot` instead (which
+       * already omits its own identity). */
+      readonly kind: 'broadcast-ready-except-self';
+      readonly message: ServerMessage;
     };
 
 export type RouteResult =
@@ -196,6 +219,10 @@ function closeConnection(connectionId: string, code: ErrorCode, message: string)
 
 function broadcastToReady(message: ServerMessage): OutgoingAction {
   return { kind: 'broadcast-ready', message };
+}
+
+function broadcastToReadyExceptSelf(message: ServerMessage): OutgoingAction {
+  return { kind: 'broadcast-ready-except-self', message };
 }
 
 /** T13.2 — the caller's own effective group ids, derived the one documented way
@@ -332,6 +359,7 @@ function buildServerHello(
   identityId: string,
   ctx: HandlerContext,
 ): ServerMessage {
+  const serverAvatarRef = ctx.profile.getServerProfile().avatarRef;
   return {
     type: 'server:hello',
     id: replyToId,
@@ -342,6 +370,309 @@ function buildServerHello(
     serverCapabilities: [...ctx.serverMetadata.capabilities],
     serverTime: ctx.now().toISOString(),
     heartbeat: { intervalMs: ctx.heartbeat.intervalMs, timeoutMs: ctx.heartbeat.timeoutMs },
+    ...(serverAvatarRef !== undefined ? { serverAvatarRef } : {}),
+  };
+}
+
+// --- T13.3 profile/presence -------------------------------------------------------------------
+
+/**
+ * A member's current presence view, as broadcast/snapshotted to *other* clients — `undefined` iff
+ * `identityId` is not currently online (defensive: every real call site only ever calls this for an
+ * identity `PresenceRegistry` itself just reported as online). `roleBucket` is recomputed fresh here
+ * every time, never cached (see `role-bucket.ts`'s own doc comment).
+ */
+function buildMemberPresenceView(
+  identityId: string,
+  ctx: HandlerContext,
+): MemberPresence | undefined {
+  const memberRef = ctx.presenceRegistry.getMemberRef(identityId);
+  const nickname = ctx.presenceRegistry.getNickname(identityId);
+  if (!memberRef || !nickname) return undefined;
+
+  const profile = ctx.profile.getUserProfile(identityId);
+  const effectiveGroupIds = effectiveGroupIdsFor(identityId, ctx);
+  const roleBucket = deriveMemberRoleBucket(effectiveGroupIds, (permission) =>
+    ctx.authorization.can(identityId, permission),
+  );
+
+  return {
+    memberRef,
+    displayName: nickname,
+    presence: profile.presencePreference,
+    ...(profile.customStatus !== undefined ? { customStatus: profile.customStatus } : {}),
+    ...(profile.avatarRef !== undefined ? { avatarRef: profile.avatarRef } : {}),
+    ...(roleBucket !== undefined ? { roleBucket } : {}),
+  };
+}
+
+/** The full online-member snapshot for a connection that just became `ready` — every other
+ * currently-online identity's presence view, never including `selfIdentityId`'s own entry (see
+ * `serverPresenceSnapshotMessageSchema`'s own doc comment). Always called after
+ * `PresenceRegistry.registerConnection` for `selfIdentityId` (see `handleIdentityProof`'s call
+ * site), so `selfMemberRef` is always resolvable here in practice. */
+function buildPresenceSnapshotMessage(ctx: HandlerContext, selfIdentityId: string): ServerMessage {
+  const members: MemberPresence[] = [];
+  for (const identityId of ctx.presenceRegistry.listOnlineIdentityIds()) {
+    if (identityId === selfIdentityId) continue;
+    const member = buildMemberPresenceView(identityId, ctx);
+    if (member) members.push(member);
+  }
+  const selfMemberRef = ctx.presenceRegistry.getMemberRef(selfIdentityId);
+  return {
+    type: 'server:presence-snapshot',
+    id: randomUUID(),
+    members,
+    ...(selfMemberRef !== undefined ? { selfMemberRef } : {}),
+  };
+}
+
+/** The universal ack reply for every mutating `client:profile-*` message, always describing the
+ * *actor's own* current profile snapshot — regardless of whether the mutation actually targeted
+ * `'self'`, `'server'`, or `'member'` (see the individual `handleProfile*` functions' own doc
+ * comments for why: there is no separate generic-ack message type for a `target: 'server'`/
+ * `'member'` mutation, and the actor's own state is always well-defined and unaffected either way,
+ * so reusing this one shape is a minimal, schema-conformant choice rather than a new message type). */
+function buildProfileSelfUpdatedMessage(
+  replyToId: string,
+  identityId: string,
+  ctx: HandlerContext,
+): ServerMessage {
+  const profile = ctx.profile.getUserProfile(identityId);
+  return {
+    type: 'server:profile-self-updated',
+    id: replyToId,
+    presence: ctx.presenceRegistry.isOnline(identityId) ? profile.presencePreference : 'offline',
+    ...(profile.customStatus !== undefined ? { customStatus: profile.customStatus } : {}),
+    ...(profile.avatarRef !== undefined ? { avatarRef: profile.avatarRef } : {}),
+  };
+}
+
+/** Appends the `server:presence-updated` broadcast for `identityId`'s current view, iff it is
+ * currently online (always true for every real call site: either the actor's own identity, or a
+ * `memberRef`-resolved target that `PresenceRegistry` just confirmed is online).
+ *
+ * `excludeActingConnection` must be `true` iff `identityId` is the *acting* connection's own
+ * identity (every `target: 'self'` call site) — that connection already received the same data via
+ * its `reply(buildProfileSelfUpdatedMessage(...))`, and `serverPresenceUpdatedMessageSchema`'s own
+ * doc comment promises this broadcast only ever reaches every *other* ready connection. It must stay
+ * `false` for a moderator clearing a *different* member's avatar/status (`target: 'member'`): there,
+ * `identityId` names the target, not the acting moderator, whose own connection still needs this
+ * broadcast to update its own view of that member's row (its `reply` only confirms the moderator's
+ * own action succeeded, not the target's new presence view). Getting this backwards previously
+ * caused every user who changed their own profile to see a duplicate phantom row for themselves. */
+function pushPresenceUpdate(
+  identityId: string,
+  ctx: HandlerContext,
+  actions: OutgoingAction[],
+  excludeActingConnection: boolean,
+): void {
+  const member = buildMemberPresenceView(identityId, ctx);
+  if (member) {
+    const message: ServerMessage = { type: 'server:presence-updated', id: randomUUID(), member };
+    actions.push(
+      excludeActingConnection ? broadcastToReadyExceptSelf(message) : broadcastToReady(message),
+    );
+  }
+}
+
+function decodeAvatarBase64(imageBase64: string): Buffer {
+  return Buffer.from(imageBase64, 'base64');
+}
+
+function handleProfileSetAvatar(
+  message: ClientProfileSetAvatarMessage,
+  ctx: HandlerContext,
+): RouteResult {
+  const identityId = requireIdentityId(ctx);
+  if (message.target === 'server' && !ctx.authorization.can(identityId, 'server.manage')) {
+    return {
+      ok: false,
+      code: 'AUTHORIZATION_DENIED',
+      message: 'Not permitted to manage the server avatar',
+    };
+  }
+
+  const rawBytes = decodeAvatarBase64(message.imageBase64);
+  const result =
+    message.target === 'server'
+      ? ctx.profile.setServerAvatar(message.format, rawBytes)
+      : ctx.profile.setUserAvatar(identityId, message.format, rawBytes);
+  if (!result.ok) {
+    return { ok: false, code: result.code, message: result.message };
+  }
+
+  const actions: OutgoingAction[] = [
+    reply(buildProfileSelfUpdatedMessage(message.id, identityId, ctx)),
+  ];
+  if (message.target === 'self') pushPresenceUpdate(identityId, ctx, actions, true);
+  return { ok: true, nextState: 'ready', actions };
+}
+
+function handleProfileClearAvatar(
+  message: ClientProfileClearAvatarMessage,
+  ctx: HandlerContext,
+): RouteResult {
+  const identityId = requireIdentityId(ctx);
+
+  if (message.target === 'server') {
+    if (!ctx.authorization.can(identityId, 'server.manage')) {
+      return {
+        ok: false,
+        code: 'AUTHORIZATION_DENIED',
+        message: 'Not permitted to manage the server avatar',
+      };
+    }
+    ctx.profile.clearServerAvatar();
+    return {
+      ok: true,
+      nextState: 'ready',
+      actions: [reply(buildProfileSelfUpdatedMessage(message.id, identityId, ctx))],
+    };
+  }
+
+  if (message.target === 'member') {
+    if (!ctx.authorization.can(identityId, 'moderation.profile.clear')) {
+      return {
+        ok: false,
+        code: 'AUTHORIZATION_DENIED',
+        message: "Not permitted to clear another member's avatar",
+      };
+    }
+    // Schema guarantees `memberRef` is present whenever `target === 'member'` (see
+    // `clientProfileClearAvatarMessageSchema`'s `.refine()`s) — never reachable any other way.
+    const memberRef = message.memberRef;
+    if (memberRef === undefined) {
+      throw new Error('Invariant violated: target "member" with no memberRef');
+    }
+    const targetIdentityId = ctx.presenceRegistry.findIdentityByMemberRef(memberRef);
+    if (!targetIdentityId) {
+      return {
+        ok: false,
+        code: 'MEMBER_NOT_FOUND',
+        message: 'That member is not currently online',
+      };
+    }
+    ctx.profile.clearUserAvatar(targetIdentityId);
+    const actions: OutgoingAction[] = [
+      reply(buildProfileSelfUpdatedMessage(message.id, identityId, ctx)),
+    ];
+    pushPresenceUpdate(targetIdentityId, ctx, actions, false);
+    return { ok: true, nextState: 'ready', actions };
+  }
+
+  // target === 'self'
+  ctx.profile.clearUserAvatar(identityId);
+  const actions: OutgoingAction[] = [
+    reply(buildProfileSelfUpdatedMessage(message.id, identityId, ctx)),
+  ];
+  pushPresenceUpdate(identityId, ctx, actions, true);
+  return { ok: true, nextState: 'ready', actions };
+}
+
+function handleProfileSetStatus(
+  message: ClientProfileSetStatusMessage,
+  ctx: HandlerContext,
+): RouteResult {
+  const identityId = requireIdentityId(ctx);
+  ctx.profile.setCustomStatus(identityId, message.customStatus);
+  const actions: OutgoingAction[] = [
+    reply(buildProfileSelfUpdatedMessage(message.id, identityId, ctx)),
+  ];
+  pushPresenceUpdate(identityId, ctx, actions, true);
+  return { ok: true, nextState: 'ready', actions };
+}
+
+function handleProfileClearMemberStatus(
+  message: ClientProfileClearMemberStatusMessage,
+  ctx: HandlerContext,
+): RouteResult {
+  const identityId = requireIdentityId(ctx);
+  if (!ctx.authorization.can(identityId, 'moderation.profile.clear')) {
+    return {
+      ok: false,
+      code: 'AUTHORIZATION_DENIED',
+      message: "Not permitted to clear another member's status",
+    };
+  }
+  const targetIdentityId = ctx.presenceRegistry.findIdentityByMemberRef(message.memberRef);
+  if (!targetIdentityId) {
+    return { ok: false, code: 'MEMBER_NOT_FOUND', message: 'That member is not currently online' };
+  }
+  ctx.profile.setCustomStatus(targetIdentityId, undefined);
+  const actions: OutgoingAction[] = [
+    reply(buildProfileSelfUpdatedMessage(message.id, identityId, ctx)),
+  ];
+  pushPresenceUpdate(targetIdentityId, ctx, actions, false);
+  return { ok: true, nextState: 'ready', actions };
+}
+
+function handleProfileSetPresence(
+  message: ClientProfileSetPresenceMessage,
+  ctx: HandlerContext,
+): RouteResult {
+  const identityId = requireIdentityId(ctx);
+  ctx.profile.setPresencePreference(identityId, message.presence);
+  const actions: OutgoingAction[] = [
+    reply(buildProfileSelfUpdatedMessage(message.id, identityId, ctx)),
+  ];
+  pushPresenceUpdate(identityId, ctx, actions, true);
+  return { ok: true, nextState: 'ready', actions };
+}
+
+/** No permission gating for any target (self/server/member) — reading avatar bytes is no more
+ * sensitive than the `avatarRef` hash/revision every `server:presence-snapshot`/`-updated` already
+ * broadcasts to every ready connection unconditionally; this just supplies the actual bytes behind
+ * a ref a client already legitimately has. Mirrors `client:chat-history-request`'s own "reading
+ * requires no permission beyond being an admitted, ready connection" asymmetry with its send-side
+ * permission gating. */
+function handleProfileRequestAvatar(
+  message: ClientProfileRequestAvatarMessage,
+  ctx: HandlerContext,
+): RouteResult {
+  const identityId = requireIdentityId(ctx);
+
+  let avatarData: ReturnType<ProfilePort['getUserAvatarData']>;
+  if (message.target === 'self') {
+    avatarData = ctx.profile.getUserAvatarData(identityId);
+  } else if (message.target === 'server') {
+    avatarData = ctx.profile.getServerAvatarData();
+  } else {
+    // Schema guarantees `memberRef` is present whenever `target === 'member'`.
+    const memberRef = message.memberRef;
+    if (memberRef === undefined) {
+      throw new Error('Invariant violated: target "member" with no memberRef');
+    }
+    const targetIdentityId = ctx.presenceRegistry.findIdentityByMemberRef(memberRef);
+    if (!targetIdentityId) {
+      return {
+        ok: false,
+        code: 'MEMBER_NOT_FOUND',
+        message: 'That member is not currently online',
+      };
+    }
+    avatarData = ctx.profile.getUserAvatarData(targetIdentityId);
+  }
+
+  if (!avatarData) {
+    // `MEMBER_NOT_FOUND` is also used, by extension, for a self/server request when no avatar is
+    // currently set — there is no separate "nothing to return" code, and this is the closest
+    // existing non-fatal shape (see `errors.ts`'s own doc comment).
+    return { ok: false, code: 'MEMBER_NOT_FOUND', message: 'No avatar is currently set' };
+  }
+
+  return {
+    ok: true,
+    nextState: 'ready',
+    actions: [
+      reply({
+        type: 'server:profile-avatar-data',
+        id: message.id,
+        format: avatarData.format,
+        imageBase64: avatarData.bytes.toString('base64'),
+        avatarRef: avatarData.avatarRef,
+      }),
+    ],
   };
 }
 
@@ -422,16 +753,47 @@ function handleIdentityProof(
     return { ok: false, code: admission.code, message: admission.message };
   }
 
+  // T13.3 — registers this connection's presence exactly once, at the moment it first reaches
+  // `ready` (mirrors T13.2's own `voice:catalog` initial push happening at this exact call site).
+  const presenceResult = ctx.presenceRegistry.registerConnection(
+    identityId,
+    ctx.connectionId,
+    challenge.nickname,
+  );
+
+  const actions: OutgoingAction[] = [
+    reply(buildServerHello(message.id, identityId, ctx)),
+    reply(buildAuthorizationStateMessage(admission)),
+    reply(buildFilteredVoiceCatalogMessage(ctx, identityId)),
+    reply(buildPresenceSnapshotMessage(ctx, identityId)),
+    // T13.3 — closes the "no self-profile read endpoint" gap: without this, a returning identity's
+    // own previously-persisted presence/status/avatar is invisible to its own client until it makes
+    // a new mutation (see `VoiceChannelState.selfPresence`'s own doc comment on that limitation).
+    // `buildProfileSelfUpdatedMessage` is reused as-is (same shape `client:profile-*` mutations reply
+    // with) but with a fresh id — this is a proactive push, not a reply to anything the client sent,
+    // and `onProfileSelfUpdated` already tolerates an unmatched id (it only *optionally* resolves a
+    // pending request by id, and unconditionally applies the state update either way).
+    reply(buildProfileSelfUpdatedMessage(randomUUID(), identityId, ctx)),
+  ];
+  // Only a genuine 0->1 transition for this identity is announced to everyone else — if this
+  // identity already had another live connection, it was already visible as online, so no
+  // `server:presence-updated` is needed (see `PresenceRegistry.registerConnection`'s own doc
+  // comment).
+  if (presenceResult.becameOnline) {
+    const member = buildMemberPresenceView(identityId, ctx);
+    if (member) {
+      actions.push(
+        broadcastToReadyExceptSelf({ type: 'server:presence-updated', id: randomUUID(), member }),
+      );
+    }
+  }
+
   return {
     ok: true,
     nextState: 'ready',
     identityId,
     nickname: challenge.nickname,
-    actions: [
-      reply(buildServerHello(message.id, identityId, ctx)),
-      reply(buildAuthorizationStateMessage(admission)),
-      reply(buildFilteredVoiceCatalogMessage(ctx, identityId)),
-    ],
+    actions,
   };
 }
 
@@ -1832,5 +2194,17 @@ export function routeClientMessage(
       return handleChannelRemovePassword(message, ctx);
     case 'client:channel-get-editable-node':
       return handleChannelGetEditableNode(message, ctx);
+    case 'client:profile-set-avatar':
+      return handleProfileSetAvatar(message, ctx);
+    case 'client:profile-clear-avatar':
+      return handleProfileClearAvatar(message, ctx);
+    case 'client:profile-set-status':
+      return handleProfileSetStatus(message, ctx);
+    case 'client:profile-clear-member-status':
+      return handleProfileClearMemberStatus(message, ctx);
+    case 'client:profile-set-presence':
+      return handleProfileSetPresence(message, ctx);
+    case 'client:profile-request-avatar':
+      return handleProfileRequestAvatar(message, ctx);
   }
 }

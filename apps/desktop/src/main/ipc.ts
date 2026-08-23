@@ -1,15 +1,20 @@
 import {
+  AVATAR_MAX_BASE64_LENGTH,
+  avatarImageFormatSchema,
   displayNameSchema,
   identityConnectionIdSchema,
   identityExpiresAtSchema,
   identityNonceSchema,
 } from '@disco-voador/protocol';
-import { app, ipcMain } from 'electron';
+import { app, BrowserWindow, ipcMain } from 'electron';
 import type { IpcMainInvokeEvent, WebContents } from 'electron';
 import { z } from 'zod';
 
 import {
   IPC_CHANNELS,
+  type AvatarMaxDimension,
+  type DesktopAvatarPickResult,
+  type DesktopAvatarValidationResult,
   type DesktopBookmarkInput,
   type DesktopClientSettings,
   type DesktopClientSettingsPatch,
@@ -26,6 +31,7 @@ import {
   type DesktopServerBookmark,
   type DesktopVersionInfo,
 } from '../shared/ipc-contract.js';
+import { selectAvatarImageFile, validateAvatarImageBytes } from './avatar-images.js';
 import {
   getPublicIdentity,
   regenerateIdentity,
@@ -118,6 +124,26 @@ const bookmarkSchema = z
     bookmarkId: z.string().min(1).max(MAX_BOOKMARK_ID_LENGTH),
     displayName: z.string().min(1).max(MAX_BOOKMARK_NAME_LENGTH),
     serverAddress: z.string().min(1).max(MAX_SERVER_ADDRESS_LENGTH),
+  })
+  .strict();
+
+/** T13.3 — mirrors `packages/protocol/src/profile.ts`'s documented dimension ceilings exactly: 512
+ * for a user avatar, 1024 for the server avatar. A closed two-value union, not a bare bounded
+ * number, so an invalid caller-supplied value is rejected outright rather than silently clamped. */
+const avatarMaxDimensionSchema = z.union([z.literal(512), z.literal(1024)]);
+
+/** Mirrors `avatarBase64Schema` in `@disco-voador/protocol` exactly — the same bound Main is willing
+ * to accept must never be looser than what the wire protocol itself would accept. */
+const avatarBase64Schema = z
+  .string()
+  .max(AVATAR_MAX_BASE64_LENGTH)
+  .regex(/^[A-Za-z0-9+/]+={0,2}$/u, 'must be base64');
+
+const validateAvatarImageBytesInputSchema = z
+  .object({
+    base64: avatarBase64Schema,
+    format: avatarImageFormatSchema,
+    maxDimension: avatarMaxDimensionSchema,
   })
   .strict();
 
@@ -380,6 +406,42 @@ export function registerIpcHandlers(
       assertTrustedSender(event, IPC_CHANNELS.removeBookmark);
       if (typeof bookmarkId !== 'string') return false;
       return removeBookmark(bookmarkId);
+    },
+  );
+
+  // --- T13.3 profile/avatar image handling -----------------------------------------------------
+
+  ipcMain.handle(
+    IPC_CHANNELS.selectAvatarImageFile,
+    async (
+      event: IpcMainInvokeEvent,
+      maxDimension: unknown,
+    ): Promise<DesktopAvatarPickResult | undefined> => {
+      assertTrustedSender(event, IPC_CHANNELS.selectAvatarImageFile);
+      const parsed = avatarMaxDimensionSchema.safeParse(maxDimension);
+      if (!parsed.success) return undefined;
+      const ownerWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined;
+      return selectAvatarImageFile(ownerWindow, parsed.data satisfies AvatarMaxDimension);
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.validateAvatarImageBytes,
+    (event: IpcMainInvokeEvent, input: unknown): DesktopAvatarValidationResult => {
+      assertTrustedSender(event, IPC_CHANNELS.validateAvatarImageBytes);
+      const parsed = validateAvatarImageBytesInputSchema.safeParse(input);
+      if (!parsed.success) {
+        return {
+          ok: false,
+          code: 'AVATAR_INVALID_FORMAT',
+          message: 'Invalid avatar validation request',
+        };
+      }
+      return validateAvatarImageBytes(
+        parsed.data.base64,
+        parsed.data.format,
+        parsed.data.maxDimension satisfies AvatarMaxDimension,
+      );
     },
   );
 }

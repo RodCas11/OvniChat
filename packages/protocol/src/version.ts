@@ -42,6 +42,15 @@
  * reject the new shape outright (`channels` is gone), so this is a genuine breaking change, not an
  * additive one, exactly like T7's v1->v2 bump. v3 support was dropped rather than kept as a
  * parallel codepath, matching that same precedent.
+ *
+ * **Not bumped for T13.3** (profiles/avatars/members/presence), deliberately, for the same reason
+ * T9 was not bumped: every T13.3 wire change is genuinely additive under the policy above —
+ * `server:hello` gained only an *optional* `serverAvatarRef` field, `permissionKeySchema` gained
+ * only a new key (`moderation.profile.clear`) an unrecognized-key-tolerant client already handles
+ * safely, `errorCodeSchema` gained only new codes a client already falls back on generically for,
+ * and every new profile/presence concept (`client:profile-*`/`server:profile-*`/
+ * `server:presence-*`) is an entirely new message type added to the existing discriminated unions,
+ * never a change to an existing message's required shape.
  */
 export const CURRENT_PROTOCOL_VERSION = 4;
 

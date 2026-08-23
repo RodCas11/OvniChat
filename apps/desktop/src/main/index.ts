@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, session } from 'electron';
+import { app, BrowserWindow, dialog, Menu, session } from 'electron';
 import { promises as fsPromises } from 'node:fs';
 import path from 'node:path';
 
@@ -1291,6 +1291,448 @@ function armE2EChannelGuestScreenshotCapture(window: BrowserWindow): void {
   });
 }
 
+/** One step of a `DISCO_VOADOR_E2E_PROFILE_STEPS` script — see `armE2EProfileSmoke`'s own doc
+ * comment. A loose, throwaway shape (not a discriminated union) deliberately: this is QA-pass-only
+ * test scaffolding, never reachable in a packaged build, and every field is optional/action-specific
+ * by design (mirrors this file's own existing `DISCO_VOADOR_E2E_T132_SCREENSHOT_*` env vars, which
+ * are also read as raw strings with no schema). */
+interface ProfileSmokeStep {
+  readonly action: string;
+  readonly ms?: number;
+  readonly groupId?: string;
+  readonly selector?: string;
+  readonly value?: string;
+  readonly text?: string;
+  readonly name?: string;
+  readonly marker?: string;
+  readonly expression?: string;
+  readonly timeoutMs?: number;
+  readonly width?: number;
+  readonly height?: number;
+}
+
+function parseProfileSmokeSteps(raw: string): readonly ProfileSmokeStep[] {
+  const parsed: unknown = JSON.parse(raw);
+  if (!Array.isArray(parsed))
+    throw new Error('DISCO_VOADOR_E2E_PROFILE_STEPS must be a JSON array');
+  return parsed.map((entry) => {
+    if (
+      typeof entry !== 'object' ||
+      entry === null ||
+      typeof (entry as { action?: unknown }).action !== 'string'
+    ) {
+      throw new Error('Each DISCO_VOADOR_E2E_PROFILE_STEPS entry needs a string "action"');
+    }
+    return entry as ProfileSmokeStep;
+  });
+}
+
+/**
+ * T13.3 QA-pass E2E driver — added, like `armE2EChannelAdminScreenshotCapture`, solely to produce
+ * real evidence for the T13.3 profile/avatar/members/presence feature without ever touching Renderer
+ * product code. Two small, narrowly-scoped test-only capabilities, both gated on
+ * `DISCO_VOADOR_E2E_PROFILE_SMOKE=1` and `!app.isPackaged` (unreachable in any packaged build
+ * regardless of environment, mirroring `config.e2eFakeMediaRequested`'s own double-gate precedent
+ * exactly):
+ *
+ * 1. `DISCO_VOADOR_E2E_PROFILE_AVATAR_FILE_PATH`, when set, replaces `dialog.showOpenDialog` with a
+ *    fake that immediately resolves to that one fixed path — this is the ONLY thing it fakes; every
+ *    byte is still read from a real file on disk by the real `avatar-images.ts` and re-validated for
+ *    real by `@disco-voador/shared`'s `validateAvatarImage`. Needed because no E2E script can click
+ *    through a native OS "choose a file" dialog.
+ * 2. `DISCO_VOADOR_E2E_PROFILE_STEPS`, a JSON array of small steps run in order against the real,
+ *    already-rendered DOM via `webContents.executeJavaScript` — the exact same technique
+ *    `armE2EChannelAdminScreenshotCapture` already established for T13.2, generalized into a small
+ *    reusable vocabulary (open/close the Profile Editor or Server Settings, upload/remove an avatar,
+ *    set status/presence, open a member's popover, read back real rendered state, and save a
+ *    screenshot) instead of one bespoke function per scenario. Every observation this logs
+ *    (`disco-voador:e2e-profile-*`) is a real, freshly-read DOM condition, never a fabricated value —
+ *    the whole point of using a real Electron instance instead of relying solely on the protocol-level
+ *    coverage `tests/dedicated-server/profile-integration.test.ts` already has.
+ */
+function armE2EProfileSmoke(window: BrowserWindow): void {
+  const isArmed = process.env['DISCO_VOADOR_E2E_PROFILE_SMOKE'] === '1' && !app.isPackaged;
+  if (!isArmed) return;
+
+  const avatarFilePath = process.env['DISCO_VOADOR_E2E_PROFILE_AVATAR_FILE_PATH'];
+  if (avatarFilePath) {
+    dialog.showOpenDialog = ((): Promise<Electron.OpenDialogReturnValue> =>
+      Promise.resolve({
+        canceled: false,
+        filePaths: [avatarFilePath],
+      })) as typeof dialog.showOpenDialog;
+  }
+
+  const stepsRaw = process.env['DISCO_VOADOR_E2E_PROFILE_STEPS'];
+  const screenshotDir = process.env['DISCO_VOADOR_E2E_PROFILE_SCREENSHOT_DIR'];
+  if (!stepsRaw) return;
+
+  const wait = (ms: number): Promise<void> =>
+    new Promise((resolve) => {
+      setTimeout(resolve, ms);
+    });
+
+  async function evalJs<T>(expression: string): Promise<T> {
+    return (await window.webContents.executeJavaScript(expression)) as T;
+  }
+
+  async function waitForCondition(expression: string, timeoutMs = 5000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const ok = await evalJs<boolean>(`Boolean(${expression})`);
+      if (ok) return;
+      if (Date.now() >= deadline) {
+        throw new Error(`E2E profile smoke: timed out waiting for: ${expression}`);
+      }
+      await wait(100);
+    }
+  }
+
+  async function click(selector: string): Promise<void> {
+    await window.webContents.executeJavaScript(
+      `document.querySelector(${JSON.stringify(selector)})?.click();`,
+    );
+  }
+
+  async function setValue(selector: string, value: string): Promise<void> {
+    await window.webContents.executeJavaScript(`
+      (function () {
+        const el = document.querySelector(${JSON.stringify(selector)});
+        if (!el) return;
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+        setter.call(el, ${JSON.stringify(value)});
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+      })();
+    `);
+  }
+
+  async function clickMemberRowByName(name: string): Promise<void> {
+    await window.webContents.executeJavaScript(`
+      (function () {
+        const rows = Array.from(document.querySelectorAll('[data-testid^="member-row-"]'));
+        const row = rows.find((el) => el.textContent && el.textContent.includes(${JSON.stringify(name)}));
+        row?.click();
+      })();
+    `);
+  }
+
+  async function closeModal(testId: string): Promise<void> {
+    await click(`[data-testid="${testId}"] [aria-label="Close"]`);
+  }
+
+  async function saveScreenshot(name: string): Promise<void> {
+    if (!screenshotDir) throw new Error('DISCO_VOADOR_E2E_PROFILE_SCREENSHOT_DIR is not set');
+    const image = await window.webContents.capturePage();
+    await fsPromises.writeFile(path.join(screenshotDir, name), image.toPNG());
+    console.info(`E2E_SCREENSHOT_SAVED:${name}`);
+  }
+
+  async function runSteps(steps: readonly ProfileSmokeStep[]): Promise<void> {
+    for (const step of steps) {
+      switch (step.action) {
+        case 'wait':
+          await wait(step.ms ?? 0);
+          break;
+        case 'wait-group': {
+          const groupId = step.groupId;
+          if (!groupId) throw new Error('"wait-group" needs a groupId');
+          await waitForCondition(
+            `window.__e2eMyGroups && window.__e2eMyGroups.includes(${JSON.stringify(groupId)})`,
+            step.timeoutMs ?? 15000,
+          );
+          break;
+        }
+        case 'wait-condition':
+          if (!step.expression) throw new Error('"wait-condition" needs an expression');
+          await waitForCondition(step.expression, step.timeoutMs ?? 5000);
+          break;
+        case 'click':
+          if (!step.selector) throw new Error('"click" needs a selector');
+          await click(step.selector);
+          break;
+        case 'set-value':
+          if (!step.selector || step.value === undefined) {
+            throw new Error('"set-value" needs a selector and a value');
+          }
+          await setValue(step.selector, step.value);
+          break;
+        case 'open-profile-editor':
+          await click('[data-testid="user-control-open-profile"]');
+          await waitForCondition(
+            'document.querySelector(\'[data-testid="profile-editor-change-avatar"]\')',
+          );
+          break;
+        case 'close-profile-editor':
+          await closeModal('profile-editor-modal');
+          break;
+        case 'open-server-settings':
+          await click('[data-testid="open-server-settings"]');
+          // Waits on the "Channels" nav tab specifically because it is the one section
+          // `ServerSettingsModal.tsx` always renders unconditionally (unlike "Server Profile",
+          // gated on `server.manage`) — correct regardless of which admin permissions this caller
+          // actually holds, unlike waiting on a permission-gated Channels-page control.
+          await waitForCondition(
+            'document.querySelector(\'[data-testid="server-settings-nav-channels"]\')',
+          );
+          break;
+        case 'close-server-settings':
+          await closeModal('server-settings-modal');
+          break;
+        case 'open-member-popover':
+          if (!step.name) throw new Error('"open-member-popover" needs a name');
+          await clickMemberRowByName(step.name);
+          await waitForCondition('document.querySelector(\'[data-testid="member-popover-name"]\')');
+          break;
+        case 'close-member-popover':
+          await closeModal('member-profile-modal');
+          break;
+        case 'upload-self-avatar':
+          await click('[data-testid="profile-editor-change-avatar"]');
+          await waitForCondition(
+            'document.querySelector(\'[data-testid="profile-editor-remove-avatar"]\')',
+            10000,
+          );
+          break;
+        case 'attempt-upload-self-avatar':
+          // Unlike `upload-self-avatar`, does not wait for the "Remove" button — used for a rejected
+          // upload (invalid format/animated/oversized), which never makes one appear.
+          await click('[data-testid="profile-editor-change-avatar"]');
+          await wait(step.ms ?? 500);
+          break;
+        case 'remove-self-avatar':
+          await click('[data-testid="profile-editor-remove-avatar"]');
+          await waitForCondition(
+            '!document.querySelector(\'[data-testid="profile-editor-remove-avatar"]\')',
+            10000,
+          );
+          break;
+        case 'upload-server-avatar':
+          await click('[data-testid="server-profile-change-avatar"]');
+          await waitForCondition(
+            'document.querySelector(\'[data-testid="server-profile-remove-avatar"]\')',
+            10000,
+          );
+          break;
+        case 'set-status':
+          if (step.text === undefined) throw new Error('"set-status" needs text');
+          await setValue('[data-testid="profile-editor-status-input"]', step.text);
+          await click('[data-testid="profile-editor-save-status"]');
+          await wait(300);
+          break;
+        case 'set-presence':
+          if (!step.value) throw new Error('"set-presence" needs a value');
+          await click(`[data-testid="profile-editor-presence-${step.value}"]`);
+          await wait(300);
+          break;
+        case 'read-self-snapshot': {
+          const marker = step.marker ?? 'default';
+          const snapshot = await evalJs<{
+            hasAvatar: boolean;
+            status: string;
+            presence: string;
+          }>(`
+            (function () {
+              const opts = ['online', 'away', 'dnd'];
+              let presence = 'unknown';
+              for (const o of opts) {
+                const el = document.querySelector('[data-testid="profile-editor-presence-' + o + '"]');
+                if (el && el.checked) { presence = o; break; }
+              }
+              return {
+                hasAvatar: Boolean(document.querySelector('[data-testid="profile-editor-remove-avatar"]')),
+                status: document.querySelector('[data-testid="profile-editor-status-input"]')?.value ?? '',
+                presence,
+              };
+            })();
+          `);
+          console.info(
+            `disco-voador:e2e-profile-self-snapshot:${marker}:${JSON.stringify(snapshot)}`,
+          );
+          break;
+        }
+        case 'read-member-avatar': {
+          if (!step.name) throw new Error('"read-member-avatar" needs a name');
+          const marker = step.marker ?? step.name;
+          const hasAvatar = await evalJs<boolean>(`
+            Array.from(document.querySelectorAll('[data-testid^="member-row-"]')).some((el) =>
+              el.textContent && el.textContent.includes(${JSON.stringify(step.name)}) && el.querySelector('img')
+            )
+          `);
+          console.info(`disco-voador:e2e-profile-member-avatar:${marker}:${String(hasAvatar)}`);
+          break;
+        }
+        case 'read-member-row-count': {
+          // Counts every real `member-row-*` element whose text mentions `step.name` — the direct
+          // regression check for the T13.3 "duplicate self row" defect (a caller who just mutated
+          // their own profile briefly saw themselves listed twice: once as `MemberPanel`'s manually
+          // synthesized self entry, once as a phantom `state.members` entry from the
+          // then-unfiltered `server:presence-updated` broadcast the actor's own self-service
+          // mutation incorrectly triggered back to itself — see
+          // `services/realtime/src/protocol-handlers.ts`'s `pushPresenceUpdate` doc comment for the
+          // fix). Exactly `1` is the only ever-correct count for a caller's own real display name.
+          if (!step.name) throw new Error('"read-member-row-count" needs a name');
+          const marker = step.marker ?? step.name;
+          const count = await evalJs<number>(`
+            Array.from(document.querySelectorAll('[data-testid^="member-row-"]')).filter((el) =>
+              el.textContent && el.textContent.includes(${JSON.stringify(step.name)})
+            ).length
+          `);
+          console.info(`disco-voador:e2e-profile-member-row-count:${marker}:${String(count)}`);
+          break;
+        }
+        case 'read-member-row-text': {
+          // The full, real rendered text of a member's row (name, custom status, role badge) — used
+          // by a long-running third-party observer to confirm real, per-server-stored content (e.g.
+          // a custom status string) on another identity's row, without depending on that identity's
+          // own client-side self-view (which `read-self-snapshot`'s own doc comment elsewhere notes
+          // does not restore itself after a plain reconnect — a real, verified T13.3 finding, not
+          // fixed here since this is QA-only). An absent row (e.g. the member is currently offline)
+          // returns an empty string, never throws.
+          if (!step.name) throw new Error('"read-member-row-text" needs a name');
+          const marker = step.marker ?? step.name;
+          const text = await evalJs<string>(`
+            (function () {
+              const rows = Array.from(document.querySelectorAll('[data-testid^="member-row-"]'));
+              const row = rows.find((el) => el.textContent && el.textContent.includes(${JSON.stringify(step.name)}));
+              return row ? row.textContent : '';
+            })();
+          `);
+          console.info(`disco-voador:e2e-profile-member-row-text:${marker}:${text}`);
+          break;
+        }
+        case 'read-server-nav-profile-visible': {
+          const marker = step.marker ?? 'default';
+          const visible = await evalJs<boolean>(
+            'Boolean(document.querySelector(\'[data-testid="server-settings-nav-profile"]\'))',
+          );
+          console.info(`disco-voador:e2e-profile-server-nav-visible:${marker}:${String(visible)}`);
+          break;
+        }
+        case 'read-server-avatar-visible': {
+          const marker = step.marker ?? 'default';
+          const visible = await evalJs<boolean>(`
+            Boolean(
+              document
+                .querySelector('[data-testid="server-profile-change-avatar"]')
+                ?.parentElement?.parentElement?.querySelector('img'),
+            )
+          `);
+          console.info(
+            `disco-voador:e2e-profile-server-avatar-visible:${marker}:${String(visible)}`,
+          );
+          break;
+        }
+        case 'read-avatar-image-state': {
+          // Diagnostic-only: reads the REAL DOM state of a rendered avatar `<img>` (never a static
+          // screenshot's own compression artifacts) — `complete`/`naturalWidth`/`naturalHeight` are
+          // the standard way to distinguish a genuinely successfully-decoded image (`naturalWidth`
+          // > 0) from the browser's own "broken image" placeholder (`complete: true`,
+          // `naturalWidth: 0`) from one still mid-fetch (`complete: false`). `scope` narrows which
+          // `<img>` — `'profile-editor'` for the large self-avatar slot, `'member-popover'` for the
+          // member-profile-popover's avatar slot — since both reuse the same generic `Avatar`
+          // component with no distinguishing testid of its own.
+          const marker = step.marker ?? 'default';
+          const scopeSelector =
+            step.name === 'member-popover'
+              ? '[data-testid="member-profile-modal"]'
+              : '[data-testid="profile-editor-modal"]';
+          const state = await evalJs<{
+            found: boolean;
+            complete?: boolean;
+            naturalWidth?: number;
+            naturalHeight?: number;
+            srcLength?: number;
+          }>(`
+            (function () {
+              const img = document.querySelector('${scopeSelector} img');
+              if (!img) return { found: false };
+              return {
+                found: true,
+                complete: img.complete,
+                naturalWidth: img.naturalWidth,
+                naturalHeight: img.naturalHeight,
+                srcLength: img.src ? img.src.length : 0,
+              };
+            })();
+          `);
+          console.info(`disco-voador:e2e-avatar-image-state:${marker}:${JSON.stringify(state)}`);
+          break;
+        }
+        case 'assert-text-contains': {
+          if (step.text === undefined) throw new Error('"assert-text-contains" needs text');
+          const marker = step.marker ?? 'default';
+          const found = await evalJs<boolean>(
+            `document.body.textContent.includes(${JSON.stringify(step.text)})`,
+          );
+          console.info(`disco-voador:e2e-profile-assert:${marker}:${String(found)}`);
+          break;
+        }
+        case 'screenshot':
+          if (!step.name) throw new Error('"screenshot" needs a name');
+          await saveScreenshot(step.name);
+          break;
+        case 'resize':
+          if (!step.width || !step.height) throw new Error('"resize" needs width and height');
+          window.setBounds({ width: step.width, height: step.height });
+          await wait(300);
+          break;
+        case 'log':
+          console.info(`disco-voador:e2e-profile-log:${step.marker ?? ''}`);
+          break;
+        default:
+          throw new Error(`Unknown DISCO_VOADOR_E2E_PROFILE_STEPS action: "${step.action}"`);
+      }
+    }
+  }
+
+  const channelId = config.e2eVoiceAutoJoin?.channelId;
+  if (!channelId) {
+    console.error('E2E_PROFILE_SMOKE_MISCONFIGURED: no e2eVoiceAutoJoin channel configured');
+    setTimeout(() => app.exit(1), 250);
+    return;
+  }
+  const joinedMarker = `disco-voador:voice-joined:${channelId}`;
+  const myGroupsPrefix = 'disco-voador:my-groups:';
+  let started = false;
+
+  window.webContents.on('console-message', (_event, _level, message) => {
+    // Relays every Renderer console line to this process's own stdout, exactly like every other
+    // `armE2E*` relay in this file — without this, the orchestrating Node script (which only reads
+    // THIS process's stdout, never the Renderer's console directly) could never observe
+    // `use-voice-channel.ts`'s own unconditional markers (`disco-voador:voice-joined:*`,
+    // `disco-voador:my-groups:*`) at all, only the ones this function itself emits below.
+    console.info(`[renderer] ${message}`);
+    if (message.startsWith(myGroupsPrefix)) {
+      void window.webContents.executeJavaScript(
+        `window.__e2eMyGroups = ${JSON.stringify(message.slice(myGroupsPrefix.length).split(',').filter(Boolean))};`,
+      );
+    }
+    if (started || !message.startsWith(joinedMarker)) return;
+    started = true;
+
+    void (async () => {
+      try {
+        await wait(500);
+        const steps = parseProfileSmokeSteps(stepsRaw);
+        await runSteps(steps);
+        console.info('E2E_PROFILE_SMOKE_STEPS_DONE');
+        // Self-exits directly (never via the Renderer-console-relay marker mechanism every other
+        // `armE2E*Exit` function here depends on — this function's own "done" marker is logged from
+        // Main itself, which never fires a `console-message` event, so no other function's listener
+        // could ever observe it anyway) when the orchestrating script asks for it; a long-running
+        // observer instance (e.g. a second party watching a member's avatar/status live) omits this
+        // and is instead stopped externally once the orchestrating script is done with it.
+        if (process.env['DISCO_VOADOR_E2E_PROFILE_EXIT_AFTER_STEPS'] === '1') {
+          setTimeout(() => app.exit(0), 250);
+        }
+      } catch (error) {
+        console.error('E2E profile smoke steps failed', error);
+        setTimeout(() => app.exit(1), 250);
+      }
+    })();
+  });
+}
+
 async function bootstrap(): Promise<void> {
   await app.whenReady();
 
@@ -1323,6 +1765,7 @@ async function bootstrap(): Promise<void> {
   armE2EScreenshotWorkspaceCapture(window);
   armE2EChannelAdminScreenshotCapture(window);
   armE2EChannelGuestScreenshotCapture(window);
+  armE2EProfileSmoke(window);
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

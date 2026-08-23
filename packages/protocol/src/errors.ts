@@ -131,6 +131,32 @@ import { z } from 'zod';
  * Reuses `CHANNEL_NOT_FOUND` (a hidden channel and an absent one are structurally indistinguishable
  * — this is the core privacy guarantee, see `ChannelPort`'s own doc comment) and `CHANNEL_FULL`
  * unchanged from their T3 meanings.
+ *
+ * The T13.3 codes below cover profiles/avatars/members/presence (see
+ * `packages/protocol/src/profile.ts` and `services/dedicated-server/src/profile/`). All are
+ * **non-fatal** — an ordinary, expected condition a profile/member-panel UI can recover from
+ * without tearing down the connection, matching the T3/T9/T10/T13.2 codes above:
+ *
+ * - `AVATAR_TOO_LARGE` — a `client:profile-set-avatar` image decodes to more than
+ *   `AVATAR_MAX_RAW_BYTES`.
+ * - `AVATAR_INVALID_FORMAT` — the image's own header bytes do not sniff as one of the three
+ *   allowlisted formats (PNG/JPEG/WebP), or sniff as a *different* one than the message's declared
+ *   `format` field claimed (never silently corrected to match the sniffed format).
+ * - `AVATAR_DIMENSIONS_TOO_LARGE` — the image's own header-declared pixel dimensions exceed the
+ *   target's ceiling (512x512 for a user avatar, 1024x1024 for the server avatar).
+ * - `AVATAR_ANIMATED_NOT_ALLOWED` — the image is animated (an animated format disguised as static,
+ *   e.g. APNG using ordinary PNG magic bytes, or an animated WebP, detected from header/chunk
+ *   structure — see `services/dedicated-server/src/profile/image-validation.ts`) — a distinct code
+ *   from `AVATAR_DIMENSIONS_TOO_LARGE` so client-side copy can say "animated images aren't allowed"
+ *   rather than the factually-wrong "dimensions too large" for a correctly-sized animated image.
+ * - `CUSTOM_STATUS_TOO_LONG` — schema-validated client-side already (`customStatusSchema`), but
+ *   also enforced server-side as a defense-in-depth, specifically-coded rejection.
+ * - `PROFILE_RATE_LIMITED` — the connection exceeded its per-connection profile-mutation or
+ *   avatar-fetch rate limit (separate, smaller buckets than the generic transport-level
+ *   `RATE_LIMITED` — see `services/realtime/src/connection.ts`).
+ * - `MEMBER_NOT_FOUND` — a `memberRef` does not resolve to a currently-online identity (never
+ *   existed, or has since gone offline) — mirrors `PARTICIPANT_NOT_FOUND`'s existing shape/reasoning
+ *   exactly.
  */
 export const errorCodeSchema = z.enum([
   'INVALID_MESSAGE',
@@ -169,6 +195,13 @@ export const errorCodeSchema = z.enum([
   'CHANNEL_PARENT_INVALID',
   'CHANNEL_TREE_LIMIT_EXCEEDED',
   'GROUP_IN_USE_BY_CHANNEL_POLICY',
+  'AVATAR_TOO_LARGE',
+  'AVATAR_INVALID_FORMAT',
+  'AVATAR_DIMENSIONS_TOO_LARGE',
+  'AVATAR_ANIMATED_NOT_ALLOWED',
+  'CUSTOM_STATUS_TOO_LONG',
+  'PROFILE_RATE_LIMITED',
+  'MEMBER_NOT_FOUND',
 ]);
 
 export type ErrorCode = z.infer<typeof errorCodeSchema>;

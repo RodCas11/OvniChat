@@ -20,6 +20,7 @@
     "@disco-voador/config": "workspace:*",
     "@disco-voador/protocol": "workspace:*",
     "@disco-voador/realtime": "workspace:*",
+    "@disco-voador/shared": "workspace:*",
     "zod": "4.4.3"
   },
   "devDependencies": {

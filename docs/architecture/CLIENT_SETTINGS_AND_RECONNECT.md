@@ -135,17 +135,32 @@ afterward (T11's race requirement).
   microphone), and re-requests history for whichever chat threads were open before the loss.
 - **`connectionFailed`** — sets a human-readable `state.connectionError`, shown by `VoiceChannelView`.
 
-| Source                   | Restored after reconnect?                                                  |
-| ------------------------ | -------------------------------------------------------------------------- |
-| Voice-channel membership | Yes — via `join()`                                                         |
-| Microphone               | Yes — reacquired fresh by `join()`, current mute state re-applied          |
-| Mute / deafen            | Yes — never reset by the reconnect cycle in the first place                |
-| Camera                   | **No** — released the instant a loss is detected, never auto-restarted     |
-| Screen video/audio       | **No** — same treatment as camera                                          |
-| Chat threads             | Reloaded from the server (fresh history request), never from client memory |
+| Source                   | Restored after reconnect?                                                                                                                                                             |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Voice-channel membership | Yes — via `join()`                                                                                                                                                                    |
+| Microphone               | Yes — reacquired fresh by `join()`, current mute state re-applied                                                                                                                     |
+| Mute / deafen            | Yes — never reset by the reconnect cycle in the first place                                                                                                                           |
+| Camera                   | **No** — released the instant a loss is detected, never auto-restarted                                                                                                                |
+| Screen video/audio       | **No** — same treatment as camera                                                                                                                                                     |
+| Chat threads             | Reloaded from the server (fresh history request), never from client memory                                                                                                            |
+| Profile/presence (T13.3) | Yes, accurately — the server proactively pushes the identity's real persisted avatar/status/presence as part of every connection's initial burst, never left as a stale/default guess |
+| Member list (T13.3)      | Reloaded from the server (`server:presence-snapshot`), never carried over from before the loss                                                                                        |
 
 Camera and screen non-restoration is a mandatory, non-negotiable product/privacy constraint, not a
 convenience trade-off — see ADR 0016.
+
+**T13.3 — per-Dedicated-Server profile/presence state isolation.** `VoiceChannelState`'s
+`members`/`avatarCache`/`selfPresence`/`selfCustomStatus`/`selfAvatarRef` fields must never survive
+past their own connection's terminal close — a security review found the in-hook reset meant to
+guarantee this was wired to a `stateChange` listener detached _before_ `controller.disconnect()`
+could ever fire it, so it was silently dead code on every real teardown path. The actual isolation
+guarantee in practice came entirely from `AppShell`'s pre-existing per-connection remount `key`
+(`App.tsx`), which discards the whole hook instance on every real server switch — not from the
+in-hook reset that claimed to provide it. Fixed by reordering cleanup so `disconnect()` fires while
+the listener is still attached, so the documented reset is now genuinely delivered by the code that
+claims it, independent of the remount mechanism. See
+[`SERVER_LOCAL_PROFILES_AND_PRESENCE.md`](SERVER_LOCAL_PROFILES_AND_PRESENCE.md)'s "Security review
+outcome" section.
 
 **T13.2 — restoring into a channel that changed while offline.** "Voice-channel membership: Yes — via
 `join()`" above assumes the previously-joined channel is still restorable; T13.2 added three specific

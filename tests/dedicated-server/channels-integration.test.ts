@@ -47,6 +47,8 @@ function testConfig(overrides: Partial<DedicatedServerConfig> = {}): DedicatedSe
       chatSendRateLimit: { maxMessages: 100, windowMs: 10_000 },
       chatHistoryRateLimit: { maxMessages: 100, windowMs: 10_000 },
       channelPasswordRateLimit: { maxMessages: 100, windowMs: 10_000 },
+      profileMutationRateLimit: { maxMessages: 100, windowMs: 10_000 },
+      avatarFetchRateLimit: { maxMessages: 100, windowMs: 10_000 },
       logLevel: 'error',
     },
     voiceChannels: [{ channelId: 'general', name: 'General' }],
@@ -179,10 +181,15 @@ async function handshake(
   });
   const signature = signWithIdentityKey(keyPair.privateKey, keyPair.publicKey, payload);
 
-  // The very first burst on a fresh connection is always exactly these three, in this exact order,
-  // with nothing else able to interleave yet (no other mutation has happened on this connection) —
-  // unlike everything after `ready`, this one sequence is safe to consume positionally.
-  const replies = nextMessages(ws, 3);
+  // The very first burst on a fresh connection is always exactly these five, in this exact order,
+  // with nothing else able to interleave yet (no other mutation has happened on this connection):
+  // server:hello, server:authorization-state, voice:catalog, server:presence-snapshot,
+  // server:profile-self-updated (T13.3's proactive push of this identity's own real persisted
+  // profile) — unlike everything after `ready`, this one sequence is safe to consume positionally,
+  // but all five must still be drained here (even though only three are returned), since the server
+  // sends them back-to-back in one synchronous loop that can arrive as a single TCP burst; leaving
+  // the remaining two undrained risks them racing past whatever a caller listens for next.
+  const replies = nextMessages(ws, 5);
   ws.send(JSON.stringify({ type: 'client:identity-proof', id: 'proof-1', signature }));
   const [serverHello, authState, catalog] = await replies;
   if (!serverHello || !authState || !catalog) throw new Error('handshake incomplete');

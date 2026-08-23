@@ -21,6 +21,61 @@
   border-right: 1px solid var(--ovni-border);
 }
 
+/* T13.3 — the identity block is now a real button ("click to edit profile"), not a static label. */
+.identityButton {
+  display: flex;
+  align-items: center;
+  gap: var(--ovni-space-2);
+  min-width: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  border-radius: var(--ovni-radius-sm);
+}
+
+.identityButton:hover .displayName {
+  text-decoration: underline;
+}
+
+.avatarWrap {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.presenceDot {
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  width: 10px;
+  height: 10px;
+  border-radius: var(--ovni-radius-full);
+  border: 2px solid var(--ovni-bg-surface-alt);
+}
+
+.presenceOnline {
+  background: var(--ovni-accent);
+}
+
+.presenceAway {
+  background: var(--ovni-warning);
+}
+
+.presenceDnd {
+  background: var(--ovni-danger);
+}
+
+.customStatus {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--ovni-text-xs);
+  color: var(--ovni-text-tertiary);
+}
+
 .names {
   display: flex;
   flex-direction: column;

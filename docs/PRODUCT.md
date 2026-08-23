@@ -67,6 +67,18 @@ UI. TeamSpeak-style temporary channels exist while at least one participant rema
 destroyed (along with their chat) the moment the last one leaves. See
 [`architecture/CHANNELS_AND_SERVER_ADMINISTRATION.md`](architecture/CHANNELS_AND_SERVER_ADMINISTRATION.md).
 
+T13.3 gave every identity a real, server-local visual and social presentation: a static avatar image
+(no GIF/animated formats — a deliberate product choice, not merely a technical limitation), one
+bounded custom-status string, and manual presence (Online/Away/Do Not Disturb — no Invisible, no
+automatic idle/away detection, no game/Rich-Presence detection of any kind). The Member Panel now
+shows everyone connected to the server, grouped into two safe role buckets computed from real
+permissions, never a private custom group name. A member profile popover shows this presentation but
+deliberately has **no message/DM/friend affordance of any kind** — OvniChat is not a social network
+and has no such system to safely support one. All of this is entirely server-local per Dedicated
+Server, exactly like T9's authorization state and T10's chat history: no global profile, no
+cross-server correlation for the same identity. See
+[`architecture/SERVER_LOCAL_PROFILES_AND_PRESENCE.md`](architecture/SERVER_LOCAL_PROFILES_AND_PRESENCE.md).
+
 ## Primary capabilities
 
 The target product will provide:
@@ -151,3 +163,11 @@ transport-neutral enough to introduce an SFU later.
     `docs/adr/0019-channel-hierarchy-storage-and-acl.md`). A control this product cannot
     authoritatively enforce (such as who may speak, given the current P2P media transport) is omitted
     entirely rather than shipped as a misleading checkbox.
+14. Visual/social identity (avatar, custom status, presence) is server-local per Dedicated Server and
+    structurally distinct from cryptographic identity: an identity's avatar/status/presence changes
+    never touch its Ed25519 keypair or `identityId`, and a server-wide presence identifier is a
+    fresh, session-scoped token unrelated to `identityId` — the same cross-server-correlation
+    property T7 established is never reintroduced by presenting who is online (T13.3; see
+    `docs/adr/0020-profile-presence-storage-and-privacy-boundary.md`). There is no DM, friend, or
+    social-graph system anywhere in this product, and a member's own profile popover never implies
+    one exists.

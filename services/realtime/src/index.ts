@@ -54,3 +54,16 @@ export {
   type TemporaryChannelRecord,
 } from './voice/temporary-channels.js';
 export { VoiceRegistry } from './voice/registry.js';
+export {
+  createNoopProfilePort,
+  type AvatarData,
+  type ProfilePort,
+  type ProfileSnapshot,
+  type SetAvatarResult,
+} from './profile-port.js';
+export {
+  PresenceRegistry,
+  type DeregisterConnectionResult,
+  type RegisterConnectionResult,
+} from './presence/registry.js';
+export { deriveMemberRoleBucket } from './presence/role-bucket.js';

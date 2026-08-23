@@ -41,3 +41,11 @@ export {
   type ChannelPolicyKind,
   type ChannelStoreOptions,
 } from './channels/index.js';
+export {
+  SqliteProfileStore,
+  PROFILE_MIGRATIONS,
+  validateAvatarImage,
+  type ImageValidationFailureCode,
+  type ImageValidationResult,
+  type ProfileStoreOptions,
+} from './profile/index.js';

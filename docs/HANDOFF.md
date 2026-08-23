@@ -549,9 +549,10 @@ Renderer/Main trust boundary.
 
 There is no running Coturn stack (templates exist but no TURN credential minting), installer/maker
 artifact, or SFU. Production configuration/TLS termination and Docker packaging for the Dedicated
-Server are also not yet implemented — this work is now **T14** (see the T13 redefinition below). Real
-avatars/presence/status, voice-activity/push-to-talk UX, and Discord-like stream/camera layout are
-also not yet implemented — this is **T13.3-T13.5**. Voice, camera, screen-video, and screen-audio
+Server are also not yet implemented — this work is now **T14** (see the T13 redefinition below).
+Voice-activity/push-to-talk UX and Discord-like stream/camera layout are not yet implemented — this
+is **T13.4-T13.5**. Real avatars/presence/status (T13.3) are now implemented — see below. Voice,
+camera, screen-video, and screen-audio
 sharing (T3–T6, P2P-mesh, small-room, self-hosted scope), local cryptographic client identity (T7),
 the Dedicated Server product boundary (T8), server-local groups/permissions/tokens/bans (T9),
 persistent server-side text chat (T10 — server-wide and per-voice-channel, real restart persistence,
@@ -567,12 +568,19 @@ administration (T13.2 — categories, voice channels, subchannels, TeamSpeak-sty
 group-based Visibility/Join/Manage access control with inheritance, optional user limits and scrypt
 passwords, tombstone deletion, live per-connection-filtered catalog updates, and a full Renderer admin
 UI reusing the T13.1/T13.1.1 design system — all administered live from the Client, no server restart,
-no hand-edited config), and that admin experience's own presentation polish (T13.2.1 — human-readable
+no hand-edited config), that admin experience's own presentation polish (T13.2.1 — human-readable
 permission labels replacing raw `PermissionKey` strings in Groups & Permissions, and category-accurate
 ACL wording replacing channel-specific copy on the non-joinable Category form — presentation only, no
-authorization/protocol/storage change) are all implemented, mechanism-verified, and live-verified end
-to end. The product is now marketed as **OvniChat** (see [`PRODUCT.md`](PRODUCT.md)); the internal
-`@disco-voador/*` package namespace is unchanged.
+authorization/protocol/storage change), and server-local profiles/avatars/presence (T13.3 — static
+per-identity user avatars and an admin-managed server avatar, one bounded custom-status string,
+manual Online/Away/Do Not Disturb presence with a server-derived Offline, a redesigned server-wide
+Member Panel grouped into two safe closed role buckets, a member profile popover with zero DM/social
+affordance, and a moderation action that can clear but never rewrite another member's own
+presentation data — all server-local per Dedicated Server, in a fourth independent SQLite file, with
+a session-scoped `memberRef` structurally unrelated to the cross-server-stable `identityId`) are all
+implemented, mechanism-verified, and live-verified end to end. The product is now marketed as
+**OvniChat** (see [`PRODUCT.md`](PRODUCT.md)); the internal `@disco-voador/*` package namespace is
+unchanged.
 
 ## What should happen next?
 
@@ -580,8 +588,8 @@ T13 was redefined, by explicit product direction, from a single "self-hosting pr
 task into a five-part Product Experience series (T13.1-T13.5) — see
 [`tasks/STATUS.md`](tasks/STATUS.md) for the full renumbering (production self-hosting is now T14,
 installer/releases T15, private-beta polish T16, SFU T17, hardening/release-candidate T18).
-**T13.3 — Profiles / Avatars / Members / Presence** is next, building on the channel administration
-system T13.2/T13.2.1 established. Do not implement it until its own task document exists.
+**T13.4 — Gamer voice experience** is next, building on the profile/presence system T13.3
+established. Do not implement it until its own task document exists.
 
 Non-blocking follow-ups still open, cheap relative to the risk they guard against: (1) ~~a
 frequency-domain (e.g. dominant-frequency-near-440Hz) check for `e2e:screen-audio-smoke`'s
@@ -629,9 +637,11 @@ scope, and T11 already had a large surface; still open for a future task.
   capture, run as an out-of-process helper rather than an in-process addon, primarily for crash
   isolation (see [`adr/0017-windows-process-loopback-native-boundary.md`](adr/0017-windows-process-loopback-native-boundary.md)).
 - SQLite first behind a storage boundary — implemented for the Dedicated Server's authorization
-  store (T9) and its chat store (T10), both via `node:sqlite`, in two deliberately separate physical
-  files (`authorization.sqlite`, `chat.sqlite` — see
-  [`adr/0014-persistent-server-owned-chat-history.md`](adr/0014-persistent-server-owned-chat-history.md)).
+  store (T9), chat store (T10), channel store (T13.2), and profile store (T13.3), each via
+  `node:sqlite`, in four deliberately separate physical files (`authorization.sqlite`,
+  `chat.sqlite`, `channels.sqlite`, `profiles.sqlite`), zero foreign keys crossing files — see
+  [`adr/0014-persistent-server-owned-chat-history.md`](adr/0014-persistent-server-owned-chat-history.md)
+  and [`adr/0020-profile-presence-storage-and-privacy-boundary.md`](adr/0020-profile-presence-storage-and-privacy-boundary.md).
 - Local client settings/bookmarks are entirely client-local, versioned JSON, never sent to a
   Dedicated Server — implemented for the Client's own settings store (T11, see
   [`adr/0015-local-client-settings-and-bookmarks.md`](adr/0015-local-client-settings-and-bookmarks.md)).
@@ -1068,6 +1078,60 @@ member groups” and re-capturing all screenshots to confirm the corrected wordi
 Done items are satisfied. See
 [`tasks/T13_2_1_ADMIN_UX_POLISH.md`](tasks/T13_2_1_ADMIN_UX_POLISH.md)’s handoff notes for the full
 record.
+
+T13.3’s clean-state evidence is the same gate with 1373 Vitest tests (up from T13.2.1’s 1273; the
+same one pre-existing, already-allowlisted high-severity dependency advisory — T13.3 introduced zero
+new npm dependencies) — formatting, lint, whole-repo typecheck, `vitest run`, composite build, and
+`verify-repository.mjs` all pass via one canonical `corepack pnpm check` run — plus its own required
+real-runtime evidence: three new E2E scripts (`e2e:profile-avatar-smoke`, `e2e:server-avatar-smoke`,
+`e2e:profile-server-isolation-smoke`) each passed against the final, security-fixed, repackaged
+build, proving (respectively) a real file-picker avatar upload with live cross-client update and
+removal, restart persistence, and — after this task’s own second hardening fix — a user’s own
+avatar/status/presence correctly restored with no fresh mutation required; an admin uploading a
+server avatar visible on a fresh reconnect with “Server Profile” completely absent (not merely
+disabled) from Server Settings for a non-admin holding other admin-adjacent permissions; and the
+same identity connected to two independent Dedicated Server instances with zero cross-contamination
+in either direction, proven by independent third-party observers on each server. All seventeen
+pre-existing Electron E2E scripts (`e2e:product-shell-smoke`, `e2e:channel-admin-smoke`,
+`e2e:channel-hidden-smoke`, `e2e:channel-temporary-smoke`, `e2e:reconnect-channel-smoke`,
+`e2e:authorization`, `e2e:identity-auth`, `e2e:identity-persistence`, `e2e:text-chat-persistence`,
+`e2e:reconnect-smoke`, `e2e:settings-persistence`, `e2e:connection-smoke`, `e2e:voice-smoke`,
+`e2e:camera-smoke`, `e2e:screen-smoke`, `e2e:screen-audio-smoke`, `e2e:process-audio-smoke`) were
+re-verified passing against the final code — no regression, including `e2e:process-audio-smoke`
+passing cleanly across all four of its scenarios (77-99 dB isolation margins). Nine real screenshots
+from an actual packaged Electron instance (the Profile editor; the presence selector; an
+avatar-upload-rejected error state; the redesigned Member Panel; a member popover as a plain member
+and as a moderator; the Server Profile admin section; the current-user bottom bar; and Server
+Settings with “Server Profile” hidden for a non-admin) were captured and personally visually
+reviewed twice — the first pass surfaced what looked like a broken large-avatar rendering in four
+screenshots, traced live (not guessed) to the QA pass’s own synthetic PNG test fixture using
+non-zlib-compressed `IDAT` data and zero-filled chunk CRCs, which this feature’s own deliberately
+header-only image sniffer correctly accepted (it never validates compressed-data integrity) but a
+real Chromium decoder correctly refused to render — not a product defect; fixing the fixture and
+recapturing resolved it cleanly. **T13.3 is marked COMPLETE in [`tasks/STATUS.md`](tasks/STATUS.md)**
+— its mechanism is implemented, reviewed (`security-reviewer` found no release-blocking issues,
+independently confirming by direct code reading — not doc-trust — every named invariant (no
+`identityId` correlation via `memberRef`, no raw file path ever reaching the Renderer, server-
+supplied avatar bytes re-validated in Main before caching/rendering, real header/chunk-structure
+image sniffing with genuine APNG/animated-WebP detection, clear-only moderation authorization,
+hidden-channel and private-ACL-group-name non-leakage, per-server isolation, rate limiting actually
+wired into every handler); one medium, non-exploitable finding was fixed anyway — a cross-server
+isolation reset branch was wired to a listener detached before it could ever fire on a real teardown
+path, masked only by an unrelated remount mechanism, fixed so the documented guarantee is genuinely
+delivered by the code that claims it. `qa-engineer` found and fixed two real product defects via live
+reproduction — a duplicate self-row in every user’s own Member Panel after any self-service profile
+mutation (`pushPresenceUpdate` was broadcasting back to the acting connection itself), and a
+returning user’s own avatar/status/presence not being restored after reconnect (no “get my current
+profile” read path existed) — plus one real bug in a pre-existing E2E script exposed as fallout from
+the connection-burst message count changing from four to five, fixed by removing a fragile
+fixed-count message-draining pattern its own comment had already flagged as fragile, not just
+patching the symptom), and unit/integration/live-verified through a real fourth SQLite store, real
+sockets, and a real multi-instance Electron flow, with all Definition of Done items satisfied. See
+[`tasks/T13_3_PROFILES_AVATARS_PRESENCE.md`](tasks/T13_3_PROFILES_AVATARS_PRESENCE.md)’s handoff
+notes and
+[`architecture/SERVER_LOCAL_PROFILES_AND_PRESENCE.md`](architecture/SERVER_LOCAL_PROFILES_AND_PRESENCE.md)
+for the full record, including the storage/ephemeral-vs-persistent/image-validation/`memberRef`-
+privacy design (ADR 0020) and both post-implementation hardening fixes.
 
 Then perform the task’s required manual/platform checks. Apply
 [`DEFINITION_OF_DONE.md`](DEFINITION_OF_DONE.md) and update status only when every applicable item

@@ -15,6 +15,8 @@ import { createNoopChatPort, type ChatPort } from './chat-port.js';
 import { Connection } from './connection.js';
 import type { RealtimeConfig } from './config.js';
 import { createNoopLogger, type Logger } from './logging.js';
+import { PresenceRegistry } from './presence/registry.js';
+import { createNoopProfilePort, type ProfilePort } from './profile-port.js';
 import { TemporaryChannelRegistry } from './voice/temporary-channels.js';
 import { VoiceRegistry } from './voice/registry.js';
 
@@ -59,6 +61,11 @@ export interface RealtimeServerDependencies {
    * fixed, ACL-free three-channel tree for direct `@disco-voador/realtime` consumers that don't
    * compose their own — `services/dedicated-server` always supplies `ChannelStore` instead. */
   readonly channels?: ChannelPort;
+  /** T13.3 — server-local persistent profile state (see `profile-port.ts`). Defaults to a
+   * functional, non-persistent in-memory port for direct `@disco-voador/realtime` consumers that
+   * don't compose their own — `services/dedicated-server` always supplies `SqliteProfileStore`
+   * instead. */
+  readonly profile?: ProfilePort;
 }
 
 /**
@@ -79,9 +86,13 @@ export function createRealtimeServer(
   const authorization = deps.authorization ?? createNoopAuthorizationPort();
   const chat = deps.chat ?? createNoopChatPort();
   const channels = deps.channels ?? createNoopChannelPort();
+  const profile = deps.profile ?? createNoopProfilePort();
   const connections = new Map<string, Connection>();
   const voiceRegistry = new VoiceRegistry();
   const temporaryChannels = new TemporaryChannelRegistry();
+  // T13.3 — a plain in-memory class, instantiated directly here exactly like `voiceRegistry` above
+  // (never a `*Port`, never injected — see `presence/registry.ts`'s own doc comment).
+  const presenceRegistry = new PresenceRegistry();
   let wss: WebSocketServer | undefined;
 
   function deliverToConnection(connectionId: string, message: ServerMessage): void {
@@ -116,6 +127,18 @@ export function createRealtimeServer(
     }
   }
 
+  /** T13.3 — `broadcastToReady`'s counterpart for the one case that must exclude the connection
+   * that triggered it: a freshly-online identity's own `server:presence-updated` is sent to every
+   * *other* `ready` connection (see `protocol-handlers.ts`'s `handleIdentityProof` — the connecting
+   * connection itself already gets the full `server:presence-snapshot` instead, which includes
+   * everyone except itself). */
+  function broadcastToReadyExcept(excludeConnectionId: string, message: ServerMessage): void {
+    for (const connection of connections.values()) {
+      if (connection.id === excludeConnectionId) continue;
+      if (connection.state === 'ready') connection.deliver(message);
+    }
+  }
+
   function handleConnection(socket: WebSocket): void {
     if (connections.size >= config.maxConnections) {
       // Reject before spending any handshake/heartbeat/rate-limiter resources on it — the whole
@@ -146,10 +169,13 @@ export function createRealtimeServer(
       chat,
       channels,
       temporaryChannels,
+      profile,
+      presenceRegistry,
       deliverToConnection,
       closeOtherConnection,
       broadcastToReady,
       broadcastToReadyPersonalized,
+      broadcastToReadyExcept,
       (closed) => {
         connections.delete(closed.id);
       },

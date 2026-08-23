@@ -76,14 +76,24 @@ moderation.ban                     — ban/unban/list bans
 authorization.groups.manage        — create/update/delete groups
 authorization.memberships.manage   — grant/revoke group membership
 authorization.tokens.manage        — create privilege/invite tokens
-server.manage                      — reserved for future server-level administration
+server.manage                      — server-level administration; first real use is the server's own avatar (T13.3)
 chat.server.send                   — send a message to Server Chat (T10)
 chat.channel.send                  — send a message to a voice channel's chat (T10)
 channels.create                    — create a root-level category/voice channel (T13.2)
 channels.manage                    — global override of any node's Manage rights (T13.2)
 channels.delete                    — global override of channel/category deletion (T13.2)
 channels.password.bypass           — join a password-protected channel without the password (T13.2)
+moderation.profile.clear           — clear (never set) another member's own avatar/custom status (T13.3)
 ```
+
+`server.manage`'s doc comment previously read "reserved for future server-level administration" —
+T13.3's server-avatar Change/Remove is its first real enforcement anywhere in this codebase.
+`moderation.profile.clear` is deliberately its own key, not a reuse of `moderation.kick`/`-ban` or
+`server.manage`: none of those cleanly names "clear-only power over another member's own
+presentation data," and the two message shapes it gates
+(`client:profile-clear-avatar{target:'member'}`, `client:profile-clear-member-status`) are
+structurally incapable of setting arbitrary content on someone else's behalf — see
+[`SERVER_LOCAL_PROFILES_AND_PRESENCE.md`](SERVER_LOCAL_PROFILES_AND_PRESENCE.md) for the full design.
 
 Deliberately excludes anything the current P2P architecture cannot authoritatively enforce (e.g. a
 "camera forbidden" permission — a malicious client could still place media into WebRTC directly).

@@ -124,6 +124,21 @@ rather than kept as a parallel codepath, matching that same precedent. Every oth
 brand-new message type added to the existing discriminated unions and needed no bump of its own — see
 [`CHANNELS_AND_SERVER_ADMINISTRATION.md`](CHANNELS_AND_SERVER_ADMINISTRATION.md) for the full design.
 
+**Not bumped for T13.3 either** — the entire profile/avatar/presence message family (six new
+`client:profile-*` messages, five new `server:*` messages), `server:hello`'s new optional
+`serverAvatarRef` field, and `server:presence-snapshot`'s later-added optional `selfMemberRef` field
+are all additive. No existing message's required shape changed. See
+[`SERVER_LOCAL_PROFILES_AND_PRESENCE.md`](SERVER_LOCAL_PROFILES_AND_PRESENCE.md) for the full
+message-family design. One non-schema behavioral change worth noting here: a connection's initial
+reply burst at `ready` grew from four messages (`server:hello`, `server:authorization-state`,
+`voice:catalog`, `server:presence-snapshot`) to five — `handleIdentityProof` now also proactively
+pushes one `server:profile-self-updated` carrying the identity's real persisted profile, closing a
+gap where a returning user's own avatar/status/presence was otherwise invisible until their next
+mutation. This is not a protocol-version concern (an old client simply receives one additional
+message of a type it may not recognize; `.strict()` schema validation is per-message, not per-burst),
+but any code — test helper or otherwise — that drains a _fixed count_ of a connection's initial
+messages needs to account for the new count.
+
 A WebSocket connection's protocol version cannot change mid-connection, so it is negotiated exactly
 once during the handshake rather than repeated on every message. `client:hello.protocolVersion` is
 structurally just a positive integer — an unrecognized version is not a schema failure, it's a
@@ -292,6 +307,16 @@ returns the same `CHANNEL_NOT_FOUND` a genuinely unknown ID always has, never a 
 code that would itself leak the channel's existence. See
 [`CHANNELS_AND_SERVER_ADMINISTRATION.md`](CHANNELS_AND_SERVER_ADMINISTRATION.md) for the full channel
 message surface and ACL/password semantics.
+
+T13.3 added seven more **non-fatal** codes the same way (`AVATAR_TOO_LARGE`,
+`AVATAR_INVALID_FORMAT`, `AVATAR_DIMENSIONS_TOO_LARGE`, `AVATAR_ANIMATED_NOT_ALLOWED`,
+`CUSTOM_STATUS_TOO_LONG`, `PROFILE_RATE_LIMITED`, `MEMBER_NOT_FOUND`) — a rejected avatar upload,
+an over-length status, a rate-limited profile mutation, or a `memberRef` naming a currently-offline
+member all leave the connection open. `AVATAR_ANIMATED_NOT_ALLOWED` is deliberately distinct from
+`AVATAR_DIMENSIONS_TOO_LARGE` so client-side copy can say "animated images aren't allowed" rather
+than the factually wrong "dimensions too large" for a correctly-sized animated image. See
+[`SERVER_LOCAL_PROFILES_AND_PRESENCE.md`](SERVER_LOCAL_PROFILES_AND_PRESENCE.md) for the full
+profile/avatar/presence message surface.
 
 The four `IDENTITY_*` codes are deliberately coarse (see [`CLIENT_IDENTITY.md`](CLIENT_IDENTITY.md)
 for the reasoning): a replayed challenge and a signature from the wrong key both surface as

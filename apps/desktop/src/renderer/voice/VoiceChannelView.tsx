@@ -10,9 +10,12 @@ import { ChannelModal, type ChannelModalMode } from '../workspace/ChannelModal.j
 import { ChannelSidebar } from '../workspace/ChannelSidebar.js';
 import { DeleteChannelConfirmDialog } from '../workspace/DeleteChannelConfirmDialog.js';
 import { MainContent } from '../workspace/MainContent.js';
+import { buildMemberGroups, type MemberPanelEntry } from '../workspace/member-presentation.js';
 import { MemberPanel } from '../workspace/MemberPanel.js';
+import { MemberProfilePopover } from '../workspace/MemberProfilePopover.js';
 import { MoveChannelDialog } from '../workspace/MoveChannelDialog.js';
 import { PasswordJoinDialog } from '../workspace/PasswordJoinDialog.js';
+import { ProfileEditor } from '../workspace/ProfileEditor.js';
 import { ServerSettingsModal } from '../workspace/ServerSettingsModal.js';
 import { UserControlBar } from '../workspace/UserControlBar.js';
 import type { ChannelAdminIntent } from '../workspace/channel-admin-intent.js';
@@ -93,6 +96,13 @@ export function VoiceChannelView({
   >(undefined);
   const [moveChannelNodeId, setMoveChannelNodeId] = useState<string | undefined>(undefined);
   const [deleteChannelNodeId, setDeleteChannelNodeId] = useState<string | undefined>(undefined);
+  // T13.3 — the current user's own Profile editor, and the read-mostly member-profile popover for
+  // another member (never both at once — selecting a member row routes to one or the other, never
+  // opens a second concurrent one). `selectedMember` is a snapshot of the entry at click time; it is
+  // intentionally *not* re-derived from live `state.members` on every render, so a member going
+  // offline mid-view does not yank the popover shut mid-read — see `handleSelectMember` below.
+  const [showProfileEditor, setShowProfileEditor] = useState(false);
+  const [selectedMember, setSelectedMember] = useState<MemberPanelEntry | undefined>(undefined);
   const { showToast } = useToast();
 
   /** T13.2 — routes every `ChannelAdminIntent` (from a context menu or the Channels admin page) to
@@ -139,7 +149,9 @@ export function VoiceChannelView({
     state.myPermissions.includes('channels.delete') ||
     state.myPermissions.includes('authorization.groups.manage') ||
     state.myPermissions.includes('authorization.tokens.manage') ||
-    state.myPermissions.includes('moderation.ban');
+    state.myPermissions.includes('moderation.ban') ||
+    // T13.3 — `server.manage` now unlocks the "Server Profile" page inside this same modal.
+    state.myPermissions.includes('server.manage');
   // T13.1 — which chat thread the workspace shows, entirely independent of voice-join status (see
   // `workspace/chat-target.ts`'s own doc comment for the hard "click never joins voice" rule this
   // exists to satisfy). Local, presentation-only UI state — never persisted, never affects the
@@ -1061,6 +1073,72 @@ export function VoiceChannelView({
     return [...state.participants, selfEntry];
   }, [state.participants, state.selfParticipantId, effectiveDisplayName, state.myGroups]);
 
+  // T13.3 — `MemberPanel` widens from "in this voice channel" (pre-T13.3) to "connected to this
+  // server at all," sourced from `state.members` (server-wide presence) rather than
+  // `participantsWithSelf` above (which stays scoped to voice-channel participation, still used by
+  // `ChannelSidebar`'s per-channel roster). Never fabricated: every field traces back to a real
+  // `MemberPresence` broadcast, or (for the synthesized self entry) this connection's own
+  // `selfPresence`/`selfCustomStatus`/`selfAvatarRef` state — mirroring `participantsWithSelf`'s own
+  // "synthesize a real self entry" precedent exactly.
+  const canModerateProfiles = state.myPermissions.includes('moderation.profile.clear');
+  const memberPanelEntries = useMemo<readonly MemberPanelEntry[]>(() => {
+    const others: MemberPanelEntry[] = [...state.members.values()].map((member) => ({
+      key: member.memberRef,
+      displayName: member.displayName,
+      isSelf: false,
+      presence: member.presence,
+      customStatus: member.customStatus,
+      avatarRef: member.avatarRef,
+      roleBucket: member.roleBucket,
+      canModerate: canModerateProfiles,
+    }));
+    // Self can never be its own moderation target, and has no server-derived `roleBucket` (T13.3
+    // deliberately never re-derives admin/moderator classification client-side for anyone — see
+    // `member-presentation.ts`'s own doc comment).
+    const selfEntry: MemberPanelEntry = {
+      key: 'self',
+      displayName: effectiveDisplayName,
+      isSelf: true,
+      presence: state.selfPresence,
+      customStatus: state.selfCustomStatus,
+      avatarRef: state.selfAvatarRef,
+      roleBucket: undefined,
+      canModerate: false,
+    };
+    return [...others, selfEntry];
+  }, [
+    state.members,
+    canModerateProfiles,
+    effectiveDisplayName,
+    state.selfPresence,
+    state.selfCustomStatus,
+    state.selfAvatarRef,
+  ]);
+
+  const { groups: memberGroups, hasRealGroups: memberGroupsHasRealBuckets } = useMemo(
+    () => buildMemberGroups(memberPanelEntries),
+    [memberPanelEntries],
+  );
+
+  const handleRequestMemberAvatar = useCallback(
+    (entry: MemberPanelEntry) => {
+      if (entry.isSelf) actions.requestAvatar('self');
+      else actions.requestAvatar('member', entry.key);
+    },
+    [actions],
+  );
+
+  /** Routes a member-row click to the right surface: the local user's own row opens the Profile
+   * Editor (never the read-mostly popover, which has nothing self-relevant to offer — no
+   * self-moderation action exists); any other row opens `MemberProfilePopover`. */
+  const handleSelectMember = useCallback((entry: MemberPanelEntry) => {
+    if (entry.isSelf) {
+      setShowProfileEditor(true);
+      return;
+    }
+    setSelectedMember(entry);
+  }, []);
+
   return (
     <div className={styles.workspace}>
       {(state.micError ?? state.cameraError ?? state.screenShareError ?? state.lastError) && (
@@ -1144,13 +1222,20 @@ export function VoiceChannelView({
               onOpenScreenPicker={() => {
                 setShowScreenPicker(true);
               }}
+              onOpenProfile={() => {
+                setShowProfileEditor(true);
+              }}
             />
           </div>
 
           <MemberPanel
-            inChannel={Boolean(state.currentChannelId)}
-            participants={participantsWithSelf}
-            selfParticipantId={state.selfParticipantId}
+            connected={state.connectionStatus === 'connected'}
+            groups={memberGroups}
+            hasRealGroups={memberGroupsHasRealBuckets}
+            totalCount={memberPanelEntries.length}
+            avatarCache={state.avatarCache}
+            onRequestAvatar={handleRequestMemberAvatar}
+            onSelectMember={handleSelectMember}
           />
         </>
       )}
@@ -1200,6 +1285,39 @@ export function VoiceChannelView({
             voiceDisplayName={displayName}
             onVoiceDisplayNameChange={setDisplayName}
           />
+        </Modal>
+      )}
+
+      {showProfileEditor && (
+        <Modal
+          open
+          onClose={() => {
+            setShowProfileEditor(false);
+          }}
+          title="Profile"
+          size="medium"
+          testId="profile-editor-modal"
+        >
+          <ProfileEditor
+            state={state}
+            actions={actions}
+            displayName={effectiveDisplayName}
+            serverName={state.serverInfo?.serverName ?? 'This server'}
+          />
+        </Modal>
+      )}
+
+      {selectedMember && (
+        <Modal
+          open
+          onClose={() => {
+            setSelectedMember(undefined);
+          }}
+          title="Member Profile"
+          size="medium"
+          testId="member-profile-modal"
+        >
+          <MemberProfilePopover member={selectedMember} state={state} actions={actions} />
         </Modal>
       )}
 

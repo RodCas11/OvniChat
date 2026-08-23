@@ -41,6 +41,8 @@ function testConfig(overrides: Partial<DedicatedServerConfig> = {}): DedicatedSe
       chatSendRateLimit: { maxMessages: 100, windowMs: 10_000 },
       chatHistoryRateLimit: { maxMessages: 100, windowMs: 10_000 },
       channelPasswordRateLimit: { maxMessages: 100, windowMs: 10_000 },
+      profileMutationRateLimit: { maxMessages: 100, windowMs: 10_000 },
+      avatarFetchRateLimit: { maxMessages: 100, windowMs: 10_000 },
       logLevel: 'error',
     },
     voiceChannels: [{ channelId: 'general', name: 'General' }],
@@ -125,7 +127,12 @@ async function handshake(
   });
   const signature = signWithIdentityKey(keyPair.privateKey, keyPair.publicKey, payload);
 
-  const replies = nextMessages(ws, 3); // server:hello, server:authorization-state, voice:catalog
+  // server:hello, server:authorization-state, voice:catalog, server:presence-snapshot,
+  // server:profile-self-updated (T13.3's proactive push of this identity's own real persisted
+  // profile) — all five must be drained here even though only two are returned, since the server
+  // sends them back-to-back in one synchronous loop that can arrive as a single TCP burst; leaving
+  // the fifth undrained risks it racing past whatever listener a caller attaches next.
+  const replies = nextMessages(ws, 5);
   ws.send(JSON.stringify({ type: 'client:identity-proof', id: 'proof-1', signature }));
   const [serverHello, , catalog] = await replies;
   if (!serverHello || !catalog) throw new Error('handshake did not receive both messages');
@@ -344,7 +351,12 @@ async function handshakeWithAuthState(
   });
   const signature = signWithIdentityKey(keyPair.privateKey, keyPair.publicKey, payload);
 
-  const replies = nextMessages(ws, 3);
+  // server:hello, server:authorization-state, voice:catalog, server:presence-snapshot,
+  // server:profile-self-updated (T13.3's proactive push of this identity's own real persisted
+  // profile) — all five must be drained here even though only three are returned, since the server
+  // sends them back-to-back in one synchronous loop that can arrive as a single TCP burst; leaving
+  // the remaining two undrained risks them racing past whatever a caller listens for next.
+  const replies = nextMessages(ws, 5);
   ws.send(JSON.stringify({ type: 'client:identity-proof', id: 'proof-1', signature }));
   const [serverHello, authState, catalog] = await replies;
   if (!serverHello || !authState || !catalog) {
@@ -502,7 +514,12 @@ describe('Dedicated Server — T9 authorization (real network)', () => {
 
     const targetKeyPair = generateIdentityKeyPair();
     const targetWs = track(await connect(url));
+    // Admin is already `ready`, so T13.3 presence delivers it a live `server:presence-updated` the
+    // moment Target's handshake completes (a 0->1 online transition) — drained here before it can
+    // be mistaken for the voice:participant-joined broadcast below.
+    const adminNotifiedOfTargetOnline = nextMessage(adminWs);
     await handshakeWithAuthState(targetWs, 'Target', targetKeyPair);
+    expect(await adminNotifiedOfTargetOnline).toMatchObject({ type: 'server:presence-updated' });
     // The admin, already in the channel, will receive a voice:participant-joined broadcast the
     // moment Target joins — drain it explicitly so it can never be mistaken for the ban ack below.
     const adminNotifiedOfTarget = nextMessage(adminWs);
@@ -618,12 +635,16 @@ describe('Dedicated Server — T9 authorization (real network)', () => {
     const inviteMessage = (await inviteCreated) as { token: string };
 
     const targetWs = track(await connect(url));
+    const adminNotifiedOfTargetOnline = nextMessage(adminWs);
     await handshakeWithAuthState(
       targetWs,
       'Target',
       generateIdentityKeyPair(),
       inviteMessage.token,
     );
+    // Admin is already `ready`, so T13.3 presence delivers it a live `server:presence-updated` the
+    // moment Target's handshake completes (a 0->1 online transition) — drained here first.
+    expect(await adminNotifiedOfTargetOnline).toMatchObject({ type: 'server:presence-updated' });
     const adminNotifiedOfTarget = nextMessage(adminWs);
     const targetJoined = nextMessage(targetWs);
     targetWs.send(
@@ -720,7 +741,11 @@ describe('Dedicated Server — T10 persistent text chat (real network)', () => {
     const wsA = track(await connect(url));
     const wsB = track(await connect(url));
     await handshakeWithAuthState(wsA, 'Rodrigo');
+    // A is already `ready`, so T13.3 presence delivers it a live `server:presence-updated` the
+    // moment B's handshake completes (a 0->1 online transition) — drained here first.
+    const aNotifiedOfBOnline = nextMessage(wsA);
     await handshakeWithAuthState(wsB, 'Arthur');
+    expect(await aNotifiedOfBOnline).toMatchObject({ type: 'server:presence-updated' });
 
     const receivedByA = nextMessage(wsA);
     const receivedByB = nextMessage(wsB);
@@ -744,8 +769,17 @@ describe('Dedicated Server — T10 persistent text chat (real network)', () => {
     const wsB = track(await connect(url));
     const wsC = track(await connect(url));
     await handshakeWithAuthState(wsA, 'A');
+    // A is already `ready`, so T13.3 presence delivers it a live `server:presence-updated` the
+    // moment B's handshake completes — drained here first (and likewise for C below).
+    const aNotifiedOfBOnline = nextMessage(wsA);
     await handshakeWithAuthState(wsB, 'B');
+    expect(await aNotifiedOfBOnline).toMatchObject({ type: 'server:presence-updated' });
+
+    const notifiedOfCOnlineByA = nextMessage(wsA);
+    const notifiedOfCOnlineByB = nextMessage(wsB);
     await handshakeWithAuthState(wsC, 'C');
+    expect(await notifiedOfCOnlineByA).toMatchObject({ type: 'server:presence-updated' });
+    expect(await notifiedOfCOnlineByB).toMatchObject({ type: 'server:presence-updated' });
 
     const aJoined = nextMessage(wsA);
     wsA.send(
@@ -1050,6 +1084,8 @@ describe('Dedicated Server — T10 persistent text chat (real network)', () => {
       chatSendRateLimit: { maxMessages: 100, windowMs: 10_000 },
       chatHistoryRateLimit: { maxMessages: 100, windowMs: 10_000 },
       channelPasswordRateLimit: { maxMessages: 100, windowMs: 10_000 },
+      profileMutationRateLimit: { maxMessages: 100, windowMs: 10_000 },
+      avatarFetchRateLimit: { maxMessages: 100, windowMs: 10_000 },
       logLevel: 'error',
       ...overrides,
     };
@@ -1197,8 +1233,14 @@ describe('Dedicated Server — T10 persistent text chat (real network)', () => {
       const first = await startServer({ dataDir: dir });
       const senderWs = track(await connect(first.url));
       await handshakeWithAuthState(senderWs, 'A');
+      // Sender is already `ready`, so T13.3 presence delivers it a live `server:presence-updated`
+      // the moment the receiver's handshake completes — drained here first.
+      const senderNotifiedOfReceiverOnline = nextMessage(senderWs);
       const receiverWs = track(await connect(first.url));
       await handshakeWithAuthState(receiverWs, 'B');
+      expect(await senderNotifiedOfReceiverOnline).toMatchObject({
+        type: 'server:presence-updated',
+      });
 
       const liveReceived = nextMessage(receiverWs);
       const sentAck = nextMessage(senderWs);

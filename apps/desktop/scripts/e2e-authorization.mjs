@@ -24,12 +24,17 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { generateIdentityKeyPair, signWithIdentityKey } from '@disco-voador/identity';
-import { buildIdentityAuthPayload, CURRENT_PROTOCOL_VERSION } from '@disco-voador/protocol';
 import electronPath from 'electron';
-import { WebSocket } from 'ws';
 
 import { buildElectronE2EEnvironment } from './lib/electron-e2e-env.mjs';
+import {
+  becomeServerAdmin,
+  connectAndAuthenticate,
+  freshId,
+  joinVoice,
+  sendRequest,
+  waitForMessage,
+} from './lib/raw-protocol-client.mjs';
 import { startDedicatedServer } from './lib/start-dedicated-server.mjs';
 
 const desktopDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -47,169 +52,66 @@ if (!existsSync(mainEntry)) {
   );
 }
 
-// --- Raw WebSocket admin client (mirrors services/dedicated-server/scripts/smoke.mjs) ----------
-
-function nextMessage(ws, timeoutMs = 10_000) {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('Timed out waiting for a message')), timeoutMs);
-    ws.once('message', (data) => {
-      clearTimeout(timer);
-      resolve(JSON.parse(data.toString('utf8')));
-    });
-  });
-}
-
-function nextMessages(ws, count, timeoutMs = 10_000) {
-  return new Promise((resolve, reject) => {
-    const collected = [];
-    const timer = setTimeout(() => {
-      ws.off('message', handleMessage);
-      reject(new Error(`Timed out waiting for ${String(count)} messages`));
-    }, timeoutMs);
-
-    function handleMessage(data) {
-      collected.push(JSON.parse(data.toString('utf8')));
-      if (collected.length >= count) {
-        clearTimeout(timer);
-        ws.off('message', handleMessage);
-        resolve(collected);
-      }
-    }
-
-    ws.on('message', handleMessage);
-  });
-}
+// --- Raw WebSocket admin client --------------------------------------------------------------
+// Delegates the handshake/redeem/join sequence entirely to `./lib/raw-protocol-client.mjs`'s own
+// buffered helpers (`connectAndAuthenticate`/`becomeServerAdmin`/`joinVoice`) instead of this
+// script's own former fixed-count `nextMessages(ws, N)` draining, which silently broke every time
+// the server's initial admission burst gained one more message (most recently T13.3's proactive
+// `server:profile-self-updated` push, on top of its own earlier `server:presence-snapshot` addition
+// — the exact "racing once() listeners" bug class this file's own prior comment already named but
+// did not actually avoid). The shared lib buffers every message a connection ever receives and
+// matches by content/type, never by position, so it is structurally immune to the burst growing.
 
 async function connectAdmin(url, bootstrapToken) {
-  const ws = new WebSocket(url);
-  await new Promise((resolve, reject) => {
-    ws.once('open', resolve);
-    ws.once('error', reject);
-  });
-
-  const keyPair = generateIdentityKeyPair();
-  const nickname = 'Admin';
-  const challengePromise = nextMessage(ws);
-  ws.send(
-    JSON.stringify({
-      type: 'client:hello',
-      id: 'hello-1',
-      protocolVersion: CURRENT_PROTOCOL_VERSION,
-      client: { name: 'e2e-authorization', version: '0.0.0' },
-      nickname,
-      publicKey: keyPair.publicKey,
-    }),
-  );
-  const challenge = await challengePromise;
-
-  const payload = buildIdentityAuthPayload({
-    protocolVersion: CURRENT_PROTOCOL_VERSION,
-    connectionId: challenge.connectionId,
-    nonce: challenge.nonce,
-    expiresAt: challenge.expiresAt,
-    publicKey: keyPair.publicKey,
-    nickname,
-  });
-  const signature = signWithIdentityKey(keyPair.privateKey, keyPair.publicKey, payload);
-
-  const repliesPromise = nextMessages(ws, 3); // server:hello, server:authorization-state, voice:catalog
-  ws.send(JSON.stringify({ type: 'client:identity-proof', id: 'proof-1', signature }));
-  await repliesPromise;
-
-  // Become Server Admin. Redeeming a token also triggers a fresh server:authorization-state push
-  // (see protocol-handlers.ts's handleAuthorizationRedeemToken) -- both must be drained here via
-  // one queued listener, or the leftover authorization-state message would desync every subsequent
-  // nextMessage() call downstream (the same "racing once() listeners" bug class this project has
-  // hit before -- see tests/dedicated-server/integration.test.ts's own handshake() helper).
-  const repliesAfterRedeemPromise = nextMessages(ws, 2);
-  ws.send(
-    JSON.stringify({
-      type: 'client:authorization-redeem-token',
-      id: 'redeem-bootstrap',
-      token: bootstrapToken,
-    }),
-  );
-  const [redeemed] = await repliesAfterRedeemPromise;
-  if (
-    redeemed.type !== 'server:authorization-token-redeemed' ||
-    redeemed.group.groupId !== 'server-admin'
-  ) {
-    throw new Error(`Bootstrap redemption failed: ${JSON.stringify(redeemed)}`);
-  }
-
+  const { ws } = await connectAndAuthenticate(url, 'Admin');
+  await becomeServerAdmin(ws, bootstrapToken);
   // Join the default channel so voice:participant-joined events reveal Target's participantId.
-  const joinedPromise = nextMessage(ws);
-  ws.send(
-    JSON.stringify({
-      type: 'voice:join',
-      id: 'admin-join',
-      channelId: 'general',
-      displayName: 'Admin',
-    }),
-  );
-  await joinedPromise;
-
+  await joinVoice(ws, 'general', 'Admin');
   return ws;
 }
 
 async function createInviteToken(adminWs, groupId) {
-  const createdPromise = nextMessage(adminWs);
-  adminWs.send(
-    JSON.stringify({
+  const created = await sendRequest(
+    adminWs,
+    {
       type: 'client:authorization-create-token',
-      id: `create-invite-${String(Date.now())}`,
+      id: freshId('create-invite'),
       tokenKind: 'invite',
       groupId,
-    }),
+    },
+    ['server:authorization-token-created'],
   );
-  const created = await createdPromise;
-  if (created.type !== 'server:authorization-token-created') {
-    throw new Error(`Token creation failed: ${JSON.stringify(created)}`);
-  }
   return created.token;
 }
 
 /** Resolves once `voice:participant-joined` names `displayName`, giving the admin the target's
  * server-issued `participantId` -- never a client-supplied value. */
-function waitForParticipantJoined(adminWs, displayName, timeoutMs = 15_000) {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      adminWs.off('message', handleMessage);
-      reject(new Error(`Timed out waiting for ${displayName} to join`));
-    }, timeoutMs);
-
-    function handleMessage(data) {
-      const message = JSON.parse(data.toString('utf8'));
-      if (
-        message.type === 'voice:participant-joined' &&
-        message.participant?.displayName === displayName
-      ) {
-        clearTimeout(timer);
-        adminWs.off('message', handleMessage);
-        resolve(message.participant.participantId);
-      }
-    }
-
-    adminWs.on('message', handleMessage);
-  });
+async function waitForParticipantJoined(adminWs, displayName, timeoutMs = 15_000) {
+  const joined = await waitForMessage(
+    adminWs,
+    (message) =>
+      message.type === 'voice:participant-joined' &&
+      message.participant?.displayName === displayName,
+    `voice:participant-joined for ${displayName}`,
+    { timeoutMs },
+  );
+  return joined.participant.participantId;
 }
 
 async function banParticipant(adminWs, targetParticipantId) {
-  const ackPromise = nextMessage(adminWs);
-  adminWs.send(
-    JSON.stringify({ type: 'client:authorization-ban', id: 'ban-1', targetParticipantId }),
+  await sendRequest(
+    adminWs,
+    { type: 'client:authorization-ban', id: freshId('ban'), targetParticipantId },
+    ['server:authorization-ack'],
   );
-  const ack = await ackPromise;
-  if (ack.type !== 'server:authorization-ack')
-    throw new Error(`Ban failed: ${JSON.stringify(ack)}`);
 }
 
 async function unbanIdentity(adminWs, identityId) {
-  const ackPromise = nextMessage(adminWs);
-  adminWs.send(JSON.stringify({ type: 'client:authorization-unban', id: 'unban-1', identityId }));
-  const ack = await ackPromise;
-  if (ack.type !== 'server:authorization-ack')
-    throw new Error(`Unban failed: ${JSON.stringify(ack)}`);
+  await sendRequest(
+    adminWs,
+    { type: 'client:authorization-unban', id: freshId('unban'), identityId },
+    ['server:authorization-ack'],
+  );
 }
 
 // --- Real Electron "Target" instances -----------------------------------------------------------

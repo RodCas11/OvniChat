@@ -1,10 +1,15 @@
 import type { IpcRendererEvent } from 'electron';
 import { contextBridge, ipcRenderer } from 'electron';
 
+import type { AvatarImageFormat } from '@disco-voador/protocol';
+
 import {
   IPC_CHANNELS,
   PROCESS_AUDIO_PORT_WINDOW_MESSAGE_TYPE,
+  type AvatarMaxDimension,
   type DesktopApi,
+  type DesktopAvatarPickResult,
+  type DesktopAvatarValidationResult,
   type DesktopBookmarkInput,
   type DesktopClientSettings,
   type DesktopClientSettingsPatch,
@@ -134,6 +139,20 @@ const desktopApi: DesktopApi = {
     ipcRenderer.invoke(IPC_CHANNELS.updateBookmark, bookmark) as Promise<boolean>,
   removeBookmark: (bookmarkId: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.removeBookmark, bookmarkId) as Promise<boolean>,
+  selectAvatarImageFile: (maxDimension: AvatarMaxDimension) =>
+    ipcRenderer.invoke(IPC_CHANNELS.selectAvatarImageFile, maxDimension) as Promise<
+      DesktopAvatarPickResult | undefined
+    >,
+  validateAvatarImageBytes: (
+    base64: string,
+    format: AvatarImageFormat,
+    maxDimension: AvatarMaxDimension,
+  ) =>
+    ipcRenderer.invoke(IPC_CHANNELS.validateAvatarImageBytes, {
+      base64,
+      format,
+      maxDimension,
+    }) as Promise<DesktopAvatarValidationResult>,
 };
 
 contextBridge.exposeInMainWorld('desktopApp', desktopApi);

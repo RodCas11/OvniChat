@@ -52,6 +52,7 @@ describe('preload bridge', () => {
       'onProcessAudioEnded',
       'regenerateIdentity',
       'removeBookmark',
+      'selectAvatarImageFile',
       'selectScreenShareSource',
       'setNickname',
       'signIdentityChallenge',
@@ -59,6 +60,7 @@ describe('preload bridge', () => {
       'stopProcessAudioCapture',
       'updateBookmark',
       'updateClientSettings',
+      'validateAvatarImageBytes',
     ]);
     expect(api['ipcRenderer']).toBeUndefined();
     expect(api['invoke']).toBeUndefined();

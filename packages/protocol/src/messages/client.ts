@@ -8,6 +8,7 @@ import { clientAuthorizationMessageSchema } from './authorization.js';
 import { clientChannelMessageSchema } from './channels.js';
 import { clientChatMessageSchema } from './chat.js';
 import { clientMediaTrackSourceMessageSchema } from './media.js';
+import { clientProfileMessageSchema } from './profile.js';
 import {
   clientWebrtcAnswerMessageSchema,
   clientWebrtcIceCandidateMessageSchema,
@@ -97,6 +98,7 @@ export const clientMessageSchema = z.discriminatedUnion('type', [
   ...clientAuthorizationMessageSchema.options,
   ...clientChatMessageSchema.options,
   ...clientChannelMessageSchema.options,
+  ...clientProfileMessageSchema.options,
 ]);
 
 export type ClientMessage = z.infer<typeof clientMessageSchema>;

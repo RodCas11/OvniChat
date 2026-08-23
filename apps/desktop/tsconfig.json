@@ -13,6 +13,7 @@
     { "path": "../../packages/media-core" },
     { "path": "../../packages/protocol" },
     { "path": "../../packages/rtc-core" },
+    { "path": "../../packages/shared" },
     { "path": "../../packages/windows-media" }
   ],
   "include": ["src/**/*.ts", "src/**/*.tsx"]

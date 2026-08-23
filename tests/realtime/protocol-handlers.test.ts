@@ -19,6 +19,8 @@ import {
 } from '../../services/realtime/src/authorization-port.js';
 import { createNoopChannelPort } from '../../services/realtime/src/channel-port.js';
 import { createNoopChatPort, type ChatPort } from '../../services/realtime/src/chat-port.js';
+import { PresenceRegistry } from '../../services/realtime/src/presence/registry.js';
+import { createNoopProfilePort } from '../../services/realtime/src/profile-port.js';
 import {
   handleClientPing,
   routeClientMessage,
@@ -61,6 +63,8 @@ function makeContext(overrides: Partial<HandlerContext> = {}): HandlerContext {
     channels: createNoopChannelPort(),
     temporaryChannels: new TemporaryChannelRegistry(),
     channelPasswordRateLimiter: new RateLimiter({ maxMessages: 1000, windowMs: 60_000 }),
+    profile: createNoopProfilePort(),
+    presenceRegistry: new PresenceRegistry(),
     // Every ready-state test in this file exercises a handler reachable only after a real identity
     // proof would already have set this (see `requireIdentityId` in protocol-handlers.ts) — default
     // it here so tests that don't care about T9 authorization specifically don't each need to set

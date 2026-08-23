@@ -153,10 +153,11 @@ Every rendered state comes from real `ipc-contract.ts` data or real hook state. 
 fixture reachable in a packaged build anywhere in the Renderer (verified by a case-insensitive grep
 for `mock|demo|fixture|placeholder` across `apps/desktop/src/renderer` during security review, which
 found none). `ServerHome`/`ServerRail` render only real bookmarks from `getClientSettings()`. Channel
-categories, per-remote-participant mute/speaking flags, and role badges beyond the real `GroupBadge`
-array are intentionally absent rather than invented — component APIs (`MemberPanel`'s `groups` prop,
-`MemberRow`'s empty badge slot, `ParticipantRow`'s empty status/role slots) are shaped for future
-T13.3/T13.4 data without inventing placeholder values now.
+categories and per-remote-participant mute/speaking flags are intentionally absent rather than
+invented — `ParticipantRow`'s empty status/role slots remain shaped for future T13.4 data without
+inventing placeholder values now. `MemberPanel`'s `groups` prop and `MemberRow`'s badge slot, both
+previously dormant, are now real as of T13.3 (see below) — driven by actual `server:presence-*`
+data and the server-derived `roleBucket` enum, never fabricated client-side classification.
 
 ## Admin/moderation visibility
 
@@ -295,10 +296,30 @@ label plus a muted secondary note, verified truthful against `channel-port.ts`'s
 doc comment rather than guessed. See
 [`tasks/T13_2_1_ADMIN_UX_POLISH.md`](../tasks/T13_2_1_ADMIN_UX_POLISH.md) for the full record.
 
+## T13.3 — profiles, avatars, members, presence
+
+T13.1's `Avatar` primitive shipped with a prepared-but-dormant `imageUrl` prop, and `MemberPanel`/
+`MemberRow`/`ParticipantRow` shipped with prepared-but-empty `groups`/badge/status slots — all
+explicitly reserved for this task rather than built speculatively. T13.3 fills them with real data:
+`UserAvatar`/`ServerAvatar` (new, thin wrappers over `Avatar`) resolve a real `AvatarRef` to a
+cached `data:` URI; `MemberPanel` widens from "in this voice channel" to "connected to this server
+at all," sourced from `server:presence-snapshot`/`-updated`/`-removed`, grouped into "Admins"/
+"Moderators"/"Members" by the server-derived `roleBucket` enum (never a client-side guess, never a
+raw ACL group name). Three new components — `ProfileEditor` (self avatar/status/presence),
+`MemberProfilePopover` (read-mostly, zero DM/friend affordance), and `ServerProfileSection` (server
+avatar admin control, hidden entirely without `server.manage`) — all reuse the T13.1/T13.1.1 design
+system (`ChannelAdminForm.module.css`'s form/section/footer classes) rather than introducing a
+parallel style. See
+[`SERVER_LOCAL_PROFILES_AND_PRESENCE.md`](SERVER_LOCAL_PROFILES_AND_PRESENCE.md) and
+[`tasks/T13_3_PROFILES_AVATARS_PRESENCE.md`](../tasks/T13_3_PROFILES_AVATARS_PRESENCE.md) for the
+full record.
+
 ## What T13.1 deliberately does not do
 
 Channel create/edit/delete/hierarchy and richer server admin UX (T13.2); real server/user avatar
-upload or storage, member directory/presence, online/away/DND, custom status (T13.3); push-to-talk,
-voice-activity UX, speaking indicator, per-user volume, local participant mute, join/leave sounds
-(T13.4); Discord-like stream viewing/focus, camera layout, detached stream window/PiP, final call UX
-integration (T13.5). `Avatar`'s fallback is deterministic initials only — no upload/storage/backend.
+upload or storage, member directory/presence, online/away/DND, custom status (T13.3 — now
+implemented, see above); push-to-talk, voice-activity UX, speaking indicator, per-user volume, local
+participant mute, join/leave sounds (T13.4); Discord-like stream viewing/focus, camera layout,
+detached stream window/PiP, final call UX integration (T13.5). `Avatar`'s fallback remains
+deterministic initials for any target with no avatar set — upload/storage/backend now exist (T13.3),
+scoped entirely server-local per Dedicated Server.

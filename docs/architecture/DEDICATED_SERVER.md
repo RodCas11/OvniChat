@@ -377,16 +377,28 @@ This is the Dedicated Server's third persistent runtime state, and the first who
 not just its rows — is administered live from the Client rather than fixed at startup by a config
 file.
 
-**Not introduced by T8, T9, T10, or T13.2:** a central account database, `server-users.json`/`users.db`/
-`accounts.sqlite`-as-a-_profile_-store or any equivalent, cross-server tracking, a global server
-directory, central message history (each server's `chat.sqlite` is its own, unrelated to any other
-server's), central analytics/telemetry, email, password, phone number, or any concept of "this human
-owns a Disco Voador account." T9's SQLite file stores authorization _subjects_ (which cryptographic
-identities hold which of this server's own groups), never user profiles; T10's SQLite file stores
-messages and their minimal authorship metadata, never a message-history service any party other than
-that one server's own operator can reach — see [`SERVER_AUTHORIZATION.md`](SERVER_AUTHORIZATION.md)
-and [`PERSISTENT_TEXT_CHAT.md`](PERSISTENT_TEXT_CHAT.md) for the full designs and ADR 0013/0014 for
-why SQLite, and why two separate files, specifically.
+**Dedicated Server persistent profile/presence storage (T13.3, new — see
+[`SERVER_LOCAL_PROFILES_AND_PRESENCE.md`](SERVER_LOCAL_PROFILES_AND_PRESENCE.md) for the complete
+design):** a fourth, separate SQLite file under `config.dataDir` (`profiles.sqlite`, never merged
+into T9's/T10's/T13.2's stores), holding per-identity avatar/custom-status/presence-preference rows
+and a singleton server-avatar row. This is the first store to hold binary data (avatar image bytes,
+as a `BLOB` column) and the first genuinely personal visual/social state this product persists —
+still not an account: no nickname, email, real name, phone, IP, or device fingerprint is stored, and
+`identity_id` remains a bare string with no foreign key into any other store.
+
+**Not introduced by T8, T9, T10, T13.2, or T13.3:** a central account database,
+`server-users.json`/`users.db`/`accounts.sqlite`-as-a-_profile_-store or any equivalent, cross-server
+tracking, a global server directory, central message history (each server's `chat.sqlite` is its
+own, unrelated to any other server's), central analytics/telemetry, email, password, phone number,
+real name, or any concept of "this human owns a Disco Voador account." T9's SQLite file stores
+authorization _subjects_ (which cryptographic identities hold which of this server's own groups),
+never user profiles; T10's SQLite file stores messages and their minimal authorship metadata, never
+a message-history service any party other than that one server's own operator can reach; T13.3's
+SQLite file stores exactly one avatar image, one status string, and one presence preference per
+identity, per server, with zero cross-server relationship for the same identity — see
+[`SERVER_AUTHORIZATION.md`](SERVER_AUTHORIZATION.md), [`PERSISTENT_TEXT_CHAT.md`](PERSISTENT_TEXT_CHAT.md),
+and [`SERVER_LOCAL_PROFILES_AND_PRESENCE.md`](SERVER_LOCAL_PROFILES_AND_PRESENCE.md) for the full
+designs and ADR 0013/0014/0020 for why SQLite, and why one file per domain, specifically.
 
 ## Server-local instance identifier (T8 Section 12) — evaluated, deferred
 

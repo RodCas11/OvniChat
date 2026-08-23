@@ -8,11 +8,13 @@ import {
   identityIdSchema,
   identityNonceSchema,
 } from '../identity.js';
+import { avatarRefSchema } from '../profile.js';
 import { serverCapabilitiesSchema, serverNameSchema } from '../server-metadata.js';
 import { serverAuthorizationMessageSchema } from './authorization.js';
 import { serverChannelMessageSchema } from './channels.js';
 import { serverChatMessageSchema } from './chat.js';
 import { serverMediaTrackSourceMessageSchema } from './media.js';
+import { serverProfileMessageSchema } from './profile.js';
 import {
   serverWebrtcAnswerMessageSchema,
   serverWebrtcIceCandidateMessageSchema,
@@ -35,6 +37,10 @@ import {
  * `@disco-voador/identity`'s `deriveIdentityId`), never a value the client supplied.
  * `serverName`/`serverCapabilities` are operator-facing display data (see
  * `docs/architecture/DEDICATED_SERVER.md`) — never treated as a trust or authorization signal.
+ *
+ * T13.3: `serverAvatarRef` is a new **optional** field — additive to this existing `.strict()`
+ * schema, matching T9's own `client:hello.serverToken` optional-field precedent exactly (see
+ * `version.ts`'s evolution policy) — present only when the server currently has an avatar set.
  */
 export const serverHelloMessageSchema = z
   .object({
@@ -52,6 +58,7 @@ export const serverHelloMessageSchema = z
         timeoutMs: z.number().int().positive(),
       })
       .strict(),
+    serverAvatarRef: avatarRefSchema.optional(),
   })
   .strict();
 
@@ -115,6 +122,7 @@ export const serverMessageSchema = z.discriminatedUnion('type', [
   ...serverAuthorizationMessageSchema.options,
   ...serverChatMessageSchema.options,
   ...serverChannelMessageSchema.options,
+  ...serverProfileMessageSchema.options,
 ]);
 
 export type ServerMessage = z.infer<typeof serverMessageSchema>;

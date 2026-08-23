@@ -12,5 +12,8 @@
   "types": "dist/index.d.ts",
   "files": [
     "dist"
-  ]
+  ],
+  "dependencies": {
+    "@disco-voador/protocol": "workspace:*"
+  }
 }

@@ -17,6 +17,7 @@ function renderBar(
   const actions = createVoiceActions();
   const onOpenSettings = vi.fn();
   const onOpenScreenPicker = vi.fn();
+  const onOpenProfile = vi.fn();
   const state = createVoiceState({ currentChannelId: 'general', ...stateOverrides });
 
   const result = render(
@@ -26,10 +27,11 @@ function renderBar(
       displayName="Alice"
       onOpenSettings={onOpenSettings}
       onOpenScreenPicker={onOpenScreenPicker}
+      onOpenProfile={onOpenProfile}
       {...extra}
     />,
   );
-  return { ...result, actions, onOpenSettings, onOpenScreenPicker, state };
+  return { ...result, actions, onOpenSettings, onOpenScreenPicker, onOpenProfile, state };
 }
 
 describe('UserControlBar (T13.1)', () => {

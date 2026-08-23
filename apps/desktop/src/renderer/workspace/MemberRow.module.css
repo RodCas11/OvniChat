@@ -13,9 +13,41 @@
   background: var(--ovni-bg-hover);
 }
 
-.name {
+.avatarWrap {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.presenceDot {
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  width: 10px;
+  height: 10px;
+  border-radius: var(--ovni-radius-full);
+  border: 2px solid var(--ovni-bg-surface);
+}
+
+.presenceOnline {
+  background: var(--ovni-accent);
+}
+
+.presenceAway {
+  background: var(--ovni-warning);
+}
+
+.presenceDnd {
+  background: var(--ovni-danger);
+}
+
+.textColumn {
   flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -27,6 +59,36 @@
   color: var(--ovni-text-tertiary);
 }
 
-.badgeSlot {
-  width: 0;
+.status {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--ovni-text-xs);
+  color: var(--ovni-text-tertiary);
+}
+
+.roleBadge {
+  flex-shrink: 0;
+  padding: 1px var(--ovni-space-2);
+  border-radius: var(--ovni-radius-sm);
+  font-size: var(--ovni-text-xs);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  color: var(--ovni-text-tertiary);
+  background: var(--ovni-bg-hover);
+}
+
+.button {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  gap: var(--ovni-space-3);
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
 }

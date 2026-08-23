@@ -75,6 +75,9 @@ importers:
       '@disco-voador/rtc-core':
         specifier: workspace:*
         version: link:../../packages/rtc-core
+      '@disco-voador/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
       '@disco-voador/windows-media':
         specifier: workspace:*
         version: link:../../packages/windows-media
@@ -137,7 +140,11 @@ importers:
 
   packages/rtc-core: {}
 
-  packages/shared: {}
+  packages/shared:
+    dependencies:
+      '@disco-voador/protocol':
+        specifier: workspace:*
+        version: link:../protocol
 
   packages/windows-media: {}
 
@@ -152,6 +159,9 @@ importers:
       '@disco-voador/realtime':
         specifier: workspace:*
         version: link:../realtime
+      '@disco-voador/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
       zod:
         specifier: 4.4.3
         version: 4.4.3
@@ -1205,6 +1215,7 @@ packages:
   '@xmldom/xmldom@0.9.11':
     resolution: {integrity: sha512-tW8bcK3hsG0/uqSnNz6TK4BkcuZSezoU7DlnYssILmZDktPnSHHuDJJFM0AJv+13gz2r0iGdrj6qqKeUnxXEDg==}
     engines: {node: '>=14.6'}
+    deprecated: this version has critical issues, please update to the latest version
 
   '@xtuc/ieee754@1.2.0':
     resolution: {integrity: sha512-DX8nKgqcGwsc0eJSqYt5lwP4DH5FlHnmuWWBRy7X0NcaGR0ZtuyeESgMwTYVEtxmsNGY+qit4QYT/MIYTOTPeA==}

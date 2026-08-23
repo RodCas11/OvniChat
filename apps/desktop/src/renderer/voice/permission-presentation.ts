@@ -73,6 +73,12 @@ export const PERMISSION_PRESENTATION: Record<PermissionKey, PermissionPresentati
     label: 'Ban participants',
     category: 'Moderation',
   },
+  'moderation.profile.clear': {
+    label: 'Clear member profiles',
+    description:
+      'Clear another member’s avatar or custom status for abuse handling — never set or rewrite it.',
+    category: 'Moderation',
+  },
   'authorization.groups.manage': {
     label: 'Manage groups',
     description:

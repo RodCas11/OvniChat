@@ -498,6 +498,108 @@ this document:
   reasoning. Do not add a "speak" permission or UI control in a later task without first re-deriving
   this same architectural constraint — it has not changed.
 
+**Implemented (T13.3 — server-local profiles, avatars, members, presence):** see
+`docs/architecture/SERVER_LOCAL_PROFILES_AND_PRESENCE.md` for the full design. Key points relevant
+to this document:
+
+- **`identityId` never crosses into a presence-shaped message.** Every member-facing message uses
+  `memberRef` — a fresh, random (`randomUUID()`) token minted per identity on its first live
+  connection, retired the moment its last connection closes, and structurally never a function of
+  `identityId`. Verified directly in `services/realtime/src/presence/registry.ts` (not just its own
+  doc comment) — the same cross-server-correlation property ADR 0011 established for `identityId`
+  is preserved by this feature, not reintroduced through a new server-wide identifier.
+- **Image validation is allowlist-based header/chunk-structure sniffing only, never a full pixel
+  decode and never extension/MIME trust.** `packages/shared/src/image-validation.ts` structurally
+  rejects SVG (a script/XSS vector), GIF, BMP, TIFF, and anything else that doesn't match a real
+  PNG/JPEG/WebP signature — by falling through every signature check, not by a blocklist. Animated
+  formats are rejected via real structural detection (a PNG `acTL` chunk before the first `IDAT`;
+  a WebP `VP8X` flags-byte Animation bit _or_ an independent `ANIM`/`ANMF` chunk-list scan — either
+  signal alone triggers rejection, defense in depth against a crafted flags byte). Byte-length and
+  declared-dimension ceilings are enforced before any parsing that scales with claimed size, so no
+  decompression-bomb-shaped input reaches expensive work.
+- **A malicious/compromised Dedicated Server operator is a modeled adversary against the local
+  filesystem/Renderer.** Avatar bytes received from a server are re-validated by the exact same
+  sniffer, in the Electron Main process, before the Renderer ever caches or renders them
+  (`apps/desktop/src/main/avatar-images.ts`'s `validateAvatarImageBytes`) — traced directly through
+  the real call path from `server:profile-avatar-data` receipt to cache population, not merely
+  confirmed to exist unused.
+- **No raw local filesystem path ever reaches the Renderer.** The new `selectAvatarImageFile`
+  IPC channel returns only `{format, byteLength, base64}` or a typed failure — a deliberately
+  stricter posture than the pre-existing screen-share source picker (which does return an opaque
+  source id), since a real filesystem path is more sensitive than an opaque capture-source id.
+- **Clear-only moderation, enforced structurally, not just by permission check.** The wire schema
+  for `client:profile-clear-avatar{target:'member'}`/`client:profile-clear-member-status` has no
+  shape that could set arbitrary content on someone else's behalf — there is no field for it. Both
+  require `moderation.profile.clear`, a permission distinct from `server.manage`/`moderation.kick`/
+  `-ban` since none of those cleanly names "clear-only power over another member's own presentation
+  data."
+- **No impersonation vector.** Every write in `services/dedicated-server/src/profile/store.ts` takes
+  `identityId` only from a caller-supplied method parameter already resolved server-side from the
+  authenticated connection — no client-suppliable identity field exists anywhere in this message
+  family for `target: 'self'`, and `target: 'member'` resolves its target via `memberRef` through
+  `PresenceRegistry`, never trusting a client-asserted identity.
+- **Member-grouping leaks no private ACL data.** The only role-shaped information ever sent is the
+  closed `'admin' | 'moderator' | undefined` enum, derived fresh from the viewer's actual effective
+  permissions (`services/realtime/src/presence/role-bucket.ts`) — never a raw custom group name, id,
+  count, or existence. A Discord-style arbitrary role list was considered and rejected specifically
+  because T9's custom groups are private.
+- **No hidden-channel-location leak.** No schema in `packages/protocol/src/messages/profile.ts`, and
+  no object literal actually constructed in `services/realtime/src/protocol-handlers.ts`'s profile
+  handlers, ever carries a channel-shaped field — audited directly, and covered by a dedicated
+  real-socket "hostile hidden-channel-leakage" integration test.
+- **Per-server isolation.** `profiles.sqlite` has no foreign key into `authorization.sqlite`/
+  `chat.sqlite`/`channels.sqlite` — `identity_id` is a bare `TEXT` primary key, exactly like every
+  other cross-file reference in this codebase. On the Renderer side, switching servers fully
+  remounts the connection's component tree (`AppShell`'s existing per-connection `key`), giving a
+  fresh, empty `members`/`avatarCache`/profile state — verified this is the actual isolation
+  mechanism (see the fixed finding below for a related, now-resolved fragility).
+- **Rate limiting is wired into every handler, not merely constructed.** Two new per-connection
+  limiters (profile mutation, avatar fetch) gate every one of the six `client:profile-*` message
+  types before `routeClientMessage` ever runs — confirmed against each message type individually.
+  Scoping is per-connection, matching the already-accepted `channelPasswordRateLimiter` precedent
+  (T13.2) exactly, not a new or weaker gap; a scripted client can reset its budget by reconnecting,
+  the same accepted tradeoff already documented above.
+- **No `blob:` CSP widening.** Avatar rendering uses `data:` URIs exclusively, reusing the
+  pre-existing `img-src 'self' data:'` directive; `blob:`/`createObjectURL` usage was deliberately
+  not introduced anywhere in the new avatar-rendering surface.
+- **No DM/social-graph affordance was introduced.** `MemberProfilePopover.tsx` exposes only avatar/
+  name/presence/status/role-bucket and, for a moderator, clear-only actions — no message/DM/friend
+  affordance of any kind, a hard, deliberate product boundary this codebase has no infrastructure to
+  safely support.
+- **Multi-connection correctness.** `PresenceRegistry` tracks a `Set<connectionId>` per identity and
+  only fires `becameOffline`/retires `memberRef` when that set reaches zero — a second simultaneous
+  connection for the same identity never causes a spurious `presence-removed`, and rate limits are
+  scoped per-connection, so a second connection cannot be used to reset the first's budget (each has
+  its own).
+- **Fixed by security review before this task's completion (non-exploitable, fixed anyway): a
+  cross-server isolation reset branch was dead code on every real teardown path.** A Renderer effect
+  cleanup detached its `stateChange` listener _before_ calling `controller.disconnect()`, so the
+  `'closed'`-branch reset (clearing `members`/`avatarCache`/`selfPresence`/`selfCustomStatus`/
+  `selfAvatarRef`) never actually ran when it claimed to — masked entirely by the separate, correct
+  `AppShell` remount-by-connection-key mechanism described above, which independently guarantees the
+  same isolation by discarding the whole hook instance. If that remount mechanism were ever removed
+  or bypassed in a future change without re-deriving this requirement, the documented reset would
+  silently fail to compensate. Fixed by reordering cleanup so `disconnect()` fires while the listener
+  is still attached, so the documented guarantee is now genuinely delivered by the code that claims
+  it, not merely by an unrelated mechanism elsewhere.
+- **Found and fixed during this task's own post-implementation hardening (not by the formal
+  reviews): a duplicate self-row on any self-service profile mutation.** `pushPresenceUpdate` was
+  broadcasting a self-service mutation's `server:presence-updated` to every ready connection,
+  including the acting one — contradicting the message's own "every _other_ ready connection" doc
+  comment. Fixed by excluding the acting connection specifically for `target: 'self'` mutations
+  only (never for a moderator acting on a different member, which still needs the broadcast to
+  update its own view of that member), with a dedicated regression test. A related, narrower
+  instance (a moderation _target_'s own connection receiving an update about itself with no way to
+  recognize it was self-referential) was closed by adding an optional `selfMemberRef` field to
+  `server:presence-snapshot`.
+- **Residual, informational, no action required: `avatarRef.hash` carries no cryptographic binding
+  to the bytes a server actually returns for it.** A malicious/compromised Dedicated Server operator
+  — already a modeled adversary above — could serve mismatched bytes under a claimed hash without
+  detection. This does not let an operator escalate beyond what it can already do (asserting
+  arbitrary presence data outright, since it fully controls every broadcast); the client correctly
+  trusts the _format safety_ of server-supplied avatar bytes (per the re-validation point above) but
+  has no basis to trust their _authenticity/attribution_ in a self-hosted, operator-controlled model.
+
 ## Secrets and configuration
 
 - No real credentials, private keys, TURN shared secret, auth tokens, or certificates in Git.

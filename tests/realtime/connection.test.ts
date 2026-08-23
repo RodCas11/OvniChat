@@ -10,6 +10,8 @@ import { createNoopChatPort } from '../../services/realtime/src/chat-port.js';
 import type { RealtimeConfig } from '../../services/realtime/src/config.js';
 import { Connection } from '../../services/realtime/src/connection.js';
 import { createNoopLogger } from '../../services/realtime/src/logging.js';
+import { PresenceRegistry } from '../../services/realtime/src/presence/registry.js';
+import { createNoopProfilePort } from '../../services/realtime/src/profile-port.js';
 import { TemporaryChannelRegistry } from '../../services/realtime/src/voice/temporary-channels.js';
 import { VoiceRegistry } from '../../services/realtime/src/voice/registry.js';
 
@@ -57,6 +59,8 @@ const TEST_CONFIG: RealtimeConfig = {
   chatSendRateLimit: { maxMessages: 100, windowMs: 10_000 },
   chatHistoryRateLimit: { maxMessages: 100, windowMs: 10_000 },
   channelPasswordRateLimit: { maxMessages: 100, windowMs: 10_000 },
+  profileMutationRateLimit: { maxMessages: 100, windowMs: 10_000 },
+  avatarFetchRateLimit: { maxMessages: 100, windowMs: 10_000 },
   logLevel: 'error',
 };
 
@@ -83,6 +87,9 @@ describe('Connection — unexpected handler failure containment', () => {
       createNoopChatPort(),
       createNoopChannelPort(),
       new TemporaryChannelRegistry(),
+      createNoopProfilePort(),
+      new PresenceRegistry(),
+      () => {},
       () => {},
       () => {},
       () => {},
