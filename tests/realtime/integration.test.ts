@@ -676,7 +676,10 @@ describe('realtime server integration (real sockets)', () => {
       // before it can otherwise be mistaken for the very next voice-signaling message A receives.
       const bOnlineNotice = nextMessage(a);
       const b = track((await connectAndHandshake(url)).ws);
-      expect(await bOnlineNotice).toMatchObject({ type: 'server:presence-updated' });
+      const bPresenceUpdate = await bOnlineNotice;
+      expect(bPresenceUpdate).toMatchObject({ type: 'server:presence-updated' });
+      const bMemberRefFromPresence = (bPresenceUpdate as { member: { memberRef: string } }).member
+        .memberRef;
 
       const { participantId: participantIdA, participants: aSnapshot } = await joinChannel(
         a,
@@ -693,8 +696,17 @@ describe('realtime server integration (real sockets)', () => {
         'general',
         'Arthur',
       );
+      // T13.4 — `identityRef`/`memberRef` are real, per-connection-run-unique `randomUUID()` values,
+      // so neither can be a fixed literal in this assertion; matched separately by shape below, then
+      // the rest of the object structurally.
       expect(bSnapshot).toEqual([
-        { participantId: participantIdA, displayName: 'Rodrigo', groups: [] },
+        {
+          participantId: participantIdA,
+          displayName: 'Rodrigo',
+          groups: [],
+          identityRef: expect.stringMatching(/^[0-9a-f-]{36}$/u) as unknown as string,
+          memberRef: expect.stringMatching(/^[0-9a-f-]{36}$/u) as unknown as string,
+        },
       ]);
 
       const notice = await bJoinedNotice;
@@ -703,6 +715,14 @@ describe('realtime server integration (real sockets)', () => {
         channelId: 'general',
         participant: { participantId: participantIdB, displayName: 'Arthur' },
       });
+      // T13.4 (UI consistency follow-up) — the whole point of exposing `memberRef` on a voice
+      // participant is so a client can look B up in `state.members` (keyed by the exact same
+      // `memberRef` T13.3 presence already broadcasts) to resolve the real avatar Member Panel
+      // already shows for B. Proves that correlation actually holds against a real, independent
+      // presence broadcast for the same identity, not just that both fields are *some* string.
+      expect((notice as { participant: { memberRef: string } }).participant.memberRef).toBe(
+        bMemberRefFromPresence,
+      );
 
       // A (already present) initiates the offer toward B (the newcomer) — the deterministic
       // offer-ownership strategy documented in docs/architecture/WEBRTC_VOICE.md.

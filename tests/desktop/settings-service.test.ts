@@ -53,10 +53,18 @@ describe('settings-service', () => {
       audio: { inputDeviceId: null, outputDeviceId: null },
       video: { cameraDeviceId: null },
       screenShare: { qualityPreset: 'high' },
-      voice: { startMuted: false, startDeafened: false },
+      voice: {
+        startMuted: false,
+        startDeafened: false,
+        inputMode: 'voice-activity',
+        pttBinding: null,
+        voiceActivitySensitivity: 0.5,
+        joinLeaveSoundsEnabled: true,
+      },
       bookmarks: [],
       lastServerAddress: null,
       connectOnStartup: false,
+      voicePreferences: {},
     });
     expect(existsSync(settingsPath())).toBe(false);
   });
@@ -215,6 +223,81 @@ describe('settings-service', () => {
       name.startsWith('settings.json.corrupted-'),
     );
     expect(corruptedEntries).toHaveLength(1);
+  });
+
+  it('patches new T13.4 voice fields independently of startMuted/startDeafened', async () => {
+    const service = await freshSettingsService();
+    await service.updateClientSettings({
+      voice: { inputMode: 'push-to-talk', voiceActivitySensitivity: 0.75 },
+    });
+
+    const settings = await service.getClientSettings();
+    expect(settings.voice.inputMode).toBe('push-to-talk');
+    expect(settings.voice.voiceActivitySensitivity).toBe(0.75);
+    // Untouched siblings survive.
+    expect(settings.voice.startMuted).toBe(false);
+    expect(settings.voice.joinLeaveSoundsEnabled).toBe(true);
+  });
+
+  it('getVoicePreference returns undefined for a never-saved (serverScopeKey, identityRef) pair', async () => {
+    const service = await freshSettingsService();
+    expect(await service.getVoicePreference('server:8090', 'identity-1')).toBeUndefined();
+  });
+
+  it('setVoicePreference writes and getVoicePreference reads back one entry without touching others', async () => {
+    const service = await freshSettingsService();
+    await service.setVoicePreference('server-a:8090', 'identity-1', {
+      volumePercent: 150,
+      locallyMuted: true,
+    });
+    await service.setVoicePreference('server-a:8090', 'identity-2', {
+      volumePercent: 80,
+      locallyMuted: false,
+    });
+    await service.setVoicePreference('server-b:8090', 'identity-1', {
+      volumePercent: 100,
+      locallyMuted: false,
+    });
+
+    expect(await service.getVoicePreference('server-a:8090', 'identity-1')).toEqual({
+      volumePercent: 150,
+      locallyMuted: true,
+    });
+    expect(await service.getVoicePreference('server-a:8090', 'identity-2')).toEqual({
+      volumePercent: 80,
+      locallyMuted: false,
+    });
+    expect(await service.getVoicePreference('server-b:8090', 'identity-1')).toEqual({
+      volumePercent: 100,
+      locallyMuted: false,
+    });
+  });
+
+  it('setVoicePreference persists across a fresh module instance', async () => {
+    const first = await freshSettingsService();
+    await first.setVoicePreference('server:8090', 'identity-1', {
+      volumePercent: 50,
+      locallyMuted: false,
+    });
+
+    const second = await freshSettingsService();
+    expect(await second.getVoicePreference('server:8090', 'identity-1')).toEqual({
+      volumePercent: 50,
+      locallyMuted: false,
+    });
+  });
+
+  it('never persists a voice preference keyed by anything other than identityRef (no memberRef-shaped key)', async () => {
+    const service = await freshSettingsService();
+    await service.setVoicePreference('server:8090', 'identity-1', {
+      volumePercent: 100,
+      locallyMuted: false,
+    });
+
+    const onDisk = JSON.parse(readFileSync(settingsPath(), 'utf8')) as {
+      voicePreferences: Record<string, Record<string, unknown>>;
+    };
+    expect(Object.keys(onDisk.voicePreferences['server:8090'] ?? {})).toEqual(['identity-1']);
   });
 
   it('writeClientSettingsFile leaves no partial file behind (atomic rename)', async () => {

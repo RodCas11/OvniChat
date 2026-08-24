@@ -51,11 +51,13 @@ import {
   MicrophoneAccessError,
   ScreenAccessError,
   SCREEN_QUALITY_PRESETS,
+  TransmitGate,
   type Camera,
   type Microphone,
   type ProcessAudioTrack,
   type Screen,
   type ScreenQualityPreset,
+  type VoiceInputMode,
 } from '@disco-voador/media-core';
 import {
   P2PMeshTransport,
@@ -67,7 +69,15 @@ import {
 import type {
   DesktopProcessAudioEndedInfo,
   DesktopRealtimeConfig,
+  DesktopSetPttShortcutResult,
+  DesktopVoicePreferenceEntry,
+  // T13.4 — re-exported by `shared/ipc-contract.ts` specifically so this Renderer file never has a
+  // source-text import specifier naming `@disco-voador/windows-media` at all (this repository's
+  // `scripts/verify-architecture.mjs` guardrail forbids that categorically, even for a type-only
+  // import that is erased at compile time) — see that file's own doc comment on this re-export.
+  PttBinding,
 } from '../../shared/ipc-contract.js';
+import { deriveServerScopeKey } from '../../shared/voice-preference-scope.js';
 import { acquireProcessAudioTrack } from '../media/process-audio-bridge.js';
 import { IpcIdentitySigner } from '../realtime/identity-signer.js';
 import type {
@@ -77,6 +87,7 @@ import type {
 } from '../realtime/realtime-client.js';
 import { channelErrorMessage } from '../workspace/channel-error-copy.js';
 import { profileErrorMessage } from '../workspace/profile-error-copy.js';
+import { diffParticipantsForSound, playJoinLeaveSound } from './join-leave-sounds.js';
 import {
   ReconnectController,
   type ConnectionFailedEvent,
@@ -88,8 +99,10 @@ import {
   createEmptyRemoteMediaStreamsState,
   RemoteMediaReconciler,
 } from './remote-media-reconciliation.js';
+import { RemoteAudioGraphController } from './remote-audio-graph.js';
 import { releasePublishedScreen } from './screen-share-lifecycle.js';
 import type { ScreenShareAudioMode } from './ScreenSourcePicker.js';
+import { AnalyserActivitySampler } from './voice-activity-detector.js';
 
 export interface VoiceParticipantView {
   readonly participantId: string;
@@ -100,6 +113,31 @@ export interface VoiceParticipantView {
    * participant's groups change mid-session). Empty for a server with no authorization store
    * (`services/realtime`'s own no-op default). */
   readonly groups: readonly GroupBadge[];
+  /** T13.4 — this participant's stable, per-server `identityRef` (see `@disco-voador/protocol`'s
+   * `identityRefSchema`) — never `identityId`, never `memberRef`. Used only to key local voice
+   * volume/"Mute for Me" preference persistence; never rendered, never sent anywhere. `undefined`
+   * only for the synthesized local-self entry (`VoiceChannelView.tsx`'s `participantsWithSelf`),
+   * which never has (or needs) one — "User Volume"/"Mute for Me" are never offered for the local
+   * user in the first place (self-mute already exists for that). */
+  readonly identityRef?: string;
+  /** T13.4 (UI consistency follow-up) — this participant's online-session `memberRef`, the exact
+   * same token `state.members` (server-wide T13.3 presence, keyed by `memberRef`) already uses.
+   * Used only to resolve the same server-local `avatarRef`/presence entry Member Panel already shows
+   * for this person (`VoiceChannelView.tsx`'s `participantsWithSelf`) — never for persistence (that
+   * remains `identityRef`'s job specifically because `memberRef` does not survive a reconnect).
+   * `undefined` only for the synthesized local-self entry, which resolves its own avatar from
+   * `state.selfAvatarRef` directly instead. */
+  readonly memberRef?: string;
+  /** T13.4 (UI consistency follow-up) — this participant's real server-local avatar reference,
+   * already resolved by `VoiceChannelView.tsx`'s `participantsWithSelf` from `state.members`/
+   * `state.selfAvatarRef` (the exact same T13.3 `MemberPanelEntry.avatarRef` source Member Panel
+   * already uses) — `use-voice-channel.ts` itself never sets this, since correlating a participant to
+   * a member is a presentation-layer concern spanning two independently-updating pieces of state
+   * (`state.participants`/`state.members`), and must be re-resolved on every render (a profile update
+   * arriving after a participant already joined must still update this live), never baked in once at
+   * participant-construction time. `undefined` means "no avatar set" — renders the ordinary
+   * initials/color fallback, exactly like `MemberPanelEntry.avatarRef`'s own contract. */
+  readonly avatarRef?: AvatarRef | undefined;
 }
 
 /** T11 — `'reconnecting'` is a distinct state from `'disconnected'`: the underlying transport
@@ -356,6 +394,57 @@ export interface VoiceChannelState {
    * populated by `actions.requestAvatar`'s own successful, re-validated reply — never written from
    * anywhere else, and never contains bytes that failed `validateAvatarImageBytes` in Main. */
   readonly avatarCache: ReadonlyMap<string, string>;
+
+  // --- T13.4 gamer voice experience ------------------------------------------------------------
+  // Every field below is a *read-only, derived* mirror of `@disco-voador/media-core`'s `TransmitGate`
+  // (the single source of truth this hook constructs fresh per microphone acquisition — see
+  // `join()`) or of `remote-audio-graph.ts`'s speaking detection — components never reach into the
+  // gate or the audio graph directly (per this task's own "narrow, presentation-only state" rule).
+
+  /** Mirrors `TransmitGate.inputMode` — which input control scheme is currently active. */
+  readonly voiceInputMode: VoiceInputMode;
+  /** The currently-configured global Push-to-Talk binding, or `null` if none has ever been set —
+   * mirrors `settings.json`'s own persisted value (loaded once at mount, updated by
+   * `actions.setPttShortcut`/`clearPttShortcut`). */
+  readonly pttBinding: PttBinding | null;
+  /** `true` for as long as the configured PTT key/button is physically held — a *raw* mirror of
+   * `TransmitGate.pttHeld`, always updated regardless of `voiceInputMode` (see `TransmitGate`'s own
+   * derivation: this alone never implies transmission unless `voiceInputMode === 'push-to-talk'`).
+   * Drives the "PTT held" mic-turns-green feedback, which must be visually distinct from actually
+   * speaking. */
+  readonly pttHeld: boolean;
+  /** 0 (least sensitive) - 1 (most sensitive) — mirrors `settings.json`'s persisted value. */
+  readonly voiceActivitySensitivity: number;
+  /** Raw local mic-energy detection output (a real, currently-measured signal) — independent of
+   * `voiceInputMode`: this is the local voice-activity-detector's own output, always running,
+   * whether or not the gate is currently using it to decide transmission. */
+  readonly selfVoiceActivityDetected: boolean;
+  /** `TransmitGate.shouldTransmit` — whether the local microphone is *actually* transmitting right
+   * now (explicit mute always wins; then either PTT-held or voice-activity-detected, depending on
+   * `voiceInputMode`). `false` whenever no microphone is currently live (never joined voice yet). */
+  readonly effectiveTransmitting: boolean;
+  /** The local user's own speaking indicator — reflects genuinely *transmitted* speech
+   * (`effectiveTransmitting && selfVoiceActivityDetected`), never merely "PTT is held" or merely
+   * "mic energy present while muted" (product spec: holding PTT while silent must not show
+   * "speaking"). */
+  readonly selfSpeaking: boolean;
+  /** Every remote participant currently judged to be speaking, via `remote-audio-graph.ts`'s own
+   * per-participant `AnalyserNode`-based detection — updated only on a real transition (never a
+   * flood of per-sample renders). */
+  readonly speakingParticipantIds: ReadonlySet<string>;
+  /** Whether join/leave sounds are currently enabled — mirrors `settings.json`'s persisted value;
+   * playback itself is driven by `join-leave-sounds.ts`, not this hook directly. */
+  readonly joinLeaveSoundsEnabled: boolean;
+  /** T13.4 — mirrors `remote-audio-graph.ts`'s own per-participant volume, purely so the "User
+   * Volume" UI can read back the current value without reaching into the graph directly. A
+   * participant absent from this map is at the default 100% (never persisted merely to be read
+   * back — see `setParticipantVolume`'s own doc comment). Purely session-local for now (see that
+   * same doc comment for the not-yet-persisted-by-identityId caveat). */
+  readonly participantVolumes: ReadonlyMap<string, number>;
+  /** T13.4 — mirrors `remote-audio-graph.ts`'s own per-participant "Mute for Me" state, for the same
+   * UI-read-back reason as `participantVolumes`. Purely local: never sent to any Dedicated Server,
+   * never visible to the muted person or anyone else. */
+  readonly participantLocalMutes: ReadonlySet<string>;
 }
 
 /** T13.2 — see `VoiceChannelState.channelPasswordPrompt`'s own doc comment. `isRestore` is `true`
@@ -410,6 +499,31 @@ export interface VoiceChannelActions {
   cancelReconnect(): void;
   setMuted(muted: boolean): void;
   setDeafened(deafened: boolean): void;
+  /** T13.4 — switches between Voice Activity and Push to Talk. Routed into the live
+   * `TransmitGate` immediately (no renegotiation) and persisted to `settings.json`. */
+  setVoiceInputMode(mode: VoiceInputMode): void;
+  /** T13.4 — 0 (least sensitive) to 1 (most sensitive); re-derives the local voice-activity
+   * detector's thresholds immediately if a microphone is currently live, and persisted. */
+  setVoiceActivitySensitivity(sensitivity: number): void;
+  /** T13.4 — validates/probes/starts the global PTT hotkey via Main (see `docs/adr/
+   * 0021-global-ptt-in-process-keyboard-hook.md`); updates `state.pttBinding` only on success. */
+  setPttShortcut(binding: PttBinding): Promise<DesktopSetPttShortcutResult>;
+  /** T13.4 — stops the current global PTT hotkey listener and clears the persisted binding. */
+  clearPttShortcut(): Promise<void>;
+  /** T13.4 — toggles join/leave sound notifications for the currently-joined voice channel. */
+  setJoinLeaveSoundsEnabled(enabled: boolean): void;
+  /** T13.4 — per-participant local playback volume (0-200%), purely client-local (never sent to any
+   * Dedicated Server, never visible to the target). A no-op if `participantId` has no remote audio
+   * currently attached. */
+  setParticipantVolume(participantId: string, percent: number): void;
+  /** T13.4 — "Mute for Me" / "Unmute for Me": purely local playback gating, independent of the
+   * participant's own self-mute and of any server-side moderation concept. Un-muting restores the
+   * previously-configured volume, never resets to 100%. */
+  setParticipantLocalMute(participantId: string, muted: boolean): void;
+  /** T13.4 — tells the shared remote-audio graph and join/leave-sound playback which output device
+   * to route to; does not itself enumerate devices or persist the preference (the caller does both,
+   * exactly as it already did before T13.4 for `<RemoteAudio>`'s own `setSinkId`). */
+  setOutputDevice(deviceId: string | null): void;
   enableCamera(): void;
   disableCamera(): void;
   /** T11 — selects a microphone device (or `null` for "system default"). If a microphone is
@@ -581,6 +695,27 @@ export function deviceIdConstraint(preferredDeviceId: string | null): {
   return preferredDeviceId === null ? {} : { deviceId: preferredDeviceId };
 }
 
+/**
+ * T13.4 — every current `participantId` mapped to `identityRef` in `participantIdsByIdentity` (a
+ * plain `participantId -> identityRef` map, exactly `identityRefByParticipantIdRef`'s own shape) —
+ * normally exactly one, but T13.3 explicitly supports multiple simultaneous connections for the same
+ * identity, and a local volume/mute adjustment must apply to *every* one of that identity's active
+ * voice sessions at once, never just the row the user happened to click (this task's own brief,
+ * Sections 8/28: "do not create separate persisted values for each session participantId"). Order is
+ * whatever `Map` iteration order produces (insertion order) — callers must not depend on which
+ * `participantId` comes first.
+ */
+export function participantIdsForIdentityRef(
+  participantIdsByIdentity: ReadonlyMap<string, string>,
+  identityRef: string,
+): string[] {
+  const result: string[] = [];
+  for (const [participantId, ref] of participantIdsByIdentity) {
+    if (ref === identityRef) result.push(participantId);
+  }
+  return result;
+}
+
 function toRtcIceCandidateInit(payload: IceCandidatePayload | null): RTCIceCandidateInit | null {
   if (payload === null) return null;
   const init: RTCIceCandidateInit = { candidate: payload.candidate };
@@ -635,6 +770,17 @@ const INITIAL_STATE: VoiceChannelState = {
   selfMemberRef: undefined,
   members: new Map(),
   avatarCache: new Map(),
+  voiceInputMode: 'voice-activity',
+  pttBinding: null,
+  pttHeld: false,
+  voiceActivitySensitivity: 0.5,
+  selfVoiceActivityDetected: false,
+  effectiveTransmitting: false,
+  selfSpeaking: false,
+  speakingParticipantIds: new Set(),
+  participantVolumes: new Map(),
+  participantLocalMutes: new Set(),
+  joinLeaveSoundsEnabled: true,
 };
 
 /**
@@ -686,6 +832,110 @@ export function useVoiceChannel(
   >([]);
   const microphoneRef = useRef<Microphone | undefined>(undefined);
   const mutedRef = useRef(false);
+  /** T13.4 — mirrors `mutedRef`'s own "ref alongside `state.deafened` so an imperative call site
+   * (graph construction, `setDeafened`) always has a synchronous current value" pattern — read once
+   * at graph-construction time in the main connection effect, and kept current by the `setDeafened`
+   * action and the mount-time settings-load effect below. */
+  const deafenedRef = useRef(false);
+  // T13.4 — the single source of truth for "should the mic actually transmit right now" (see
+  // `@disco-voador/media-core`'s `TransmitGate`). Constructed fresh on every microphone acquisition
+  // (`join()`'s initial acquire, a reconnect's fresh reacquire via the same `join()` restore path) —
+  // never reused across those — and discarded (`undefined`) whenever the microphone itself is
+  // released (`releaseMicrophone()`, the effect's own final cleanup). `rebind()`-ed, not
+  // reconstructed, for a live T11 device switch (see `switchMicrophone`).
+  const transmitGateRef = useRef<TransmitGate | undefined>(undefined);
+  /** T13.4 — the local voice-activity detector's own live audio-graph handle (a small,
+   * analysis-only `AudioContext`/`AnalyserNode` pair tapped off a *cloned* copy of the current
+   * microphone's track, feeding `transmitGateRef.current?.setVoiceActivityDetected`) — always
+   * running once a microphone is live, regardless of `voiceInputMode` (the gate itself only *uses*
+   * this signal in `'voice-activity'` mode; this ref's own lifecycle mirrors `microphoneRef`'s
+   * exactly). **Real bug found and fixed via `e2e:voice-smoke`**: this must analyze a *cloned*
+   * `MediaStreamTrack` (`analysisTrack` below), never `microphone.track` itself — per the Media
+   * Capture and Streams specification, a disabled (`track.enabled = false`) track emits *silence* to
+   * every consumer, including a local `MediaStreamAudioSourceNode`, not merely to the
+   * `RTCPeerConnection` sender. `TransmitGate` is exactly what disables `microphone.track` while not
+   * transmitting — analyzing that same track directly created a permanent deadlock in Voice Activity
+   * mode (muted-for-not-speaking -> the very energy analysis meant to un-mute it reads silence
+   * forever -> never un-mutes). `MediaStreamTrack.clone()` shares the same underlying hardware
+   * source but has its own, independently-controlled `enabled` flag, so it keeps reading the real
+   * microphone signal regardless of what the gate does to the original. The clone needs its own
+   * explicit `.stop()` (a clone's lifecycle is independent of the original's — stopping one never
+   * stops the other), done in `stopLocalVoiceActivityDetection`. */
+  const localVoiceActivityRef = useRef<
+    | {
+        readonly audioContext: AudioContext;
+        readonly analysisTrack: MediaStreamTrack;
+        readonly source: MediaStreamAudioSourceNode;
+        readonly analyser: AnalyserNode;
+        readonly sampler: AnalyserActivitySampler;
+      }
+    | undefined
+  >(undefined);
+  /** T13.4 — mirrors `preferredMicDeviceIdRef`'s own "loaded once at mount, read by every later
+   * acquisition/mutation site" pattern, for the input-mode/sensitivity preferences a fresh
+   * `TransmitGate`/voice-activity detector needs at construction time. */
+  const inputModeRef = useRef<VoiceInputMode>('voice-activity');
+  const voiceActivitySensitivityRef = useRef(0.5);
+  const joinLeaveSoundsEnabledRef = useRef(true);
+  /** T13.4 — one `RemoteAudioGraphController` per connection session (constructed once per main
+   * connection effect run — see that effect — never per participant churn), owning every remote
+   * microphone stream's Web Audio playback/volume/speaking-detection graph. `undefined` only before
+   * the first connection effect run has completed its setup (never observably so from outside this
+   * hook). */
+  const remoteAudioGraphRef = useRef<RemoteAudioGraphController | undefined>(undefined);
+  /** T13.4 — join/leave sound dedup baseline (see `join-leave-sounds.ts`'s own doc comment for the
+   * exact semantics `undefined` vs. a real `Set` encodes). Reset to `undefined` at every point a
+   * fresh "first snapshot" genuinely begins: explicit `leave()`, `onLeft`, `onReconnecting`, and a
+   * policy-forced channel removal. */
+  const knownParticipantIdsForSoundRef = useRef<ReadonlySet<string> | undefined>(undefined);
+  /** T13.4 — the currently-selected output device, mirrored here (kept in sync by
+   * `VoiceChannelView.tsx`'s own settings-load effect is out of this hook's reach) so
+   * `remoteAudioGraphRef`/join-leave-sound playback can route to it without a second IPC round trip.
+   * Loaded once at mount alongside every other T13.4 preference below. */
+  const outputDeviceIdRef = useRef<string | null>(null);
+  /** T13.4 — the current connection's local voice-preference server scope key (see
+   * `shared/voice-preference-scope.ts`'s `deriveServerScopeKey`), derived once per real connection
+   * (main connection effect, from `realtimeConfig.url`'s own resolved host:port — the same value on
+   * every T11 reconnect attempt for this session, since the url does not change; a genuinely
+   * different value only on an actual server switch, which remounts this whole effect). `undefined`
+   * only before the first connection effect run completes its setup. */
+  const serverScopeKeyRef = useRef<string | undefined>(undefined);
+  /** T13.4 — every currently-relevant participant's stable, per-server `identityRef` (see
+   * `@disco-voador/protocol`'s `identityRefSchema`), keyed by their current, session-scoped
+   * `participantId` — populated from `ServerVoiceJoinedMessage`/`ServerVoiceParticipantJoinedMessage`
+   * exactly where `state.participants` itself is populated, and cleared at the same points. This is
+   * what lets `attachParticipant`/`setParticipantVolume`/`setParticipantLocalMute` key local
+   * preference persistence by the *stable* identity rather than the *session-scoped* participant
+   * slot — see the attach-with-preference effect and `setParticipantVolume`'s own doc comment below. */
+  const identityRefByParticipantIdRef = useRef<Map<string, string>>(new Map());
+  /** T13.4 — mirrors `state.participantVolumes`/`state.participantLocalMutes` every render (assigned
+   * directly in the render body, not inside an effect — a standard, React-sanctioned "always read the
+   * latest value from inside a `useCallback` with an empty dependency array" pattern) purely so
+   * `setParticipantVolume`/`setParticipantLocalMute` can read each other's *current* value (needed to
+   * persist a single combined `{volumePercent, locallyMuted}` entry) without stale closures or
+   * needing either state field in their own dependency array. */
+  const participantVolumesRef = useRef(state.participantVolumes);
+  participantVolumesRef.current = state.participantVolumes;
+  const participantLocalMutesRef = useRef(state.participantLocalMutes);
+  participantLocalMutesRef.current = state.participantLocalMutes;
+  /** T13.4 — mirrors `state.remoteAudioStreams` every render, for the same reason as the two refs
+   * immediately above: the attach-with-preference effect below awaits an IPC round trip before
+   * calling `attachParticipant`, and must re-check *after* that await whether the participant it was
+   * about to attach is still actually current (they may have left, or gotten a newer stream, while
+   * the lookup was in flight) — a plain closure over `state.remoteAudioStreams` captured at effect-run
+   * time would go stale the instant a *later* effect run replaces it. */
+  const latestRemoteAudioStreamsRef = useRef(state.remoteAudioStreams);
+  latestRemoteAudioStreamsRef.current = state.remoteAudioStreams;
+  /** T13.4 — one pending debounced/immediate local voice-preference write per `identityRef`, keyed so
+   * a later change (of either kind) for the same identity always supersedes an earlier still-pending
+   * one rather than racing it. See `schedulePersistVolume`/`persistVoicePreferenceNow`/
+   * `flushPendingVoicePreferences` below. */
+  const pendingVoicePreferenceWritesRef = useRef<
+    Map<
+      string,
+      { readonly timer: ReturnType<typeof setTimeout>; readonly entry: DesktopVoicePreferenceEntry }
+    >
+  >(new Map());
   // T11 — mirrors `cameraGenerationRef`/`cameraAcquiringRef` exactly, shared by `join()`'s initial
   // microphone acquisition and `switchMicrophone`'s live-replace acquisition, so the two can never
   // race each other (a `switchMicrophone` call landing while `join()`'s own acquisition is still in
@@ -830,10 +1080,31 @@ export function useVoiceChannel(
         preferredMicDeviceIdRef.current = settings.audio.inputDeviceId;
         preferredCameraDeviceIdRef.current = settings.video.cameraDeviceId;
         mutedRef.current = settings.voice.startMuted;
+        deafenedRef.current = settings.voice.startDeafened;
+        // T13.4 — mirrors every preference-ref above: loaded once at mount, read by every later
+        // gate-construction/detection-tap/sound-playback site via the ref, not re-read from disk.
+        inputModeRef.current = settings.voice.inputMode;
+        voiceActivitySensitivityRef.current = settings.voice.voiceActivitySensitivity;
+        joinLeaveSoundsEnabledRef.current = settings.voice.joinLeaveSoundsEnabled;
+        outputDeviceIdRef.current = settings.audio.outputDeviceId;
+        // T13.4 — this settings load is asynchronous and can resolve *after* the main connection
+        // effect has already constructed `remoteAudioGraphRef.current` (which reads these same refs
+        // synchronously, at their initial default values, to seed the graph — see that effect). If
+        // that race happened, push the real persisted values into the already-built graph now rather
+        // than leaving it silently stuck on system-default output/never-deafened until the next
+        // explicit `setOutputDevice`/`setDeafened` call.
+        if (remoteAudioGraphRef.current) {
+          void remoteAudioGraphRef.current.setOutputDevice(settings.audio.outputDeviceId);
+          remoteAudioGraphRef.current.setDeafened(settings.voice.startDeafened);
+        }
         setState((prev) => ({
           ...prev,
           muted: settings.voice.startMuted,
           deafened: settings.voice.startDeafened,
+          voiceInputMode: settings.voice.inputMode,
+          pttBinding: settings.voice.pttBinding,
+          voiceActivitySensitivity: settings.voice.voiceActivitySensitivity,
+          joinLeaveSoundsEnabled: settings.voice.joinLeaveSoundsEnabled,
         }));
       })
       .catch((error: unknown) => {
@@ -852,6 +1123,14 @@ export function useVoiceChannel(
     // not otherwise propagate into a separately-declared nested function.
     const { url, iceServers, serverToken } = realtimeConfig;
 
+    // T13.4 — derived once per real connection (stable across every T11 reconnect attempt for this
+    // session, since `url` does not change; only a genuine server switch, which remounts this whole
+    // effect, produces a different value) — see `serverScopeKeyRef`'s own doc comment. `url` is
+    // always a `ws://host:port` string (see `parse-server-address.ts`), so `new URL(url).host` is
+    // exactly the `host[:port]` shape `deriveServerScopeKey` expects — never re-derived independently
+    // from `main/settings/settings-file.ts`'s own copy, which would risk the two drifting apart.
+    serverScopeKeyRef.current = deriveServerScopeKey(new URL(url).host);
+
     // T10 — a fresh connection starts with no outstanding chat-history requests; any left over
     // from a previous connection are meaningless (their responses, if they ever arrived, would be
     // ignored anyway since this hook only listens on the *current* client instance).
@@ -859,6 +1138,8 @@ export function useVoiceChannel(
     chatThreadsRef.current = new Map();
     openChatThreadsBeforeLossRef.current = [];
     currentChannelRef.current = undefined;
+    // T13.4 — a fresh connection has no known participant roster to diff join/leave sounds against.
+    knownParticipantIdsForSoundRef.current = undefined;
     // T13.2 — mirrors the chat-history reset immediately above: a fresh connection starts with no
     // outstanding channel-admin requests or in-flight join to correlate against.
     pendingChannelRequestsRef.current = new Map();
@@ -889,6 +1170,27 @@ export function useVoiceChannel(
     // correctly across a transport recreation.
     let transport = new P2PMeshTransport({ iceServers }, client);
     transportRef.current = transport;
+
+    // T13.4 Decision 3 — one `RemoteAudioGraphController` per connection session, matching this
+    // effect's own per-`realtimeConfig` lifetime exactly (constructed once per effect run here,
+    // disposed once in this effect's own cleanup below — never per participant churn, never
+    // recreated by an internal `recreateTransport()` reconnect cycle, mirroring `reconciler`'s own
+    // "one instance per connection lifetime, `reset()` on reconnect" precedent for its own
+    // per-participant bookkeeping instead). Attach/detach for individual participants is driven by a
+    // separate hook-level effect watching `state.remoteAudioStreams` (see below this main effect).
+    remoteAudioGraphRef.current = new RemoteAudioGraphController({
+      sensitivity: voiceActivitySensitivityRef.current,
+      initialDeafened: deafenedRef.current,
+      onSpeakingChange: (participantId, speaking) => {
+        setState((prev) => {
+          const next = new Set(prev.speakingParticipantIds);
+          if (speaking) next.add(participantId);
+          else next.delete(participantId);
+          return { ...prev, speakingParticipantIds: next };
+        });
+      },
+    });
+    void remoteAudioGraphRef.current.setOutputDevice(outputDeviceIdRef.current);
 
     // Tracked outside React state: drives transport add/remove calls, which must never happen
     // twice for the same participant id and must not depend on React's render/commit timing.
@@ -932,11 +1234,22 @@ export function useVoiceChannel(
       // ordering can never be mistaken for an unexpected loss regardless of the ref-clear position.
       microphone.stop();
       microphoneRef.current = undefined;
+      // T13.4 — the gate and its local voice-activity detector are scoped to exactly one microphone
+      // acquisition (see `transmitGateRef`'s own doc comment: a reconnect's fresh reacquire via
+      // `join()` constructs a brand-new gate, never resurrects this one) — discarded here alongside
+      // the microphone itself, never left dangling with a `MutableMicrophone` reference to a track
+      // that no longer exists.
+      stopLocalVoiceActivityDetection();
+      transmitGateRef.current = undefined;
       setState((prev) => ({
         ...prev,
         localMicrophoneStream: undefined,
         micUsingFallback: false,
         micDisconnected: false,
+        pttHeld: false,
+        selfVoiceActivityDetected: false,
+        effectiveTransmitting: false,
+        selfSpeaking: false,
       }));
     }
 
@@ -1084,6 +1397,11 @@ export function useVoiceChannel(
       for (const id of currentParticipantIds) transport.removeParticipant(id);
       currentParticipantIds = new Set();
       reconciler.reset();
+      // T13.4 — the connection just died; the restore `join()` inside `onReconnected` will fire a
+      // fresh `voice:joined` (which resets this itself too — see `onJoined`), but resetting here as
+      // well means the transient empty-participants state this handler's own `setState` below
+      // produces can never itself be misread as everyone having "left".
+      knownParticipantIdsForSoundRef.current = undefined;
 
       // Privacy-sensitive, mandatory: camera and screen video/audio must never auto-restart after a
       // reconnect (T11 Section 51/52) — released here, alongside the dead mesh, never lazily
@@ -1231,6 +1549,17 @@ export function useVoiceChannel(
       for (const id of currentParticipantIds) transport.removeParticipant(id);
       currentParticipantIds = new Set(message.participants.map((p) => p.participantId));
       reconciler.reset();
+      // T13.4 — every `voice:joined` (a genuine first join, a channel switch, or a T11
+      // reconnect-restore) is a fresh "first snapshot" for join/leave-sound purposes — the roster
+      // this event carries must never be diffed against whatever channel's roster was known before
+      // (see `join-leave-sounds.ts`'s own dedup-semantics doc comment).
+      knownParticipantIdsForSoundRef.current = undefined;
+      // T13.4 — a fresh `identityRef` roster to match the fresh participant roster above; this event
+      // is always a genuine "here is who is here now" snapshot (initial join, channel switch, or a
+      // T11 reconnect-restore), never a delta.
+      identityRefByParticipantIdRef.current = new Map(
+        message.participants.map((p) => [p.participantId, p.identityRef]),
+      );
       for (const participant of message.participants) {
         transport.addParticipant(participant.participantId, 'responder');
       }
@@ -1250,6 +1579,8 @@ export function useVoiceChannel(
           displayName: p.displayName,
           connectionState: undefined,
           groups: p.groups ?? [],
+          identityRef: p.identityRef,
+          memberRef: p.memberRef,
         })),
         ...createEmptyRemoteMediaStreamsState(),
         joining: false,
@@ -1261,6 +1592,9 @@ export function useVoiceChannel(
       for (const id of currentParticipantIds) transport.removeParticipant(id);
       currentParticipantIds = new Set();
       reconciler.reset();
+      // T13.4 — no longer in any channel; the next `voice:joined` establishes a fresh baseline.
+      knownParticipantIdsForSoundRef.current = undefined;
+      identityRefByParticipantIdRef.current = new Map();
       releaseMicrophone();
       releaseCamera();
       releaseScreen();
@@ -1291,6 +1625,9 @@ export function useVoiceChannel(
       for (const id of currentParticipantIds) transport.removeParticipant(id);
       currentParticipantIds = new Set();
       reconciler.reset();
+      // T13.4 — mirrors `onLeft`'s own reset exactly (this connection is no longer in any channel).
+      knownParticipantIdsForSoundRef.current = undefined;
+      identityRefByParticipantIdRef.current = new Map();
       releaseMicrophone();
       releaseCamera();
       releaseScreen();
@@ -1344,6 +1681,10 @@ export function useVoiceChannel(
 
     const onParticipantJoined = (message: ServerVoiceParticipantJoinedMessage) => {
       currentParticipantIds.add(message.participant.participantId);
+      identityRefByParticipantIdRef.current.set(
+        message.participant.participantId,
+        message.participant.identityRef,
+      );
       transport.addParticipant(message.participant.participantId, 'initiator');
       // No explicit re-announce needed for this new peer's view of any already-active camera/screen
       // track: `addParticipant` seeds it into this new peer connection and sends that connection's
@@ -1360,6 +1701,8 @@ export function useVoiceChannel(
             displayName: message.participant.displayName,
             connectionState: undefined,
             groups: message.participant.groups ?? [],
+            identityRef: message.participant.identityRef,
+            memberRef: message.participant.memberRef,
           },
         ],
       }));
@@ -1367,6 +1710,7 @@ export function useVoiceChannel(
 
     const onParticipantLeft = (message: ServerVoiceParticipantLeftMessage) => {
       currentParticipantIds.delete(message.participantId);
+      identityRefByParticipantIdRef.current.delete(message.participantId);
       transport.removeParticipant(message.participantId);
       reconciler.removeParticipant(message.participantId);
 
@@ -1862,6 +2206,19 @@ export function useVoiceChannel(
       transport.closeAll();
       microphoneRef.current?.stop();
       microphoneRef.current = undefined;
+      // T13.4 — full session teardown: the gate/local voice-activity tap and the shared remote-audio
+      // graph are both scoped to this connection's lifetime (see `transmitGateRef`/
+      // `remoteAudioGraphRef`'s own doc comments) — never left running past it.
+      stopLocalVoiceActivityDetection();
+      transmitGateRef.current = undefined;
+      remoteAudioGraphRef.current?.disposeAll();
+      remoteAudioGraphRef.current = undefined;
+      // T13.4 — a genuinely final teardown (unmount, or a real server switch) must never silently
+      // drop a still-debounced local volume-slider write (Section 13's "do not silently lose the
+      // latest change on shutdown/finalization") — flush every pending write immediately rather than
+      // let its timer simply never fire once this session's refs are cleared below.
+      flushPendingVoicePreferences();
+      identityRefByParticipantIdRef.current = new Map();
       cameraGenerationRef.current += 1;
       cameraRef.current?.stop();
       cameraRef.current = undefined;
@@ -1883,6 +2240,144 @@ export function useVoiceChannel(
       currentChannelRef.current = undefined;
     };
   }, [realtimeConfig]);
+
+  /**
+   * T13.4 Decision 1/2 — subscribes once, for the life of this hook, to Main's global PTT `'down'`/
+   * `'up'` push (see `docs/adr/0021-global-ptt-in-process-keyboard-hook.md`) — deliberately
+   * independent of `realtimeConfig`/connection lifecycle (the whole point of a *global* hotkey is
+   * that it keeps working while unfocused/disconnected/mid-reconnect; Main's own listener lifecycle
+   * is equally independent — see `main/ptt-hotkey.ts`). Every edge is forwarded to the current
+   * `TransmitGate` unconditionally, regardless of `voiceInputMode` — the gate's own derivation
+   * formula only *uses* `pttHeld` in `'push-to-talk'` mode, so forwarding it in `'voice-activity'`
+   * mode is harmless and keeps this one subscription simple rather than resubscribing on every mode
+   * change. A no-op when no microphone is currently live (`transmitGateRef.current` is `undefined`
+   * until `join()`'s first successful acquisition) — nothing to gate yet.
+   */
+  useEffect(() => {
+    const unsubscribe = window.desktopApp.onPttState((event) => {
+      transmitGateRef.current?.setPttHeld(event.type === 'down');
+      pushGateDerivedState();
+    });
+    return unsubscribe;
+  }, []);
+
+  /**
+   * T13.4 Decision 3 — attaches/detaches each remote participant's Web Audio playback/analysis graph
+   * as `state.remoteAudioStreams` changes (new participant, participant left, or a full reset on
+   * reconnect via `createEmptyRemoteMediaStreamsState()` — see the main connection effect's
+   * `onReconnecting`), diffed against the previous render's own attached set. Deliberately *not*
+   * inside the main connection effect itself: `remoteAudioGraphRef.current` is constructed once per
+   * connection session by that effect (see its own doc comment), and this effect's job is only ever
+   * to keep individual participant attachment in sync with already-derived React state — the same
+   * "state-driven diff, not imperative event-driven" shape `remoteCameraParticipantIds`/
+   * `remoteScreenParticipantIds` already use one layer up in `VoiceChannelView.tsx`, applied here
+   * for the audio graph's own attach/detach calls instead.
+   */
+  const attachedRemoteAudioParticipantIdsRef = useRef<ReadonlySet<string>>(new Set());
+  useEffect(() => {
+    const graph = remoteAudioGraphRef.current;
+    if (!graph) return;
+    const previouslyAttached = attachedRemoteAudioParticipantIdsRef.current;
+    const currentIds = new Set(state.remoteAudioStreams.keys());
+
+    for (const participantId of previouslyAttached) {
+      if (!currentIds.has(participantId)) graph.detachParticipant(participantId);
+    }
+    for (const [participantId, stream] of state.remoteAudioStreams) {
+      if (!previouslyAttached.has(participantId)) {
+        void attachWithStoredPreference(graph, participantId, stream);
+      }
+    }
+    // Marked attached here, synchronously, even though the real `graph.attachParticipant` call for a
+    // brand-new participant is deferred behind `attachWithStoredPreference`'s own IPC round trip —
+    // this bookkeeping ref only ever drives *this same effect's* own diffing, so a participant who
+    // leaves again before that round trip resolves is still correctly handed to `detachParticipant`
+    // above on the very next run (itself a safe no-op if the real attach never actually happened yet
+    // — see `RemoteAudioGraphController.detachParticipant`'s own doc comment), and
+    // `attachWithStoredPreference`'s own post-await freshness check independently skips attaching a
+    // stream that is no longer current either way. Belt and suspenders, no leak either path.
+    attachedRemoteAudioParticipantIdsRef.current = currentIds;
+  }, [state.remoteAudioStreams]);
+
+  /**
+   * T13.4 — resolves this participant's stable `identityRef` and any persisted local volume/"Mute for
+   * Me" preference for the current server scope *before* ever calling `graph.attachParticipant`, so
+   * playback starts at the remembered value instead of the 100%/unmuted default followed a moment
+   * later by a correction (Section 14 of this task's own brief: avoid "briefly blasting the user at
+   * 100% for several seconds before 60% restores" — a short silence during this local IPC round trip
+   * is preferable and is all this ever costs, not a network call). Falls back to the product default
+   * if this participant has no known `identityRef` yet (should not happen in practice — see
+   * `identityRefByParticipantIdRef`'s own doc comment on when it is populated relative to when a
+   * remote stream can first appear) or no preference has ever been saved for them.
+   *
+   * Re-checks `latestRemoteAudioStreamsRef` immediately after the await, before ever touching the
+   * graph: the participant may have left, or already gotten a *newer* stream (a fresh negotiation for
+   * the same slot), while this lookup was in flight — in either case this stale call must do nothing,
+   * since a leave is handled by the effect's own detach branch and a newer stream gets its own,
+   * independent `attachWithStoredPreference` call from a later effect run.
+   */
+  async function attachWithStoredPreference(
+    graph: RemoteAudioGraphController,
+    participantId: string,
+    stream: MediaStream,
+  ): Promise<void> {
+    const identityRef = identityRefByParticipantIdRef.current.get(participantId);
+    let volumePercent = 100;
+    let locallyMuted = false;
+    const serverScopeKey = serverScopeKeyRef.current;
+    if (identityRef && serverScopeKey) {
+      try {
+        const stored = await window.desktopApp.getVoicePreference(serverScopeKey, identityRef);
+        if (stored) {
+          volumePercent = stored.volumePercent;
+          locallyMuted = stored.locallyMuted;
+        }
+      } catch (error) {
+        console.error('voice: failed to load local voice preference', error);
+      }
+    }
+
+    if (remoteAudioGraphRef.current !== graph) return; // this whole session was torn down/replaced.
+    if (latestRemoteAudioStreamsRef.current.get(participantId) !== stream) return; // stale.
+
+    graph.attachParticipant(participantId, stream, volumePercent, locallyMuted);
+    setState((prev) => {
+      const nextVolumes = new Map(prev.participantVolumes);
+      nextVolumes.set(participantId, volumePercent);
+      const nextMutes = new Set(prev.participantLocalMutes);
+      if (locallyMuted) nextMutes.add(participantId);
+      else nextMutes.delete(participantId);
+      return { ...prev, participantVolumes: nextVolumes, participantLocalMutes: nextMutes };
+    });
+    // Public data only (a participant id and the two local-preference values already visible in this
+    // app's own Settings UI to the user who set them — never identityRef/identityId, never sent
+    // anywhere) — lets `e2e-voice-preference-smoke.mjs` observe that a persisted preference actually
+    // reached the live audio graph, without depending on UI rendering, matching every other
+    // `disco-voador:*` diagnostic marker in this file.
+    console.info(
+      `disco-voador:voice-preference-applied:${participantId}:${String(volumePercent)}:${String(locallyMuted)}`,
+    );
+  }
+
+  /**
+   * T13.4 — join/leave sound notifications for the currently-joined voice channel's own membership
+   * transitions (see `join-leave-sounds.ts`'s own doc comment for the exact dedup semantics this
+   * relies on `knownParticipantIdsForSoundRef` — reset at every genuine "fresh roster" point inside
+   * the main connection effect — to provide). Self is structurally excluded (`state.participants`
+   * never contains the local user — see that field's own doc comment), so no separate check is
+   * needed here.
+   */
+  useEffect(() => {
+    const currentIds = new Set(state.participants.map((p) => p.participantId));
+    const { joined, left } = diffParticipantsForSound(
+      knownParticipantIdsForSoundRef.current,
+      currentIds,
+    );
+    knownParticipantIdsForSoundRef.current = currentIds;
+    if (!joinLeaveSoundsEnabledRef.current) return;
+    if (joined.length > 0) playJoinLeaveSound('join', outputDeviceIdRef.current);
+    if (left.length > 0) playJoinLeaveSound('leave', outputDeviceIdRef.current);
+  }, [state.participants]);
 
   /**
    * T11 Sections 22-24 — detects a microphone track ending *unexpectedly* (device unplugged,
@@ -1921,8 +2416,127 @@ export function useVoiceChannel(
       microphoneRef.current = undefined;
       const transport = transportRef.current;
       if (transport) transport.unpublishTrack(microphone.track);
-      setState((prev) => ({ ...prev, localMicrophoneStream: undefined, micDisconnected: true }));
+      // T13.4 — the device that died is exactly the one the current gate/local voice-activity
+      // detector were built against; both are discarded alongside it (mirrors `releaseMicrophone`'s
+      // own teardown exactly — see `transmitGateRef`'s doc comment).
+      stopLocalVoiceActivityDetection();
+      transmitGateRef.current = undefined;
+      setState((prev) => ({
+        ...prev,
+        localMicrophoneStream: undefined,
+        micDisconnected: true,
+        pttHeld: false,
+        selfVoiceActivityDetected: false,
+        effectiveTransmitting: false,
+        selfSpeaking: false,
+      }));
     });
+  }
+
+  /**
+   * T13.4 — pushes the current `TransmitGate`'s derived fields into `VoiceChannelState`, so
+   * `UserControlBar`/settings UI can render PTT-held/effective-transmitting/voice-activity-detected
+   * state without ever reaching into the gate directly (components only ever see this hook's plain
+   * state — the gate itself is never returned from this hook). Call after *every* gate mutation
+   * (`setUserMuted`, `setPttHeld`, `setInputMode`, construction, `rebind`) — the gate has no
+   * change-notification mechanism of its own, so this hook is responsible for re-reading it.
+   * `selfSpeaking` additionally requires *real* mic energy (`selfVoiceActivityDetected`), not merely
+   * `effectiveTransmitting` — holding PTT while silent must never show "speaking" (product spec).
+   */
+  function pushGateDerivedState(): void {
+    const gate = transmitGateRef.current;
+    const pttHeld = gate?.pttHeld ?? false;
+    const effectiveTransmitting = gate?.shouldTransmit ?? false;
+    const selfVoiceActivityDetected = gate?.voiceActivityDetected ?? false;
+    setState((prev) => ({
+      ...prev,
+      pttHeld,
+      effectiveTransmitting,
+      selfVoiceActivityDetected,
+      selfSpeaking: effectiveTransmitting && selfVoiceActivityDetected,
+    }));
+  }
+
+  /**
+   * T13.4 — starts (replacing any previous instance first — see `stopLocalVoiceActivityDetection`)
+   * a small, analysis-only Web Audio tap on a *cloned* copy of `microphone`'s track, feeding every
+   * real speaking-state *transition* into `gate.setVoiceActivityDetected` — the same
+   * `AnalyserActivitySampler`/Schmitt-hangover technique `remote-audio-graph.ts` uses for every
+   * remote participant (see `voice-activity-detector.ts`'s own "don't invent two different
+   * detection algorithms" doc comment). Always runs once a microphone is live, regardless of
+   * `voiceInputMode` — the gate itself only *uses* this signal in `'voice-activity'` mode; this
+   * function does not know or care which mode is active.
+   *
+   * **Analyzes a clone, never `microphone.track` itself — a real deadlock found and fixed via
+   * `e2e:voice-smoke`.** `TransmitGate` disables (`track.enabled = false`) `microphone.track` while
+   * not transmitting; per the Media Capture and Streams specification, a disabled track emits
+   * *silence* to every consumer, including a local `MediaStreamAudioSourceNode`, not merely to the
+   * `RTCPeerConnection` sender. Tapping the original track directly meant Voice Activity mode could
+   * never recover from its own initial muted state: no real energy would ever reach the analyser to
+   * trigger an un-mute. `MediaStreamTrack.clone()` shares the same underlying hardware source but
+   * carries its own, independently-controlled `enabled` flag, so this tap keeps reading the real
+   * microphone signal no matter what the gate does to the original (published) track. Failures (e.g.
+   * `AudioContext` construction throwing in an unusual environment) are logged, never thrown — a
+   * missing voice-activity signal degrades to "never auto-transmits in Voice Activity mode until the
+   * user switches devices/modes," not a crash.
+   */
+  function startLocalVoiceActivityDetection(microphone: Microphone, gate: TransmitGate): void {
+    stopLocalVoiceActivityDetection();
+    let analysisTrack: MediaStreamTrack | undefined;
+    try {
+      const AudioContextCtor =
+        window.AudioContext ??
+        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      const audioContext = new AudioContextCtor();
+      analysisTrack = microphone.track.clone();
+      // `MediaStreamTrack.clone()` copies the *current* `enabled` value from the source track at
+      // clone time — it does not always start `true` — so cloning while the gate has already
+      // disabled the original (the common case: a fresh gate starts not-transmitting) produces a
+      // clone that is itself disabled, and per spec a disabled track still emits silence to its own
+      // consumers even though it is now an independent object from the original. Force it enabled
+      // unconditionally, once, right after cloning — this clone is analysis-only and must always
+      // read the real signal regardless of whatever the gate does to the original going forward
+      // (the two `enabled` flags are independent from this point on).
+      analysisTrack.enabled = true;
+      const analysisStream = new MediaStream([analysisTrack]);
+      const source = audioContext.createMediaStreamSource(analysisStream);
+      const analyser = audioContext.createAnalyser();
+      analyser.fftSize = 256;
+      // Analysis-only — deliberately never connected onward to `destination` or anything else (this
+      // must never be an audible path; the microphone's own publish to peers is unaffected by, and
+      // entirely independent of, this local analysis tap).
+      source.connect(analyser);
+
+      const sampler = new AnalyserActivitySampler(
+        analyser,
+        voiceActivitySensitivityRef.current,
+        (speaking) => {
+          gate.setVoiceActivityDetected(speaking);
+          pushGateDerivedState();
+        },
+      );
+      sampler.start();
+      localVoiceActivityRef.current = { audioContext, analysisTrack, source, analyser, sampler };
+    } catch (error) {
+      console.error('voice: failed to start local voice-activity detection', error);
+      analysisTrack?.stop();
+    }
+  }
+
+  /** Full node cleanup (disconnect, stop the sampler's timer, stop the cloned analysis track, close
+   * the dedicated `AudioContext`) — safe to call when nothing is active. */
+  function stopLocalVoiceActivityDetection(): void {
+    const current = localVoiceActivityRef.current;
+    if (!current) return;
+    localVoiceActivityRef.current = undefined;
+    current.sampler.stop();
+    current.source.disconnect();
+    current.analyser.disconnect();
+    // The clone's lifecycle is independent of `microphone.track`'s own — stopping one never stops
+    // the other, so this must be released explicitly here (never relies on `releaseMicrophone()`'s
+    // own `microphone.stop()` to clean it up).
+    current.analysisTrack.stop();
+    void current.audioContext.close();
   }
 
   const join = useCallback(
@@ -1964,9 +2578,21 @@ export function useVoiceChannel(
               microphone.stop();
               return;
             }
-            microphone.setMuted(mutedRef.current);
             microphoneRef.current = microphone;
             attachMicrophoneUnexpectedEndedHandler(microphone);
+            // T13.4 Decision 2 — a brand-new `TransmitGate` per fresh acquisition (this is the
+            // *only* thing that makes "PTT can never resume transmission after a reconnect" true —
+            // see `TransmitGate`'s own doc comment): `pttHeld` unconditionally starts `false`
+            // regardless of whether a key is still physically held. The gate's own constructor
+            // immediately applies the correct initial `setMuted` call, replacing the old direct
+            // `microphone.setMuted(mutedRef.current)` call this line used to make.
+            const gate = new TransmitGate(microphone, {
+              userMuted: mutedRef.current,
+              inputMode: inputModeRef.current,
+            });
+            transmitGateRef.current = gate;
+            startLocalVoiceActivityDetection(microphone, gate);
+            pushGateDerivedState();
             transport.publishTrack(microphone.track);
             const usingFallback = resolveDeviceFallback(
               preferredDeviceId,
@@ -2013,16 +2639,19 @@ export function useVoiceChannel(
 
   const setMuted = useCallback((muted: boolean) => {
     mutedRef.current = muted;
-    microphoneRef.current?.setMuted(muted);
+    // T13.4 — `TransmitGate` is now the sole caller of `Microphone.setMuted` (see
+    // `transmitGateRef`'s own doc comment); this action only ever feeds the gate's `userMuted`
+    // input, never the microphone directly.
+    transmitGateRef.current?.setUserMuted(muted);
+    pushGateDerivedState();
     setState((prev) => ({ ...prev, muted }));
     // T11 — persists the mute-on-launch preference. Fire-and-forget: a failed write here is not
     // worth surfacing as a call-affecting error (mirrors this file's other IPC-write call sites),
-    // and it never blocks the actual mute, which already took effect above via `microphone.setMuted`.
-    // Only ever invoked from an explicit user toggle (this `useCallback` is `VoiceChannelActions`'
-    // `setMuted`, the sole caller of `microphone.setMuted` for a deliberate mute/unmute) — a
-    // reconnect never calls this (mute state survives a reconnect untouched via `mutedRef`/
-    // `state.muted`, see the main effect's `onReconnecting`/`onReconnected` handlers), so this can
-    // never fire from anything other than a genuine user choice.
+    // and it never blocks the actual mute, which already took effect above via the gate. Only ever
+    // invoked from an explicit user toggle — a reconnect never calls this (mute state survives a
+    // reconnect untouched via `mutedRef`/`state.muted`, applied to the *new* gate at construction
+    // time — see the main effect's `onReconnecting`/`onReconnected` handlers and `join()`), so this
+    // can never fire from anything other than a genuine user choice.
     window.desktopApp
       .updateClientSettings({ voice: { startMuted: muted } })
       .catch((error: unknown) => {
@@ -2031,6 +2660,12 @@ export function useVoiceChannel(
   }, []);
 
   const setDeafened = useCallback((deafened: boolean) => {
+    deafenedRef.current = deafened;
+    // T13.4 — deafening every remote participant's playback is now this graph's own responsibility
+    // (never a per-`<audio>`-element `.muted` toggle — see `RemoteAudioGraphController.setDeafened`'s
+    // own doc comment for why a single override flag, not a per-participant mutation, is what makes
+    // un-deafening restore each participant's own volume/local-mute exactly).
+    remoteAudioGraphRef.current?.setDeafened(deafened);
     setState((prev) => ({ ...prev, deafened }));
     // T11 — mirrors `setMuted`'s persistence exactly.
     window.desktopApp
@@ -2038,6 +2673,193 @@ export function useVoiceChannel(
       .catch((error: unknown) => {
         console.error('voice: failed to persist deafen preference', error);
       });
+  }, []);
+
+  /** T13.4 — switches Voice Activity <-> Push to Talk on the live gate immediately (no
+   * renegotiation — see `TransmitGate.setInputMode`), then persists the choice. */
+  const setVoiceInputMode = useCallback((mode: VoiceInputMode) => {
+    inputModeRef.current = mode;
+    transmitGateRef.current?.setInputMode(mode);
+    pushGateDerivedState();
+    setState((prev) => ({ ...prev, voiceInputMode: mode }));
+    window.desktopApp
+      .updateClientSettings({ voice: { inputMode: mode } })
+      .catch((error: unknown) => {
+        console.error('voice: failed to persist input-mode preference', error);
+      });
+  }, []);
+
+  /** T13.4 — re-derives the local voice-activity detector's on/off thresholds immediately (by
+   * re-tapping a fresh `AnalyserActivitySampler` against the same live microphone stream, if one is
+   * currently acquired) and persists the new sensitivity. A no-op re-tap (only the ref updates) when
+   * no microphone is currently live — the next acquisition reads the ref fresh anyway. */
+  const setVoiceActivitySensitivity = useCallback((sensitivity: number) => {
+    voiceActivitySensitivityRef.current = sensitivity;
+    setState((prev) => ({ ...prev, voiceActivitySensitivity: sensitivity }));
+    if (microphoneRef.current && transmitGateRef.current) {
+      startLocalVoiceActivityDetection(microphoneRef.current, transmitGateRef.current);
+    }
+    window.desktopApp
+      .updateClientSettings({ voice: { voiceActivitySensitivity: sensitivity } })
+      .catch((error: unknown) => {
+        console.error('voice: failed to persist voice-activity sensitivity', error);
+      });
+  }, []);
+
+  /** T13.4 — see `VoiceChannelActions.setPttShortcut`'s own doc comment. Only updates
+   * `state.pttBinding` on a genuine `{ ok: true }` result — a rejected (conflict/native-failure)
+   * attempt must never make the UI believe a new shortcut took effect. */
+  const setPttShortcutAction = useCallback(async (binding: PttBinding) => {
+    const result = await window.desktopApp.setPttShortcut(binding);
+    if (result.ok) setState((prev) => ({ ...prev, pttBinding: binding }));
+    return result;
+  }, []);
+
+  const clearPttShortcutAction = useCallback(async () => {
+    await window.desktopApp.clearPttShortcut();
+    setState((prev) => ({ ...prev, pttBinding: null }));
+  }, []);
+
+  const setJoinLeaveSoundsEnabled = useCallback((enabled: boolean) => {
+    joinLeaveSoundsEnabledRef.current = enabled;
+    setState((prev) => ({ ...prev, joinLeaveSoundsEnabled: enabled }));
+    window.desktopApp
+      .updateClientSettings({ voice: { joinLeaveSoundsEnabled: enabled } })
+      .catch((error: unknown) => {
+        console.error('voice: failed to persist join/leave-sounds preference', error);
+      });
+  }, []);
+
+  /** T13.4 — the one place that actually calls `window.desktopApp.setVoicePreference`. A no-op
+   * (logged, never thrown) if `serverScopeKeyRef.current` is not yet set — should not happen for any
+   * real caller (both call sites below only ever fire once a participant has already been observed,
+   * which requires an already-established connection), but this is local-UI-preference persistence,
+   * not a correctness-critical path, so it degrades silently rather than risking an uncaught
+   * rejection taking down anything else. */
+  function persistVoicePreferenceNow(
+    identityRef: string,
+    entry: DesktopVoicePreferenceEntry,
+  ): void {
+    const serverScopeKey = serverScopeKeyRef.current;
+    if (!serverScopeKey) return;
+    window.desktopApp
+      .setVoicePreference(serverScopeKey, identityRef, entry)
+      .catch((error: unknown) => {
+        console.error('voice: failed to persist local voice preference', error);
+      });
+  }
+
+  /** Cancels any still-pending write for `identityRef` (debounced or not yet fired), if any — every
+   * write path below calls this first, so a later change always supersedes an earlier still-pending
+   * one for the same identity rather than racing it. */
+  function cancelPendingVoicePreference(identityRef: string): void {
+    const pending = pendingVoicePreferenceWritesRef.current.get(identityRef);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    pendingVoicePreferenceWritesRef.current.delete(identityRef);
+  }
+
+  const VOICE_PREFERENCE_PERSIST_DEBOUNCE_MS = 400;
+
+  /** A live-dragged volume slider can fire many updates a second (Section 13 of this task's own
+   * brief: "do not rewrite the settings file on every mouse pixel movement") — debounces the actual
+   * IPC write, coalescing rapid updates into one, while `remoteAudioGraphRef`'s own gain change (see
+   * the call sites below) always applies instantly regardless. */
+  function schedulePersistVolume(identityRef: string, entry: DesktopVoicePreferenceEntry): void {
+    cancelPendingVoicePreference(identityRef);
+    const timer = setTimeout(() => {
+      pendingVoicePreferenceWritesRef.current.delete(identityRef);
+      persistVoicePreferenceNow(identityRef, entry);
+    }, VOICE_PREFERENCE_PERSIST_DEBOUNCE_MS);
+    pendingVoicePreferenceWritesRef.current.set(identityRef, { timer, entry });
+  }
+
+  /** "Mute for Me" is a single discrete click, not a continuous drag — persisted immediately, no
+   * debounce — and supersedes (never races) any volume write still pending for the same identity. */
+  function persistVoicePreferenceImmediately(
+    identityRef: string,
+    entry: DesktopVoicePreferenceEntry,
+  ): void {
+    cancelPendingVoicePreference(identityRef);
+    persistVoicePreferenceNow(identityRef, entry);
+  }
+
+  /** Flushes every still-pending debounced write immediately — called on genuine session teardown
+   * (see the main connection effect's own cleanup) so a shutdown/server-switch/unmount landing inside
+   * the debounce window never silently drops the last value the user actually set. */
+  function flushPendingVoicePreferences(): void {
+    for (const [identityRef, pending] of pendingVoicePreferenceWritesRef.current) {
+      clearTimeout(pending.timer);
+      persistVoicePreferenceNow(identityRef, pending.entry);
+    }
+    pendingVoicePreferenceWritesRef.current.clear();
+  }
+
+  /** T13.4 — live-adjusts one remote participant's local playback volume via the shared
+   * `RemoteAudioGraphController` (applied to every session of the same identity — see
+   * `participantIdsForIdentityRef`), mirrors the result into `state.participantVolumes` so the
+   * "User Volume" UI can read back the current value without reaching into the graph directly, and
+   * persists it — debounced — keyed by the participant's stable `identityRef` within the current
+   * server scope, never by `participantId`/`memberRef` (both session-scoped, which would silently
+   * orphan the saved preference on the very next reconnect/rejoin — see
+   * `docs/architecture/GAMER_VOICE_EXPERIENCE.md`). A no-op persistence-wise (still applies to the
+   * live graph/UI) for a `participantId` this hook has no known `identityRef` for — should not happen
+   * for any currently-attached participant, but never throws either way. */
+  const setParticipantVolume = useCallback((participantId: string, percent: number) => {
+    const clamped = Math.max(0, Math.min(200, percent));
+    const identityRef = identityRefByParticipantIdRef.current.get(participantId);
+    const targetIds = identityRef
+      ? participantIdsForIdentityRef(identityRefByParticipantIdRef.current, identityRef)
+      : [participantId];
+
+    for (const id of targetIds) remoteAudioGraphRef.current?.setParticipantVolume(id, clamped);
+    setState((prev) => {
+      const next = new Map(prev.participantVolumes);
+      for (const id of targetIds) next.set(id, clamped);
+      return { ...prev, participantVolumes: next };
+    });
+
+    if (!identityRef) return;
+    const locallyMuted = participantLocalMutesRef.current.has(participantId);
+    schedulePersistVolume(identityRef, { volumePercent: clamped, locallyMuted });
+  }, []);
+
+  /** T13.4 — "Mute for Me"/"Unmute for Me". See `setParticipantVolume`'s own doc comment for the
+   * same identity-keyed, multi-session-aware persistence — the only difference is this persists
+   * immediately (a discrete click, not a continuous drag) and never resets the stored volume: the
+   * currently-known `volumePercent` is always re-sent unchanged alongside the new `locallyMuted`
+   * flag, so unmuting later restores exactly what was configured before, never a reset to 100%. */
+  const setParticipantLocalMute = useCallback((participantId: string, muted: boolean) => {
+    const identityRef = identityRefByParticipantIdRef.current.get(participantId);
+    const targetIds = identityRef
+      ? participantIdsForIdentityRef(identityRefByParticipantIdRef.current, identityRef)
+      : [participantId];
+
+    for (const id of targetIds) remoteAudioGraphRef.current?.setParticipantMuted(id, muted);
+    setState((prev) => {
+      const next = new Set(prev.participantLocalMutes);
+      for (const id of targetIds) {
+        if (muted) next.add(id);
+        else next.delete(id);
+      }
+      return { ...prev, participantLocalMutes: next };
+    });
+
+    if (!identityRef) return;
+    const volumePercent = participantVolumesRef.current.get(participantId) ?? 100;
+    persistVoicePreferenceImmediately(identityRef, { volumePercent, locallyMuted: muted });
+  }, []);
+
+  /** T13.4 — output-device *selection* stays owned by `VoiceChannelView.tsx`/`SettingsPanel.tsx`
+   * exactly as it was before T13.4 (this action does not itself enumerate/persist anything); this is
+   * only the seam that tells the shared remote-audio graph and join/leave-sound playback which
+   * device the rest of the UI already selected — `SettingsPanel.tsx`'s existing `handleOutputChange`
+   * calls this in addition to updating its own local `outputDeviceId` state and persisting via
+   * `updateClientSettings`, mirroring `switchMicrophone`'s own "live behavior here, persistence
+   * stays with the caller" split. */
+  const setOutputDevice = useCallback((deviceId: string | null) => {
+    outputDeviceIdRef.current = deviceId;
+    void remoteAudioGraphRef.current?.setOutputDevice(deviceId);
   }, []);
 
   const enableCamera = useCallback(() => {
@@ -2163,7 +2985,13 @@ export function useVoiceChannel(
           return;
         }
 
-        newMicrophone.setMuted(mutedRef.current);
+        // T13.4 Decision 2 — a live device switch `rebind()`s the existing gate rather than
+        // constructing a new one: this is the same logical voice session, so `pttHeld`/
+        // `voiceActivityDetected` must survive untouched (see `TransmitGate.rebind`'s own doc
+        // comment for why this differs from a reconnect's fresh construction). `rebind` itself
+        // re-applies `setMuted` unconditionally, replacing the old direct
+        // `newMicrophone.setMuted(mutedRef.current)` call this line used to make.
+        transmitGateRef.current?.rebind(newMicrophone);
         // Atomicity (T11 Section 27, mandatory): the new device is confirmed live and swapped in
         // via `replaceTrack` *before* the old device is stopped — if acquisition above had failed
         // instead, `currentMicrophone` would still be untouched and still working, handled by the
@@ -2171,6 +2999,13 @@ export function useVoiceChannel(
         transport.replaceTrack(currentMicrophone.track, newMicrophone.track);
         microphoneRef.current = newMicrophone;
         attachMicrophoneUnexpectedEndedHandler(newMicrophone);
+        // Re-taps local voice-activity detection onto the new device's stream — the previous
+        // `AnalyserNode` was wired to the now-stopped device's own `MediaStream` and would otherwise
+        // silently keep analyzing a dead track.
+        if (transmitGateRef.current) {
+          startLocalVoiceActivityDetection(newMicrophone, transmitGateRef.current);
+        }
+        pushGateDerivedState();
         currentMicrophone.stop();
 
         const usingFallback = resolveDeviceFallback(
@@ -2693,6 +3528,14 @@ export function useVoiceChannel(
       cancelReconnect,
       setMuted,
       setDeafened,
+      setVoiceInputMode,
+      setVoiceActivitySensitivity,
+      setPttShortcut: setPttShortcutAction,
+      clearPttShortcut: clearPttShortcutAction,
+      setJoinLeaveSoundsEnabled,
+      setParticipantVolume,
+      setParticipantLocalMute,
+      setOutputDevice,
       enableCamera,
       disableCamera,
       switchMicrophone,
@@ -2740,6 +3583,14 @@ export function useVoiceChannel(
       cancelReconnect,
       setMuted,
       setDeafened,
+      setVoiceInputMode,
+      setVoiceActivitySensitivity,
+      setPttShortcutAction,
+      clearPttShortcutAction,
+      setJoinLeaveSoundsEnabled,
+      setParticipantVolume,
+      setParticipantLocalMute,
+      setOutputDevice,
       enableCamera,
       disableCamera,
       switchMicrophone,

@@ -10,11 +10,20 @@ import { ChannelModal, type ChannelModalMode } from '../workspace/ChannelModal.j
 import { ChannelSidebar } from '../workspace/ChannelSidebar.js';
 import { DeleteChannelConfirmDialog } from '../workspace/DeleteChannelConfirmDialog.js';
 import { MainContent } from '../workspace/MainContent.js';
-import { buildMemberGroups, type MemberPanelEntry } from '../workspace/member-presentation.js';
+import {
+  buildMemberGroups,
+  isMemberCurrentlySpeaking,
+  resolveParticipantAvatars,
+  type MemberPanelEntry,
+} from '../workspace/member-presentation.js';
 import { MemberPanel } from '../workspace/MemberPanel.js';
 import { MemberProfilePopover } from '../workspace/MemberProfilePopover.js';
 import { MoveChannelDialog } from '../workspace/MoveChannelDialog.js';
 import { PasswordJoinDialog } from '../workspace/PasswordJoinDialog.js';
+import {
+  ParticipantVoiceControlsModal,
+  type ParticipantVoiceControlsTarget,
+} from '../workspace/ParticipantVoiceControlsModal.js';
 import { ProfileEditor } from '../workspace/ProfileEditor.js';
 import { ServerSettingsModal } from '../workspace/ServerSettingsModal.js';
 import { UserControlBar } from '../workspace/UserControlBar.js';
@@ -103,6 +112,12 @@ export function VoiceChannelView({
   // offline mid-view does not yank the popover shut mid-read — see `handleSelectMember` below.
   const [showProfileEditor, setShowProfileEditor] = useState(false);
   const [selectedMember, setSelectedMember] = useState<MemberPanelEntry | undefined>(undefined);
+  // T13.4 — the local per-participant "User Volume"/"Mute for Me" controls, opened from a
+  // participant's row in the joined voice channel. A snapshot at click time (mirrors
+  // `selectedMember`'s own reasoning) so a participant leaving mid-view does not yank the modal shut.
+  const [voiceControlsTarget, setVoiceControlsTarget] = useState<
+    ParticipantVoiceControlsTarget | undefined
+  >(undefined);
   const { showToast } = useToast();
 
   /** T13.2 — routes every `ChannelAdminIntent` (from a context menu or the Channels admin page) to
@@ -820,6 +835,40 @@ export function VoiceChannelView({
     console.info('E2E_LOCAL_DEAFENED');
   }, [e2eAutoJoin, voiceReady, actions]);
 
+  // T13.4 automated global-PTT smoke test only (`e2e:ptt-smoke`): switches this instance to Push to
+  // Talk mode once actually joined, via the exact same production `actions.setVoiceInputMode` call
+  // the Voice & Video settings UI drives — the orchestrating script's own `armE2EPttSimulation`
+  // (`main/index.ts`) then pushes simulated `'down'`/`'up'` edges on a fixed timer independent of
+  // this effect.
+  //
+  // **Re-fires on every distinct (re)join, not just once — a real bug found via QA of
+  // `e2e-reconnect-smoke.mjs`.** This used to be a permanent one-shot ref: fine for `e2e:ptt-smoke`
+  // (one join, never reconnects), but `e2e-reconnect-smoke.mjs` also uses this same mechanism and
+  // needs its own audio-delivery proof to hold *twice* — once before an unexpected server loss, once
+  // after a real reconnect — and a reconnect constructs a brand-new `TransmitGate` (`pttHeld` always
+  // restarts `false`, by design, so a real user's key can never resume transmission after a
+  // reconnect — see `TransmitGate`'s own doc comment). A permanent one-shot guard here meant this
+  // effect, and its `E2E_LOCAL_PUSH_TO_TALK_MODE` marker, never fired again after the first join, so
+  // `main/index.ts`'s marker-driven `armE2EPttHoldAcrossRejoin` (used only by
+  // `e2e-reconnect-smoke.mjs`) never got a second occurrence to react to post-reconnect. `currentChannelId`
+  // alone can't distinguish "still in the original join" from "left and rejoined the same channel id"
+  // (it's `'general'` both times, with only a transient `undefined` in between while reconnecting) —
+  // this ref is instead reset to `false` the instant we observe *not* currently in the target channel,
+  // so the very next time we observe being in it again is always treated as a fresh join.
+  const pushToTalkApplied = useRef(false);
+  useEffect(() => {
+    if (!e2eAutoJoin?.autoPushToTalk) return;
+    if (state.currentChannelId !== e2eAutoJoin.channelId) {
+      pushToTalkApplied.current = false;
+      return;
+    }
+    if (pushToTalkApplied.current) return;
+
+    pushToTalkApplied.current = true;
+    actions.setVoiceInputMode('push-to-talk');
+    console.info('E2E_LOCAL_PUSH_TO_TALK_MODE');
+  }, [e2eAutoJoin, state.currentChannelId, actions]);
+
   // T6 automated screen-audio smoke test only, publisher role: a continuous, deterministic,
   // *real* audio source for the scenario's screen-audio proof to depend on — plays through the
   // actual OS default audio output device via a normal `AudioContext` destination (never a fake
@@ -1052,6 +1101,57 @@ export function VoiceChannelView({
     }
   }, [e2eAutoJoin, state.remoteScreenAudioStreams]);
 
+  // T13.4 automated global-PTT smoke test only (`e2e:ptt-smoke`), viewer role: three short,
+  // independently-timed re-probes of the SAME remote *microphone* stream (`state.remoteAudioStreams`
+  // — never screen audio), mirroring T6/T12's own "distinct marker prefix, scripted delay" re-probe
+  // pattern exactly (see `screenAudioPostMuteProbed`/`probedProcessAudioPostMute` above), each using
+  // a short (`sampleCount`) window so the three phases (before PTT is held, while held, after
+  // release) land squarely inside their own non-overlapping windows relative to the publisher's own
+  // `armE2EPttSimulation` (`main/index.ts`) timings. Fires once per participant's mic-audio
+  // appearance, never re-armed on every render.
+  const pttPhaseProbed = useRef(new Set<string>());
+  useEffect(() => {
+    const { pttPreHoldProbeDelayMs, pttDuringHoldProbeDelayMs, pttPostReleaseProbeDelayMs } =
+      e2eAutoJoin ?? {};
+    if (
+      pttPreHoldProbeDelayMs === undefined ||
+      pttDuringHoldProbeDelayMs === undefined ||
+      pttPostReleaseProbeDelayMs === undefined
+    ) {
+      return;
+    }
+    const SHORT_PROBE_SAMPLE_COUNT = 40; // ~4s at the probe's own 100ms sample interval.
+    // During-hold gets a longer window (~15s) than the other two phases: unlike "confirm silence
+    // stays silence for a few seconds" (a short window is already conclusive), "confirm real audio
+    // appears somewhere in this window" benefits from more chances to observe it, in case Chromium's
+    // own Opus encoder DTX/VAD treats a synthetic constant test tone less favorably than real speech.
+    const DURING_HOLD_SAMPLE_COUNT = 150;
+    for (const [participantId, stream] of state.remoteAudioStreams) {
+      if (pttPhaseProbed.current.has(participantId)) continue;
+      pttPhaseProbed.current.add(participantId);
+
+      setTimeout(() => {
+        probeRemoteAudioLevel(stream, participantId, 'E2E_PTT_PRE_HOLD', SHORT_PROBE_SAMPLE_COUNT);
+      }, pttPreHoldProbeDelayMs);
+      setTimeout(() => {
+        probeRemoteAudioLevel(
+          stream,
+          participantId,
+          'E2E_PTT_DURING_HOLD',
+          DURING_HOLD_SAMPLE_COUNT,
+        );
+      }, pttDuringHoldProbeDelayMs);
+      setTimeout(() => {
+        probeRemoteAudioLevel(
+          stream,
+          participantId,
+          'E2E_PTT_POST_RELEASE',
+          SHORT_PROBE_SAMPLE_COUNT,
+        );
+      }, pttPostReleaseProbeDelayMs);
+    }
+  }, [e2eAutoJoin, state.remoteAudioStreams]);
+
   const effectiveDisplayName = displayName.trim().length > 0 ? displayName.trim() : nickname;
 
   // Visual QA (T13.1): `state.participants` is populated only from the server's roster of *other*
@@ -1062,16 +1162,33 @@ export function VoiceChannelView({
   // `state.myGroups`) — not fabricated data — purely so the local user appears in their own member
   // list and joined-channel roster, the way a Discord-familiar user expects. `connectionState` is
   // genuinely `undefined` for self: there is no `RTCPeerConnection` to oneself to report a state for.
+  // T13.4 (UI consistency follow-up) — resolves each remote participant's real server-local avatar
+  // by looking their `memberRef` (see `voiceParticipantSchema`'s own doc comment on why this is safe
+  // to expose) up in `state.members` — the exact same T13.3 presence map Member Panel already reads
+  // `avatarRef` from, never a second, voice-specific avatar system. Recomputed on every render where
+  // either `state.participants` or `state.members` changed, so a profile update arriving for someone
+  // already joined updates their `ParticipantRow` avatar live, with no rejoin/reconnect required —
+  // baking `avatarRef` into `VoiceParticipantView` once at join time (inside `use-voice-channel.ts`)
+  // would go stale the instant that member's avatar changed afterward.
   const participantsWithSelf = useMemo<readonly VoiceParticipantView[]>(() => {
-    if (!state.selfParticipantId) return state.participants;
+    const withAvatars = resolveParticipantAvatars(state.participants, state.members);
+    if (!state.selfParticipantId) return withAvatars;
     const selfEntry: VoiceParticipantView = {
       participantId: state.selfParticipantId,
       displayName: effectiveDisplayName,
       connectionState: undefined,
       groups: state.myGroups,
+      avatarRef: state.selfAvatarRef,
     };
-    return [...state.participants, selfEntry];
-  }, [state.participants, state.selfParticipantId, effectiveDisplayName, state.myGroups]);
+    return [...withAvatars, selfEntry];
+  }, [
+    state.participants,
+    state.members,
+    state.selfParticipantId,
+    effectiveDisplayName,
+    state.myGroups,
+    state.selfAvatarRef,
+  ]);
 
   // T13.3 — `MemberPanel` widens from "in this voice channel" (pre-T13.3) to "connected to this
   // server at all," sourced from `state.members` (server-wide presence) rather than
@@ -1091,6 +1208,11 @@ export function VoiceChannelView({
       avatarRef: member.avatarRef,
       roleBucket: member.roleBucket,
       canModerate: canModerateProfiles,
+      isSpeaking: isMemberCurrentlySpeaking(
+        member.memberRef,
+        state.participants,
+        state.speakingParticipantIds,
+      ),
     }));
     // Self can never be its own moderation target, and has no server-derived `roleBucket` (T13.3
     // deliberately never re-derives admin/moderator classification client-side for anyone — see
@@ -1104,15 +1226,19 @@ export function VoiceChannelView({
       avatarRef: state.selfAvatarRef,
       roleBucket: undefined,
       canModerate: false,
+      isSpeaking: state.selfSpeaking,
     };
     return [...others, selfEntry];
   }, [
     state.members,
+    state.participants,
+    state.speakingParticipantIds,
     canModerateProfiles,
     effectiveDisplayName,
     state.selfPresence,
     state.selfCustomStatus,
     state.selfAvatarRef,
+    state.selfSpeaking,
   ]);
 
   const { groups: memberGroups, hasRealGroups: memberGroupsHasRealBuckets } = useMemo(
@@ -1193,6 +1319,16 @@ export function VoiceChannelView({
             state={state}
             actions={actions}
             onChannelAdminIntent={handleChannelAdminIntent}
+            onOpenVoiceControls={(participantId) => {
+              const participant = participantsWithSelf.find(
+                (candidate) => candidate.participantId === participantId,
+              );
+              if (!participant) return;
+              setVoiceControlsTarget({
+                participantId: participant.participantId,
+                displayName: participant.displayName,
+              });
+            }}
           />
 
           <div className={styles.center}>
@@ -1307,6 +1443,15 @@ export function VoiceChannelView({
         </Modal>
       )}
 
+      <ParticipantVoiceControlsModal
+        target={voiceControlsTarget}
+        state={state}
+        actions={actions}
+        onClose={() => {
+          setVoiceControlsTarget(undefined);
+        }}
+      />
+
       {selectedMember && (
         <Modal
           open
@@ -1403,20 +1548,22 @@ export function VoiceChannelView({
 
       <PasswordJoinDialog state={state} actions={actions} />
 
-      {[...state.remoteAudioStreams.entries()].map(([participantId, stream]) => (
-        <RemoteAudio
-          key={participantId}
-          participantId={participantId}
-          stream={stream}
-          muted={state.deafened}
-          outputDeviceId={outputDeviceId}
-        />
-      ))}
+      {/* T13.4 — remote *microphone* audio playback moved off `<RemoteAudio>`/`<audio>` entirely,
+          onto `use-voice-channel.ts`'s own `RemoteAudioGraphController` (a Web Audio
+          source -> gain -> destination graph, one per connection session), which is what makes
+          per-participant volume (0-200%) and speaking detection possible — a plain `<audio>`
+          element has neither. That controller attaches/detaches participants and applies
+          deafen/output-device itself, entirely inside the hook; nothing renders here for
+          `state.remoteAudioStreams` anymore. Rendering a `<RemoteAudio>` for the same stream
+          here *and* having the graph play it would double the audio (a real echo bug) — see
+          `remote-audio-graph.ts`'s own "exactly one audible path" doc comment. Screen/system
+          audio (below) intentionally keeps the pre-T13.4 `<audio>` path: it has no per-participant
+          volume/speaking-detection product requirement, so retiring it is out of this task's scope. */}
 
       {/* T6: screen/system audio has its own independent playback ownership — a distinct
-          <audio> element per participant, never mixed into the microphone element above, even
-          though both are plain `RemoteAudio` instances. Deafen suppresses both the same way;
-          microphone mute never touches this map (see `docs/architecture/WEBRTC_SCREEN_AUDIO.md`). */}
+          <audio> element per participant. Deafen suppresses this the same way it suppresses the
+          Web Audio graph above (see `RemoteAudioGraphController.setDeafened`); microphone mute
+          never touches this map (see `docs/architecture/WEBRTC_SCREEN_AUDIO.md`). */}
       {[...state.remoteScreenAudioStreams.entries()].map(([participantId, stream]) => (
         <RemoteAudio
           key={`screen-audio-${participantId}`}

@@ -128,6 +128,44 @@ describe('UserControlBar (T13.1)', () => {
     }
   });
 
+  it('T13.4 — the mic control gets the same "active" (green) treatment when PTT is held, distinct from muted (danger/red)', () => {
+    renderBar({ voiceInputMode: 'push-to-talk', pttHeld: true, muted: false });
+    const mic = screen.getByTestId('user-control-mic');
+    expect(mic).toHaveAttribute('aria-pressed', 'true');
+    // Still labeled as an ordinary (non-muted) mic button — PTT-held is a distinct visual state,
+    // never confused with "muted".
+    expect(mic).toHaveAccessibleName('Mute microphone');
+  });
+
+  it('T13.4 — a muted mic never shows the PTT-held (green) treatment even while PTT is physically held', () => {
+    renderBar({ voiceInputMode: 'push-to-talk', pttHeld: true, muted: true });
+    const mic = screen.getByTestId('user-control-mic');
+    // Explicit mute always wins (matches `TransmitGate`'s own derivation) — the button still reads
+    // as muted, not as "PTT-held-and-ready".
+    expect(mic).toHaveAccessibleName('Unmute microphone');
+  });
+
+  it('T13.4 — the mic tooltip distinguishes Push to Talk (held vs. not held) from Voice Activity, without changing the accessible name', () => {
+    renderBar({ voiceInputMode: 'push-to-talk', pttHeld: false, muted: false });
+    fireEvent.mouseEnter(screen.getByTestId('user-control-mic').closest('span') as HTMLElement);
+    expect(screen.getByRole('tooltip')).toHaveTextContent('hold your shortcut to talk');
+    cleanup();
+
+    renderBar({ voiceInputMode: 'push-to-talk', pttHeld: true, muted: false });
+    fireEvent.mouseEnter(screen.getByTestId('user-control-mic').closest('span') as HTMLElement);
+    expect(screen.getByRole('tooltip')).toHaveTextContent('transmitting');
+    cleanup();
+
+    renderBar({ voiceInputMode: 'voice-activity', selfVoiceActivityDetected: false, muted: false });
+    fireEvent.mouseEnter(screen.getByTestId('user-control-mic').closest('span') as HTMLElement);
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Voice Activity — listening');
+    cleanup();
+
+    renderBar({ micDisconnected: true });
+    fireEvent.mouseEnter(screen.getByTestId('user-control-mic').closest('span') as HTMLElement);
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Microphone disconnected');
+  });
+
   it('disables mic/deafen/camera/screen controls while not in a voice channel (currentChannelId undefined)', () => {
     renderBar({ currentChannelId: undefined });
     expect(screen.getByTestId('user-control-mic')).toBeDisabled();

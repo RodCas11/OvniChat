@@ -4,7 +4,12 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ChannelSidebar } from '../../../apps/desktop/src/renderer/workspace/ChannelSidebar.js';
-import { createChannel, createVoiceActions, createVoiceState } from '../fixtures/voice-state.js';
+import {
+  createChannel,
+  createParticipant,
+  createVoiceActions,
+  createVoiceState,
+} from '../fixtures/voice-state.js';
 
 afterEach(() => {
   cleanup();
@@ -242,5 +247,93 @@ describe('ChannelSidebar (T13.1)', () => {
     expect(screen.queryByText('Move Channel')).not.toBeInTheDocument();
     expect(screen.queryByText('Create Subchannel')).not.toBeInTheDocument();
     expect(screen.queryByText('Delete Channel')).not.toBeInTheDocument();
+  });
+});
+
+// T13.4 (UI consistency follow-up) — a real component-integration proof (Section 49): renders the
+// *actual* `ChannelSidebar` → `ChannelRow` → `ParticipantRow` → `UserAvatar` chain with a real,
+// non-empty participant/avatarCache/speakingParticipantIds state, rather than only exercising each
+// leaf component in isolation (as `participant-row.test.tsx`/`member-presentation.test.ts` already
+// do). This is the only place that proves the real prop-threading wiring itself (`state.avatarCache`
+// and `handleRequestParticipantAvatar` reaching all the way down to a real rendered `<img>`) actually
+// works end-to-end, not just that each component behaves correctly given hand-fed props.
+describe('ChannelSidebar — voice participant avatar/speaking wiring (T13.4 UI consistency follow-up, real component integration)', () => {
+  const avatarRef = { revision: 1, hash: 'c'.repeat(64) };
+
+  it('a joined channel renders its real participant with the real current avatar, sourced from state.avatarCache via the real UserAvatar component', () => {
+    const channelTree = [createChannel({ nodeId: 'general', name: 'General' })];
+    const participant = createParticipant({
+      participantId: 'participant-1',
+      memberRef: 'member-1',
+      avatarRef,
+    });
+    const { container } = renderSidebar({
+      channelTree,
+      currentChannelId: 'general',
+      participants: [participant],
+      state: createVoiceState({
+        channelTree,
+        avatarCache: new Map([[avatarRef.hash, 'data:image/png;base64,real']]),
+      }),
+    });
+
+    const img = container.querySelector('img');
+    expect(img).toHaveAttribute('src', 'data:image/png;base64,real');
+  });
+
+  it('a not-yet-cached avatar requests it exactly once via the real actions.requestAvatar("member", memberRef) path', () => {
+    const channelTree = [createChannel({ nodeId: 'general', name: 'General' })];
+    const participant = createParticipant({
+      participantId: 'participant-1',
+      memberRef: 'member-1',
+      avatarRef,
+    });
+    const actions = createVoiceActions();
+    renderSidebar({
+      channelTree,
+      currentChannelId: 'general',
+      participants: [participant],
+      state: createVoiceState({ channelTree }),
+      actions,
+    });
+
+    expect(actions.requestAvatar).toHaveBeenCalledTimes(1);
+    expect(actions.requestAvatar).toHaveBeenCalledWith('member', 'member-1');
+  });
+
+  it('a real speaking participantId reaches the real ParticipantRow/UserAvatar speaking ring through the full state.speakingParticipantIds wiring', () => {
+    const channelTree = [createChannel({ nodeId: 'general', name: 'General' })];
+    const participant = createParticipant({ participantId: 'participant-1' });
+    renderSidebar({
+      channelTree,
+      currentChannelId: 'general',
+      participants: [participant],
+      state: createVoiceState({
+        channelTree,
+        speakingParticipantIds: new Set(['participant-1']),
+      }),
+    });
+
+    expect(screen.getByTestId('participant-row-avatar-wrap-participant-1')).toHaveAttribute(
+      'data-speaking',
+      'true',
+    );
+  });
+
+  it('no fabricated avatar or speaking state for a participant absent from members/speakingParticipantIds', () => {
+    const channelTree = [createChannel({ nodeId: 'general', name: 'General' })];
+    const participant = createParticipant({ participantId: 'participant-1' });
+    const { container } = renderSidebar({
+      channelTree,
+      currentChannelId: 'general',
+      participants: [participant],
+      state: createVoiceState({ channelTree }),
+    });
+
+    expect(container.querySelector('img')).not.toBeInTheDocument();
+    expect(screen.getByTestId('participant-row-avatar-wrap-participant-1')).toHaveAttribute(
+      'data-speaking',
+      'false',
+    );
   });
 });

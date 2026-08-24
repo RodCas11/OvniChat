@@ -1,3 +1,4 @@
+import { promises as fsPromises } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -5,6 +6,8 @@ import { FuseV1Options, FuseVersion } from '@electron/fuses';
 import { FusesPlugin } from '@electron-forge/plugin-fuses';
 import { VitePlugin } from '@electron-forge/plugin-vite';
 import type { ForgeConfig } from '@electron-forge/shared-types';
+
+import { nativeMainProcessPackages } from './native-main-dependencies.js';
 
 // T12 — packages the compiled Windows process-loopback native helper alongside the app via
 // `packagerConfig.extraResource`, not `asar`'s `unpack` glob. An earlier version of this config
@@ -36,13 +39,62 @@ const processLoopbackHelperExePath = path.join(
   'process-loopback-helper.exe',
 );
 
+// T13.4 QA fix — where `nativeMainProcessPackages`' *real* npm package directories actually live on
+// disk, so `packageAfterCopy` below can copy them into the packaged app. This workspace's pnpm
+// `nodeLinker: hoisted` setting (`.npmrc`) hoists ordinary third-party npm dependencies to a single
+// `node_modules` at the monorepo root only — verified directly (`apps/desktop/node_modules` itself
+// contains only Vite's own scratch directories and this workspace's own `@disco-voador/*` symlinks,
+// never `uiohook-napi`/`node-gyp-build`) — so `@electron/packager`'s own copy, which is rooted at
+// `apps/desktop` (`packagerConfig`'s implicit `dir`, i.e. this app's own directory), never has these
+// two packages anywhere in the tree it walks in the first place; no `ignore`/`asar.unpack` glob can
+// "keep" a path that was never a candidate to copy at all. This was found live: an earlier version of
+// this fix tried exactly that (a custom `packagerConfig.ignore` allow-listing
+// `/node_modules/<name>` prefixes) and a real `electron-forge package` run's own `app.asar` still
+// came out with a completely empty `node_modules` — proving the packages were never reachable from
+// `apps/desktop`'s own tree to begin with, not merely filtered out.
+const repoRootNodeModules = path.join(desktopDir, '..', '..', 'node_modules');
+
 const forgeConfig: ForgeConfig = {
   makers: [],
   packagerConfig: {
-    asar: true,
+    // `asar.unpack` (rather than a plain `asar: true`) is required specifically because
+    // `nativeMainProcessPackages` are no longer inlined by Rollup (see `vite.main.config.ts`): their
+    // real `.node` binaries get copied into the packaged app by the `packageAfterCopy` hook below,
+    // and Node/Electron cannot `dlopen` a native addon from inside a sealed `asar` archive — a real,
+    // general Electron constraint, not specific to `uiohook-napi`. `**/*.node` is intentionally
+    // broader than just `uiohook-napi`'s own prebuild, so any future native-addon dependency this app
+    // adds is unpacked automatically without a matching edit here. Verified directly against a real
+    // `electron-forge package` run: without this, no `app.asar.unpacked` directory was produced at
+    // all (T13.4 QA's own diagnosis, confirmed live during this fix), which — even after the Rollup
+    // externalization and `packageAfterCopy` fixes alone — would still leave `node-gyp-build`'s own
+    // `require(path.join(dir, 'prebuilds', ...))` lookup unable to actually load the binary it
+    // correctly locates by path (Node cannot `dlopen` from inside `app.asar`).
+    asar: { unpack: '**/*.node' },
     // Statically linked via `/MT` (per `packages/windows-media/native/process-loopback-helper/`'s
     // own build), so no companion DLLs of its own also need copying.
     extraResource: [processLoopbackHelperExePath],
+  },
+  hooks: {
+    // T13.4 QA fix — runs once per packaged platform/arch, after Electron Forge's own copy of
+    // `apps/desktop` into `buildPath` (which never contained these packages to begin with — see
+    // `repoRootNodeModules`'s own doc comment) but before that same packaging run's `asar` step seals
+    // `buildPath` into `app.asar`, so files added here are still included. Copies each of
+    // `nativeMainProcessPackages`' real, whole package directories (prebuilds, compiled JS, and
+    // `package.json` included — `node-gyp-build`'s own lookup reads the target package's
+    // `package.json`, and needs its compiled `prebuilds/<platform>-<arch>/*.node` binary) from this
+    // monorepo's single hoisted root `node_modules` into the packaged app's own `node_modules`, so the
+    // externalized (see `vite.main.config.ts`) `require`/dynamic `import()` calls the compiled Main
+    // bundle makes for them resolve to a real, complete copy at runtime exactly the way they already
+    // do in this same repository's own dev-mode `node_modules` today.
+    packageAfterCopy: async (_forgeConfig, buildPath) => {
+      for (const name of nativeMainProcessPackages) {
+        await fsPromises.cp(
+          path.join(repoRootNodeModules, name),
+          path.join(buildPath, 'node_modules', name),
+          { recursive: true },
+        );
+      }
+    },
   },
   plugins: [
     new VitePlugin({

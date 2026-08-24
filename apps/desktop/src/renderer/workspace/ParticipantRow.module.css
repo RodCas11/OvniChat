@@ -25,10 +25,6 @@
   color: var(--ovni-text-tertiary);
 }
 
-.statusSlot {
-  width: 0;
-}
-
 .mediaIcons {
   display: flex;
   align-items: center;

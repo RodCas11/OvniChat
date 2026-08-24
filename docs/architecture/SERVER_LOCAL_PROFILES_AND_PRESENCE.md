@@ -22,7 +22,7 @@ every other store shares, with its own independent migration sequence and zero f
 `authorization.sqlite`/`chat.sqlite`/`channels.sqlite` — see
 [ADR 0020](../adr/0020-profile-presence-storage-and-privacy-boundary.md) for the full reasoning.
 
-### Schema (version 1)
+### Schema (version 1, plus version 2's `identity_ref` column — see below)
 
 ```sql
 CREATE TABLE avatar_assets (
@@ -40,7 +40,8 @@ CREATE TABLE identity_profiles (
   custom_status      TEXT,
   avatar_asset_id    TEXT REFERENCES avatar_assets(asset_id),
   avatar_revision    INTEGER NOT NULL DEFAULT 0,
-  updated_at         INTEGER NOT NULL
+  updated_at         INTEGER NOT NULL,
+  identity_ref       TEXT  -- T13.4 targeted fix; migration v2, nullable, lazily backfilled
 );
 
 CREATE TABLE server_profile (
@@ -50,6 +51,19 @@ CREATE TABLE server_profile (
   updated_at       INTEGER NOT NULL
 );
 ```
+
+**`identity_ref` (T13.4 targeted fix, migration v2):** a durable, per-`(this Dedicated Server,
+identity)` opaque correlation token — a fresh `randomUUID()`, generated once on first real use
+(`ProfilePort.getOrCreateIdentityRef`) and reused forever after, never derived from `identity_id` in
+any recoverable way. Added so a client's _local_ per-participant voice volume/"Mute for Me"
+preference (`apps/desktop`'s own settings file, not this database) can survive a remote user's
+reconnect/relaunch, without this server ever exposing raw `identity_id` to another client — see
+[ADR 0022](../adr/0022-durable-per-server-identity-ref-for-local-voice-preferences.md) for the full
+reasoning, including why this does not reopen the cross-server correlation concern `memberRef` (below)
+already had to solve: two independently-operated Dedicated Servers mint two _unrelated_ random values
+for the very same real identity. Nullable and lazily populated, mirroring `avatar_asset_id`'s own
+"only ever gains a value once something actually needs one" pattern, rather than backfilled for every
+existing row up front.
 
 No nickname column exists anywhere in this schema — nickname stays a live, per-connection value
 sourced from `client:hello`, exactly as it has been since T7. Replacing an avatar deletes the old
@@ -86,6 +100,7 @@ interface ProfilePort {
   setPresencePreference(identityId, preference: PresenceStatus): void;
   getUserAvatarData(identityId): AvatarData | undefined;
   getServerAvatarData(): AvatarData | undefined;
+  getOrCreateIdentityRef(identityId): string; // T13.4 targeted fix — see the schema note above.
 }
 ```
 
@@ -169,6 +184,25 @@ permanently the moment the last one closes. Presence _preference_ and nickname a
 last-write-wins across simultaneous connections (documented, deliberate) — disconnecting one of
 several connections never flips the identity to Offline while another remains live. Covered by a
 real two-socket integration test.
+
+**Contrast with `identityRef` (T13.4 targeted fix, `voiceParticipantSchema` only, not this presence
+family):** `memberRef` is deliberately _online-session-scoped_ — exactly wrong for anything that must
+survive a disconnect. `identityRef` is the durable counterpart, generated once and never retired,
+used only to key a client's local voice-preference persistence — see
+[ADR 0022](../adr/0022-durable-per-server-identity-ref-for-local-voice-preferences.md). The two remain
+distinct and are not unified — `identityRef` is still used only for local volume/"Mute for Me"
+persistence.
+
+**`memberRef` was, however, reused (T13.4 UI-consistency follow-up) to close the avatar/speaking-ring
+gap between voice and Member Panel.** `voiceParticipantSchema` gained its own required `memberRef`
+field — the exact same value this presence family already broadcasts server-wide, not a new identifier
+— letting `ParticipantRow` correlate a voice participant back to this same `MemberPresence` entry for
+its `avatarRef`, and letting `MemberRow` correlate the other direction for its speaking ring (via
+`state.speakingParticipantIds`, keyed by `participantId`). See
+[`GAMER_VOICE_EXPERIENCE.md`](GAMER_VOICE_EXPERIENCE.md)'s "UI consistency follow-up" section for the
+full design and the privacy reasoning (why a hidden-channel member's speaking state structurally never
+reaches `MemberRow`). This introduces no new exposure — `memberRef` was already visible to every
+connected client via `memberPresenceSchema` before this change — only a new place it is read from.
 
 ## Member-grouping and privacy
 

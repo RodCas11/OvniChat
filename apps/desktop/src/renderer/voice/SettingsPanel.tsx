@@ -3,7 +3,7 @@ import { VideoOff } from 'lucide-react';
 
 import type { ScreenQualityPreset } from '@disco-voador/media-core';
 
-import type { DesktopIdentity } from '../../shared/ipc-contract.js';
+import type { DesktopIdentity, DesktopSetPttShortcutResult } from '../../shared/ipc-contract.js';
 import { useBookmarks } from '../connection/use-bookmarks.js';
 import { IdentityPanel } from '../identity/IdentityPanel.js';
 import { Button } from '../ui/Button.js';
@@ -11,6 +11,11 @@ import { EmptyState } from '../ui/EmptyState.js';
 import type { VoiceChannelActions, VoiceChannelState } from './use-voice-channel.js';
 import { useMediaDevices, type EnumeratedDevice } from './device-enumeration.js';
 import { LocalCameraPreview } from './LocalCameraPreview.js';
+import {
+  describePttBinding,
+  pttBindingFromKeyboardEvent,
+  pttBindingFromMouseEvent,
+} from './ptt-capture.js';
 import styles from './SettingsPanel.module.css';
 
 /** T13.1.1 — the four truthful sections `SettingsPanel` actually has real content for. Deliberately
@@ -163,10 +168,24 @@ function useMicLevelMeter(
         temporaryStream = sourceStream;
       }
 
-      const AudioContextCtor =
-        window.AudioContext ??
-        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-      audioContext = new AudioContextCtor();
+      // T13.4 — guarded (previously unguarded): once this hook could activate automatically just by
+      // viewing the Voice & Video section in Voice Activity mode (not only via an explicit "Test
+      // microphone" click), an environment without a real `AudioContext`/`getUserMedia` (e.g. this
+      // component's own test suite, most of which never installs the Web Audio test doubles since
+      // most tests have nothing to do with audio) must degrade to "no meter", never an unhandled
+      // rejection.
+      let audioContextCandidate: AudioContext;
+      try {
+        const AudioContextCtor =
+          window.AudioContext ??
+          (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+        audioContextCandidate = new AudioContextCtor();
+      } catch (error) {
+        console.error('mic level meter: AudioContext unavailable', error);
+        if (temporaryStream) for (const track of temporaryStream.getTracks()) track.stop();
+        return;
+      }
+      audioContext = audioContextCandidate;
       const source = audioContext.createMediaStreamSource(sourceStream);
       const analyser = audioContext.createAnalyser();
       analyser.fftSize = 512;
@@ -273,6 +292,119 @@ function useOutputTestTone(): {
   return { playing, play, stop };
 }
 
+/** T13.4 — one real, honest outcome the "Shortcut: [Press a key...]" capture control can be in.
+ * Never a bare boolean: "already registered" / "conflict" / "native failure" all need distinct copy
+ * per this task's own product requirement ("never require DevTools to know if it worked"). */
+type PttShortcutStatus =
+  | { readonly kind: 'idle' }
+  | { readonly kind: 'capturing' }
+  | { readonly kind: 'registering' }
+  | { readonly kind: 'registered' }
+  | { readonly kind: 'conflict'; readonly message: string }
+  | { readonly kind: 'error'; readonly message: string };
+
+/**
+ * T13.4 QA fix — short, honest, jargon-free copy for the two PTT failure reasons whose underlying
+ * `result.message` is an arbitrary native-diagnostic string (`describeError(err)` in
+ * `packages/windows-media/src/ptt-hotkey-listener.ts` — e.g. `node-gyp-build`'s own
+ * "No native build was found for platform=... loaded from: ..." text), never something written for
+ * an end user to read. `'conflict'` is deliberately not mapped here — `main/ptt-hotkey.ts`'s own
+ * `setPttShortcut` already produces a short, curated, user-facing message for that reason
+ * (`'That shortcut is already in use — choose another key.'`), so `applyResult` below keeps showing
+ * `result.message` unchanged only for that one case.
+ */
+const PTT_FAILURE_COPY: Record<'native-module-load-failed' | 'hook-start-failed', string> = {
+  'native-module-load-failed':
+    'Shortcut unavailable — something went wrong starting the global hotkey listener. Try restarting OvniChat, or contact support if this keeps happening.',
+  'hook-start-failed':
+    'Shortcut unavailable — something went wrong starting the global hotkey listener. Try restarting OvniChat, or contact support if this keeps happening.',
+};
+
+/**
+ * T13.4 — Renderer-local, focused-window key/mouse-button capture (see `ptt-capture.ts`'s own doc
+ * comment for why this is deliberately *not* the global hook) for picking a PTT binding, then
+ * calling the real `actions.setPttShortcut` and surfacing its real, honest result — conflict, a
+ * native-module/hook-start failure, or success — never a fabricated "it worked". `Escape` cancels
+ * capture without binding anything (this module's own key-code table can otherwise map `Escape`
+ * itself as a bindable key, which would be a confusing capture-vs-cancel conflict for the one key
+ * every other dialog already uses to close).
+ */
+function usePttShortcutCapture(actions: VoiceChannelActions): {
+  readonly status: PttShortcutStatus;
+  readonly startCapture: () => void;
+} {
+  const [status, setStatus] = useState<PttShortcutStatus>({ kind: 'idle' });
+
+  useEffect(() => {
+    if (status.kind !== 'capturing') return undefined;
+
+    let settled = false;
+
+    function applyResult(result: DesktopSetPttShortcutResult): void {
+      if (result.ok) {
+        setStatus({ kind: 'registered' });
+        return;
+      }
+      if (result.reason === 'conflict') {
+        setStatus({ kind: 'conflict', message: result.message });
+        return;
+      }
+      // T13.4 QA fix — `result.message` here is a raw, arbitrary native-diagnostic string (see
+      // `PTT_FAILURE_COPY`'s own doc comment); it is logged (local-diagnostic-only, matching
+      // `ptt-hotkey-listener.ts`'s own "never surfaced to the user" posture for this exact string)
+      // rather than rendered, so the underlying detail is never lost, just never shown raw.
+      console.error(`ptt-shortcut: ${result.reason}`, result.message);
+      setStatus({ kind: 'error', message: PTT_FAILURE_COPY[result.reason] });
+    }
+
+    function handleKeyDown(event: KeyboardEvent): void {
+      if (settled) return;
+      if (event.code === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        settled = true;
+        setStatus({ kind: 'idle' });
+        return;
+      }
+      const binding = pttBindingFromKeyboardEvent(event);
+      if (!binding) return; // Unsupported key — keep listening rather than silently mis-binding.
+      event.preventDefault();
+      event.stopPropagation();
+      settled = true;
+      setStatus({ kind: 'registering' });
+      void actions.setPttShortcut(binding).then(applyResult);
+    }
+
+    function handleMouseDown(event: MouseEvent): void {
+      if (settled) return;
+      const binding = pttBindingFromMouseEvent(event);
+      if (!binding) return;
+      event.preventDefault();
+      event.stopPropagation();
+      settled = true;
+      setStatus({ kind: 'registering' });
+      void actions.setPttShortcut(binding).then(applyResult);
+    }
+
+    // `capture: true` so this observes the key/button before any other handler (including
+    // `Modal.tsx`'s own Escape-closes-dialog listener) — this control owns the very next input
+    // event while capturing, exactly matching "press a key to bind" UX in comparable apps.
+    window.addEventListener('keydown', handleKeyDown, true);
+    window.addEventListener('mousedown', handleMouseDown, true);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown, true);
+      window.removeEventListener('mousedown', handleMouseDown, true);
+    };
+  }, [status.kind, actions]);
+
+  return {
+    status,
+    startCapture: () => {
+      setStatus({ kind: 'capturing' });
+    },
+  };
+}
+
 /**
  * T11 device management + screen-share quality preference, restyled for T13.1 (single scrolling
  * column) then redesigned for T13.1.1 into a sidebar-navigation layout across four truthful
@@ -356,6 +488,18 @@ export function SettingsPanel({
 
   const micLevel = useMicLevelMeter(micTesting, state.localMicrophoneStream, preferredMicDeviceId);
   const outputTestTone = useOutputTestTone();
+  // T13.4 — Voice Activity mode's own live level meter reuses this exact same lifecycle-safe hook
+  // (never a second/parallel capture mechanism — see `useMicLevelMeter`'s own T13.1.1 fix), gated on
+  // being both in this settings section *and* Voice Activity mode, so it stops the instant either
+  // stops being true (leaving this section, or switching to Push to Talk) — never lingers.
+  const voiceActivityMeterActive =
+    activeSection === 'voice' && state.voiceInputMode === 'voice-activity';
+  const voiceActivityLevel = useMicLevelMeter(
+    voiceActivityMeterActive,
+    state.localMicrophoneStream,
+    preferredMicDeviceId,
+  );
+  const pttShortcutCapture = usePttShortcutCapture(actions);
 
   function handleMicChange(deviceId: string | null): void {
     setPreferredMicDeviceId(deviceId);
@@ -379,6 +523,10 @@ export function SettingsPanel({
 
   function handleOutputChange(deviceId: string | null): void {
     onOutputDeviceChange(deviceId);
+    // T13.4 — tells the shared remote-audio graph (per-participant volume/speaking playback) and
+    // join/leave-sound playback which device to route to, mirroring `handleMicChange`'s own
+    // "live behavior via an action, persistence via `updateClientSettings`" split exactly.
+    actions.setOutputDevice(deviceId);
     window.desktopApp
       .updateClientSettings({ audio: { outputDeviceId: deviceId } })
       .catch((error: unknown) => {
@@ -521,6 +669,142 @@ export function SettingsPanel({
                   {outputTestTone.playing ? 'Stop test tone' : 'Play test tone'}
                 </Button>
               </div>
+            </section>
+
+            <section className={styles.subsection}>
+              <h4 className={styles.subsectionTitle}>Input Mode</h4>
+              <div className={styles.radioGroup} role="radiogroup" aria-label="Input mode">
+                <label className={styles.radioOption}>
+                  <input
+                    type="radio"
+                    name="voice-input-mode"
+                    checked={state.voiceInputMode === 'voice-activity'}
+                    onChange={() => {
+                      actions.setVoiceInputMode('voice-activity');
+                    }}
+                    data-testid="voice-input-mode-voice-activity"
+                  />
+                  Voice Activity
+                </label>
+                <label className={styles.radioOption}>
+                  <input
+                    type="radio"
+                    name="voice-input-mode"
+                    checked={state.voiceInputMode === 'push-to-talk'}
+                    onChange={() => {
+                      actions.setVoiceInputMode('push-to-talk');
+                    }}
+                    data-testid="voice-input-mode-push-to-talk"
+                  />
+                  Push to Talk
+                </label>
+              </div>
+
+              {state.voiceInputMode === 'voice-activity' ? (
+                <div className={styles.inputModeDetail}>
+                  <label className={styles.sliderLabel} htmlFor="voice-activity-sensitivity">
+                    Input Sensitivity
+                  </label>
+                  <input
+                    id="voice-activity-sensitivity"
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={state.voiceActivitySensitivity}
+                    onChange={(event) => {
+                      actions.setVoiceActivitySensitivity(Number(event.target.value));
+                    }}
+                    data-testid="voice-activity-sensitivity-slider"
+                  />
+                  {/* Visual-only mic level meter — never an audible test tone (that is the unrelated
+                      "Play test tone" *output*-device test above); stops the instant this section is
+                      left or the mode switches away, via `useMicLevelMeter`'s existing lifecycle
+                      fix. */}
+                  <div
+                    className={styles.meterTrack}
+                    data-role="voice-activity-level-meter"
+                    data-testid="voice-activity-level-meter"
+                  >
+                    <div
+                      className={styles.meterFill}
+                      style={{
+                        width: `${String(Math.min(100, Math.round(voiceActivityLevel * 100)))}%`,
+                      }}
+                    />
+                  </div>
+                </div>
+              ) : (
+                <div className={styles.inputModeDetail}>
+                  <p className={styles.hint}>Shortcut</p>
+                  <Button
+                    variant="secondary"
+                    onClick={pttShortcutCapture.startCapture}
+                    disabled={pttShortcutCapture.status.kind === 'capturing'}
+                    data-testid="ptt-shortcut-capture-button"
+                  >
+                    {pttShortcutCapture.status.kind === 'capturing'
+                      ? 'Press a key… (Esc to cancel)'
+                      : state.pttBinding
+                        ? describePttBinding(state.pttBinding)
+                        : 'Press a key…'}
+                  </Button>
+                  {state.pttBinding && pttShortcutCapture.status.kind === 'idle' && (
+                    <Button
+                      variant="ghost"
+                      onClick={() => {
+                        void actions.clearPttShortcut();
+                      }}
+                      data-testid="ptt-shortcut-clear-button"
+                    >
+                      Clear shortcut
+                    </Button>
+                  )}
+                  <p
+                    className={
+                      pttShortcutCapture.status.kind === 'conflict' ||
+                      pttShortcutCapture.status.kind === 'error'
+                        ? styles.alert
+                        : styles.status
+                    }
+                    role={
+                      pttShortcutCapture.status.kind === 'conflict' ||
+                      pttShortcutCapture.status.kind === 'error'
+                        ? 'alert'
+                        : 'status'
+                    }
+                    data-testid="ptt-shortcut-status"
+                  >
+                    {pttShortcutCapture.status.kind === 'registering' && 'Registering…'}
+                    {pttShortcutCapture.status.kind === 'registered' && 'Shortcut registered'}
+                    {pttShortcutCapture.status.kind === 'conflict' &&
+                      'That shortcut is already in use — choose another key.'}
+                    {pttShortcutCapture.status.kind === 'error' &&
+                      pttShortcutCapture.status.message}
+                    {pttShortcutCapture.status.kind === 'idle' &&
+                      state.pttBinding &&
+                      'Shortcut registered'}
+                    {pttShortcutCapture.status.kind === 'idle' &&
+                      !state.pttBinding &&
+                      'No shortcut set yet — Push to Talk will never transmit until you pick one.'}
+                  </p>
+                  <p className={styles.hint}>
+                    {state.pttHeld ? 'Currently held (transmitting).' : ''}
+                  </p>
+                </div>
+              )}
+
+              <label className={styles.checkboxOption}>
+                <input
+                  type="checkbox"
+                  checked={state.joinLeaveSoundsEnabled}
+                  onChange={(event) => {
+                    actions.setJoinLeaveSoundsEnabled(event.target.checked);
+                  }}
+                  data-testid="join-leave-sounds-toggle"
+                />
+                Voice Notifications: Play join/leave sounds
+              </label>
             </section>
 
             <section className={styles.subsection}>

@@ -22,10 +22,17 @@ import {
   type DesktopProcessAudioCapabilityResult,
   type DesktopProcessAudioEndedInfo,
   type DesktopProcessAudioStartResult,
+  type DesktopPttEvent,
+  // T13.4 — re-exported by `shared/ipc-contract.ts` specifically so Preload/Renderer never has a
+  // source-text import specifier naming `@disco-voador/windows-media` at all — see that file's own
+  // doc comment on this re-export.
+  type PttBinding,
   type DesktopRealtimeConfig,
   type DesktopScreenSource,
   type DesktopServerBookmark,
+  type DesktopSetPttShortcutResult,
   type DesktopVersionInfo,
+  type DesktopVoicePreferenceEntry,
 } from '../shared/ipc-contract.js';
 
 /**
@@ -153,6 +160,45 @@ const desktopApi: DesktopApi = {
       format,
       maxDimension,
     }) as Promise<DesktopAvatarValidationResult>,
+  setPttShortcut: (binding: PttBinding) =>
+    ipcRenderer.invoke(
+      IPC_CHANNELS.setPttShortcut,
+      binding,
+    ) as Promise<DesktopSetPttShortcutResult>,
+  clearPttShortcut: () => ipcRenderer.invoke(IPC_CHANNELS.clearPttShortcut) as Promise<void>,
+  onPttState: (listener: (event: DesktopPttEvent) => void) => {
+    const wrapped = (_event: IpcRendererEvent, event: unknown): void => {
+      // Defensive runtime shape-check even though Main is the trusted sender — mirrors
+      // `onProcessAudioEnded`'s own discipline exactly.
+      if (
+        event &&
+        typeof event === 'object' &&
+        ((event as { type?: unknown }).type === 'down' ||
+          (event as { type?: unknown }).type === 'up')
+      ) {
+        listener(event as DesktopPttEvent);
+      }
+    };
+    ipcRenderer.on(IPC_CHANNELS.pttState, wrapped);
+    return () => {
+      ipcRenderer.removeListener(IPC_CHANNELS.pttState, wrapped);
+    };
+  },
+  getVoicePreference: (serverScopeKey: string, identityRef: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.getVoicePreference, serverScopeKey, identityRef) as Promise<
+      DesktopVoicePreferenceEntry | undefined
+    >,
+  setVoicePreference: (
+    serverScopeKey: string,
+    identityRef: string,
+    entry: DesktopVoicePreferenceEntry,
+  ) =>
+    ipcRenderer.invoke(
+      IPC_CHANNELS.setVoicePreference,
+      serverScopeKey,
+      identityRef,
+      entry,
+    ) as Promise<void>,
 };
 
 contextBridge.exposeInMainWorld('desktopApp', desktopApi);

@@ -53,4 +53,21 @@ export const MIGRATIONS: readonly Migration[] = [
        )`,
     ],
   },
+  {
+    // T13.4 — adds `identity_ref`: a durable, per-identity opaque correlation token (a fresh
+    // `randomUUID()`, never derived from `identity_id`) that lets a *client's own local* voice
+    // volume/"Mute for Me" preferences survive that remote user's reconnect, without this server ever
+    // exposing raw `identity_id` to another client (see `@disco-voador/protocol`'s `identityRefSchema`
+    // doc comment for the full cross-server-correlation reasoning this must not reopen). This does not
+    // relax this file's own "data minimization is mandatory" rule above: unlike a `lastSeen` timestamp
+    // or any of the other columns that rule explicitly rejects, an `identity_ref` carries no
+    // behavioral, temporal, or content data whatsoever — it is a single opaque, per-server-unique
+    // pointer, generated once and otherwise inert, existing solely so a *local* preference lookup has
+    // something stable to key on. Nullable and lazily populated (`getOrCreateIdentityRef` backfills it
+    // on first real use) rather than backfilled for every existing row up front — mirrors this table's
+    // own existing columns' pattern of only ever gaining a real value once something actually needs
+    // one (e.g. `avatar_asset_id` stays `NULL` until a user ever uploads an avatar).
+    version: 2,
+    statements: [`ALTER TABLE identity_profiles ADD COLUMN identity_ref TEXT`],
+  },
 ];

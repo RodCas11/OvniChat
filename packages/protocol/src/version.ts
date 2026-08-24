@@ -51,10 +51,35 @@
  * and every new profile/presence concept (`client:profile-*`/`server:profile-*`/
  * `server:presence-*`) is an entirely new message type added to the existing discriminated unions,
  * never a change to an existing message's required shape.
+ *
+ * Bumped to 5 for the T13.4 local-voice-preference-persistence targeted fix: `voiceParticipantSchema`
+ * (`voice:joined.participants[]`, `voice:participant-joined.participant`) gained a required
+ * `identityRef` field — a durable, per-server correlation token letting a client's local volume/
+ * "Mute for Me" preference survive a peer's reconnect (see
+ * `docs/adr/0022-durable-per-server-identity-ref-for-local-voice-preferences.md`). Deliberately
+ * *not* made optional the way T9's `groups` was: `identityRef` only has value if a consumer can rely
+ * on it always being present, and the server has no scenario where it cannot compute one (unlike
+ * `groups`, genuinely absent for a server with no authorization store at all). An old client's
+ * `.strict()` parser would reject the new, larger participant shape outright, and a new client
+ * talking to an old server would find `identityRef` missing from a shape it now requires — a real
+ * breaking change either direction, exactly like T7/T8/T13.2's own required-field bumps, not an
+ * additive one. v4 support was dropped rather than kept as a parallel codepath, matching that same
+ * precedent.
+ *
+ * Still v5 (no further bump) for the T13.4 UI-consistency follow-up: `voiceParticipantSchema` also
+ * gained a required `memberRef` field, letting a client correlate a voice participant with the same
+ * `memberRef`-keyed `server:presence-updated`/`memberPresenceSchema` entry Member Panel already
+ * reads `avatarRef` from — the "smallest safe bridge" for live voice-participant avatars, reusing an
+ * identifier already broadcast server-wide (ADR-worthy for `identityRef` above; not for `memberRef`,
+ * since `memberRef` introduces no new exposure, only a new *use* of an existing one). Shape-wise this
+ * is exactly as breaking as `identityRef`'s own addition (another required field on the same
+ * `.strict()` schema), but since v5 had not yet shipped/been committed when this field was added,
+ * both fields ship together under the one v5 bump rather than forcing a v6 for a version that never
+ * existed in the wild.
  */
-export const CURRENT_PROTOCOL_VERSION = 4;
+export const CURRENT_PROTOCOL_VERSION = 5;
 
-export const SUPPORTED_PROTOCOL_VERSIONS: readonly number[] = [4];
+export const SUPPORTED_PROTOCOL_VERSIONS: readonly number[] = [5];
 
 export function isSupportedProtocolVersion(version: number): boolean {
   return SUPPORTED_PROTOCOL_VERSIONS.includes(version);

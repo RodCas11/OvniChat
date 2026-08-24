@@ -36,3 +36,19 @@ export {
   ProcessLoopbackSupervisor,
   type ProcessLoopbackSupervisorOptions,
 } from './process-loopback-supervisor.js';
+export {
+  NO_PTT_MODIFIERS,
+  PttBindingMatcher,
+  type PttBinding,
+  type PttEdgeEvent,
+  type PttModifierState,
+  type PttRawInputEvent,
+  type RawKeyboardEvent,
+  type RawMouseButtonEvent,
+} from './ptt-binding.js';
+export {
+  startPttHotkeyListener,
+  type PttHotkeyListener,
+  type PttHotkeyStartFailureReason,
+  type PttHotkeyStartResult,
+} from './ptt-hotkey-listener.js';

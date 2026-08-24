@@ -82,6 +82,36 @@ export const avatarBase64Schema = z
 export const MEMBER_REF_MAX_LENGTH = 64;
 export const memberRefSchema = z.string().min(1).max(MEMBER_REF_MAX_LENGTH);
 
+/**
+ * T13.4 — a durable, per-`(Dedicated Server, identity)` opaque correlation token, generated once
+ * (`randomUUID()`, server-side) the first time that identity is ever referenced by anything needing
+ * one, and persisted forever after — see `services/dedicated-server/src/profile/store.ts`'s
+ * `getOrCreateIdentityRef`. Exists specifically so a client's own *local* per-participant voice
+ * preferences (volume/"Mute for Me", T13.4) can survive that remote user's reconnect/relaunch without
+ * ever exposing raw `identityId` to another client, which this file's own top doc comment already
+ * forbids for a hard reason: `identityId` is the *same* value across every independently-operated
+ * Dedicated Server the same local keypair connects to (ADR 0011), so broadcasting it here would
+ * silently reopen the cross-server correlation channel that document closed.
+ *
+ * **Distinct from both `memberRef` and `identityId` — do not conflate the three:**
+ * - `identityId`: portable, the same everywhere this keypair connects. Never sent to another client,
+ *   anywhere, full stop.
+ * - `memberRef` (above): online-session-scoped — minted fresh when an identity's live-connection
+ *   count goes 0->1, retired the moment it returns to 0. Reused across multiple simultaneous
+ *   connections for the same identity, but a *new* random value every time that identity comes back
+ *   online after going fully offline.
+ * - `identityRef`: durable and per-server, generated once and never regenerated (short of the
+ *   identity itself being wiped, e.g. `AUTHORIZATION_BAN_PURGED`-style data removal — not a thing
+ *   this codebase does today). Two different Dedicated Servers mint two *unrelated* random values for
+ *   the very same real identity — there is no shared secret, hash, or deterministic function tying
+ *   them together — so even a client present on both can never use `identityRef` to prove the two
+ *   accounts are the same person, the same anti-correlation property `memberRef` already has, just
+ *   extended to survive a reconnect.
+ */
+export const IDENTITY_REF_MAX_LENGTH = 64;
+export const identityRefSchema = z.string().min(1).max(IDENTITY_REF_MAX_LENGTH);
+export type IdentityRef = z.infer<typeof identityRefSchema>;
+
 /** Identifies a specific avatar image without embedding its bytes — `revision` increments on every
  * replace (garbage-collecting the old `avatar_assets` row in the same transaction, no history), and
  * `hash` is the image's own sha256 hex digest, letting a client cache-key/skip a redundant

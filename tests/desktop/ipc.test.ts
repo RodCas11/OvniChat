@@ -62,10 +62,26 @@ const addBookmarkMock = vi.fn(async () => ({
 }));
 const updateBookmarkMock = vi.fn(async () => true);
 const removeBookmarkMock = vi.fn(async () => true);
+const getVoicePreferenceMock = vi.fn(
+  async (): Promise<{ volumePercent: number; locallyMuted: boolean } | undefined> => undefined,
+);
+const setVoicePreferenceMock = vi.fn(async (): Promise<void> => undefined);
+
+type SetPttShortcutMockResult =
+  { readonly ok: true } | { readonly ok: false; readonly reason: string; readonly message: string };
+const setPttShortcutMock = vi.fn(async (): Promise<SetPttShortcutMockResult> => ({ ok: true }));
+const clearPttShortcutMock = vi.fn();
+const setPttPushTargetMock = vi.fn();
 
 vi.mock('electron', () => ({
   app: { getVersion: () => '0.0.0' },
   ipcMain: { handle: ipcHandleSpy },
+}));
+
+vi.mock('../../apps/desktop/src/main/ptt-hotkey.js', () => ({
+  setPttShortcut: setPttShortcutMock,
+  clearPttShortcut: clearPttShortcutMock,
+  setPttPushTarget: setPttPushTargetMock,
 }));
 
 vi.mock('../../apps/desktop/src/main/screen-share.js', () => ({
@@ -98,6 +114,8 @@ vi.mock('../../apps/desktop/src/main/settings/settings-service.js', () => ({
   addBookmark: addBookmarkMock,
   updateBookmark: updateBookmarkMock,
   removeBookmark: removeBookmarkMock,
+  getVoicePreference: getVoicePreferenceMock,
+  setVoicePreference: setVoicePreferenceMock,
 }));
 
 const { IPC_CHANNELS } = await import('../../apps/desktop/src/shared/ipc-contract.js');
@@ -178,15 +196,16 @@ describe('registerIpcHandlers', () => {
     expect(() =>
       registerIpcHandlers(fakeMainWebContents(2), allowedOrigins, realtimeConfig),
     ).not.toThrow();
-    // Twenty-four channels (getVersionInfo, getRealtimeConfig, getE2EVoiceConfig,
-    // getE2ESettingsPersistenceConfig, getE2EScreenshotConfig, listScreenShareSources,
-    // selectScreenShareSource, getProcessAudioCapability, listProcessAudioCandidates,
-    // cancelProcessAudioEnumeration, startProcessAudioCapture, stopProcessAudioCapture, getIdentity,
-    // signIdentityChallenge, regenerateIdentity, getNickname, setNickname, getClientSettings,
-    // updateClientSettings, addBookmark, updateBookmark, removeBookmark, selectAvatarImageFile,
-    // validateAvatarImageBytes) are each registered exactly once, ever — not once per
-    // `registerIpcHandlers` call.
-    expect(ipcHandleSpy).toHaveBeenCalledTimes(24);
+    // Twenty-eight channels (the original twenty-four — getVersionInfo, getRealtimeConfig,
+    // getE2EVoiceConfig, getE2ESettingsPersistenceConfig, getE2EScreenshotConfig,
+    // listScreenShareSources, selectScreenShareSource, getProcessAudioCapability,
+    // listProcessAudioCandidates, cancelProcessAudioEnumeration, startProcessAudioCapture,
+    // stopProcessAudioCapture, getIdentity, signIdentityChallenge, regenerateIdentity, getNickname,
+    // setNickname, getClientSettings, updateClientSettings, addBookmark, updateBookmark,
+    // removeBookmark, selectAvatarImageFile, validateAvatarImageBytes — plus T13.4's setPttShortcut,
+    // clearPttShortcut, getVoicePreference, setVoicePreference) are each registered exactly once,
+    // ever — not once per `registerIpcHandlers` call.
+    expect(ipcHandleSpy).toHaveBeenCalledTimes(28);
 
     const handler = handlers.get(IPC_CHANNELS.getVersionInfo);
     expect(() => handler?.(fakeEvent(1, 'app://renderer/index.html'))).toThrow(/untrusted sender/);
@@ -219,6 +238,10 @@ describe('registerIpcHandlers', () => {
     const e2eVoiceConfig = {
       channelId: 'general',
       displayName: 'e2e-tester',
+      autoPushToTalk: false,
+      pttPreHoldProbeDelayMs: undefined,
+      pttDuringHoldProbeDelayMs: undefined,
+      pttPostReleaseProbeDelayMs: undefined,
       autoCamera: false,
       autoCameraOffAfterMs: undefined,
       autoScreenShare: false,
@@ -767,5 +790,175 @@ describe('registerIpcHandlers', () => {
       /untrusted sender/,
     );
     expect(removeBookmarkMock).not.toHaveBeenCalled();
+  });
+
+  // --- T13.4 — global Push-to-Talk hotkey ---------------------------------------------------------
+
+  const VALID_BINDING = {
+    kind: 'keyboard' as const,
+    keycode: 47,
+    modifiers: { ctrl: false, alt: false, shift: false, meta: false },
+  };
+
+  it('setPttShortcut validates the binding, delegates to ptt-hotkey.ts, and persists on success', async () => {
+    registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig);
+    setPttShortcutMock.mockClear();
+    updateClientSettingsMock.mockClear();
+    setPttShortcutMock.mockResolvedValueOnce({ ok: true });
+
+    const handler = handlers.get(IPC_CHANNELS.setPttShortcut);
+    const result = await handler?.(fakeEvent(1, 'app://renderer/index.html'), VALID_BINDING);
+
+    expect(result).toEqual({ ok: true });
+    expect(setPttShortcutMock).toHaveBeenCalledWith(VALID_BINDING);
+    expect(updateClientSettingsMock).toHaveBeenCalledWith({ voice: { pttBinding: VALID_BINDING } });
+  });
+
+  it('setPttShortcut never persists a rejected (conflict) binding', async () => {
+    registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig);
+    updateClientSettingsMock.mockClear();
+    setPttShortcutMock.mockResolvedValueOnce({
+      ok: false,
+      reason: 'conflict',
+      message: 'already in use',
+    });
+
+    const handler = handlers.get(IPC_CHANNELS.setPttShortcut);
+    const result = await handler?.(fakeEvent(1, 'app://renderer/index.html'), VALID_BINDING);
+
+    expect(result).toEqual({ ok: false, reason: 'conflict', message: 'already in use' });
+    expect(updateClientSettingsMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a malformed setPttShortcut binding without calling into ptt-hotkey.ts', async () => {
+    registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig);
+    setPttShortcutMock.mockClear();
+
+    const handler = handlers.get(IPC_CHANNELS.setPttShortcut);
+    await expect(
+      handler?.(fakeEvent(1, 'app://renderer/index.html'), { kind: 'keyboard' }),
+    ).rejects.toThrow(/Invalid PTT binding/);
+    expect(setPttShortcutMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects setPttShortcut from an untrusted sender without calling into ptt-hotkey.ts', async () => {
+    registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig);
+    setPttShortcutMock.mockClear();
+
+    const handler = handlers.get(IPC_CHANNELS.setPttShortcut);
+    await expect(handler?.(fakeEvent(99, 'https://evil.example/'), VALID_BINDING)).rejects.toThrow(
+      /untrusted sender/,
+    );
+    expect(setPttShortcutMock).not.toHaveBeenCalled();
+  });
+
+  it('clearPttShortcut stops the listener and clears the persisted binding', async () => {
+    registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig);
+    clearPttShortcutMock.mockClear();
+    updateClientSettingsMock.mockClear();
+
+    const handler = handlers.get(IPC_CHANNELS.clearPttShortcut);
+    await handler?.(fakeEvent(1, 'app://renderer/index.html'));
+
+    expect(clearPttShortcutMock).toHaveBeenCalledTimes(1);
+    expect(updateClientSettingsMock).toHaveBeenCalledWith({ voice: { pttBinding: null } });
+  });
+
+  it('rejects clearPttShortcut from an untrusted sender without calling into ptt-hotkey.ts', async () => {
+    registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig);
+    clearPttShortcutMock.mockClear();
+
+    const handler = handlers.get(IPC_CHANNELS.clearPttShortcut);
+    await expect(handler?.(fakeEvent(99, 'https://evil.example/'))).rejects.toThrow(
+      /untrusted sender/,
+    );
+    expect(clearPttShortcutMock).not.toHaveBeenCalled();
+  });
+
+  // --- T13.4 — per-(serverScopeKey, identityRef) local voice preferences --------------------------
+
+  it('getVoicePreference forwards a valid (serverScopeKey, identityRef) pair', async () => {
+    registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig);
+    getVoicePreferenceMock.mockClear();
+    getVoicePreferenceMock.mockResolvedValueOnce({ volumePercent: 150, locallyMuted: false });
+
+    const handler = handlers.get(IPC_CHANNELS.getVoicePreference);
+    const result = await handler?.(
+      fakeEvent(1, 'app://renderer/index.html'),
+      'server:8090',
+      'ref-abc',
+    );
+
+    expect(result).toEqual({ volumePercent: 150, locallyMuted: false });
+    expect(getVoicePreferenceMock).toHaveBeenCalledWith('server:8090', 'ref-abc');
+  });
+
+  it('getVoicePreference returns undefined (never calling into settings-service.ts) for invalid arguments', async () => {
+    registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig);
+    getVoicePreferenceMock.mockClear();
+
+    const handler = handlers.get(IPC_CHANNELS.getVoicePreference);
+    const result = await handler?.(fakeEvent(1, 'app://renderer/index.html'), '', 'ref-abc');
+
+    expect(result).toBeUndefined();
+    expect(getVoicePreferenceMock).not.toHaveBeenCalled();
+  });
+
+  it('setVoicePreference forwards a valid entry', async () => {
+    registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig);
+    setVoicePreferenceMock.mockClear();
+
+    const handler = handlers.get(IPC_CHANNELS.setVoicePreference);
+    await handler?.(fakeEvent(1, 'app://renderer/index.html'), 'server:8090', 'ref-abc', {
+      volumePercent: 200,
+      locallyMuted: true,
+    });
+
+    expect(setVoicePreferenceMock).toHaveBeenCalledWith('server:8090', 'ref-abc', {
+      volumePercent: 200,
+      locallyMuted: true,
+    });
+  });
+
+  it('setVoicePreference silently drops an out-of-range volumePercent without calling into settings-service.ts', async () => {
+    registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig);
+    setVoicePreferenceMock.mockClear();
+
+    const handler = handlers.get(IPC_CHANNELS.setVoicePreference);
+    await handler?.(fakeEvent(1, 'app://renderer/index.html'), 'server:8090', 'ref-abc', {
+      volumePercent: 999,
+      locallyMuted: true,
+    });
+
+    expect(setVoicePreferenceMock).not.toHaveBeenCalled();
+  });
+
+  it('setVoicePreference silently drops NaN/Infinity/-Infinity/negative volumePercent — real JS values IPC can carry that JSON never could', async () => {
+    registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig);
+    setVoicePreferenceMock.mockClear();
+    const handler = handlers.get(IPC_CHANNELS.setVoicePreference);
+
+    for (const volumePercent of [NaN, Infinity, -Infinity, -1]) {
+      await handler?.(fakeEvent(1, 'app://renderer/index.html'), 'server:8090', 'ref-abc', {
+        volumePercent,
+        locallyMuted: false,
+      });
+    }
+
+    expect(setVoicePreferenceMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects setVoicePreference from an untrusted sender without calling into settings-service.ts', async () => {
+    registerIpcHandlers(fakeMainWebContents(1), allowedOrigins, realtimeConfig);
+    setVoicePreferenceMock.mockClear();
+
+    const handler = handlers.get(IPC_CHANNELS.setVoicePreference);
+    await expect(
+      handler?.(fakeEvent(99, 'https://evil.example/'), 'server:8090', 'ref-abc', {
+        volumePercent: 100,
+        locallyMuted: false,
+      }),
+    ).rejects.toThrow(/untrusted sender/);
+    expect(setVoicePreferenceMock).not.toHaveBeenCalled();
   });
 });

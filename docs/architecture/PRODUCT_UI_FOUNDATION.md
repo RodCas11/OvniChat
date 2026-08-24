@@ -153,11 +153,11 @@ Every rendered state comes from real `ipc-contract.ts` data or real hook state. 
 fixture reachable in a packaged build anywhere in the Renderer (verified by a case-insensitive grep
 for `mock|demo|fixture|placeholder` across `apps/desktop/src/renderer` during security review, which
 found none). `ServerHome`/`ServerRail` render only real bookmarks from `getClientSettings()`. Channel
-categories and per-remote-participant mute/speaking flags are intentionally absent rather than
-invented — `ParticipantRow`'s empty status/role slots remain shaped for future T13.4 data without
-inventing placeholder values now. `MemberPanel`'s `groups` prop and `MemberRow`'s badge slot, both
-previously dormant, are now real as of T13.3 (see below) — driven by actual `server:presence-*`
-data and the server-derived `roleBucket` enum, never fabricated client-side classification.
+categories are intentionally absent rather than invented. `ParticipantRow`'s speaking indicator (now
+real, see T13.4 below) is driven by actual audio-energy detection, never inferred merely from
+"microphone unmuted." `MemberPanel`'s `groups` prop and `MemberRow`'s badge slot, both previously
+dormant, are now real as of T13.3 (see below) — driven by actual `server:presence-*` data and the
+server-derived `roleBucket` enum, never fabricated client-side classification.
 
 ## Admin/moderation visibility
 
@@ -314,12 +314,78 @@ parallel style. See
 [`tasks/T13_3_PROFILES_AVATARS_PRESENCE.md`](../tasks/T13_3_PROFILES_AVATARS_PRESENCE.md) for the
 full record.
 
+## T13.4 — gamer voice experience
+
+Push to Talk (a genuine global hotkey, hold-to-talk, usable while unfocused — see
+[`GAMER_VOICE_EXPERIENCE.md`](GAMER_VOICE_EXPERIENCE.md) and
+[`adr/0021-global-ptt-in-process-keyboard-hook.md`](../adr/0021-global-ptt-in-process-keyboard-hook.md)),
+Voice Activity mode, speaking indicators, per-participant local volume/"Mute for Me," and join/leave
+sounds. `ParticipantRow`'s previously-empty status slot (reserved since T13.1) now renders a real
+green speaking-ring indicator, driven by actual audio-energy detection with hysteresis — never
+inferred merely from "microphone unmuted," and never shown for a muted/PTT-silent participant. The
+redesigned Voice & Video settings section (Input Mode, a live non-audible mic meter + sensitivity
+slider, a "Press a key…" PTT capture control, a join/leave-sounds toggle) reuses this app's existing
+settings information architecture and gamer-facing product language throughout — never WebRTC/audio-
+engineering jargon in user-facing copy. See
+[`tasks/T13_4_GAMER_VOICE_EXPERIENCE.md`](../tasks/T13_4_GAMER_VOICE_EXPERIENCE.md) for the full
+record.
+
+**UI-consistency follow-up (T13.4, closed before T13.5):** two gaps disclosed above are now closed.
+Per-participant volume/mute persistence survives a peer's reconnect via the durable `identityRef`
+correlation ([ADR 0022](../adr/0022-durable-per-server-identity-ref-for-local-voice-preferences.md)).
+Separately, `ParticipantRow` now renders each participant's real current server-local avatar (the same
+`UserAvatar` component and `avatarCache` Member Panel already uses, correlated via the pre-existing,
+already-broadcast `memberRef` — no new avatar system), and `MemberRow` now shows the same speaking ring
+`ParticipantRow` has, wherever the local client is actually authorized/visible to that member's voice
+channel (structurally never leaked for a hidden channel — see
+[`GAMER_VOICE_EXPERIENCE.md`](GAMER_VOICE_EXPERIENCE.md)'s "UI consistency follow-up" section for the
+full design).
+
+## Cross-cutting fix: shared Modal focus-management regression (found during T13.4 closeout)
+
+`Modal.tsx`'s "establish initial focus" effect has existed since T13.1, and until this fix carried a
+real, severe, repository-wide UX defect: it depended on `[open, onClose]`. Every real consumer of
+this shared dialog primitive passes an inline `onClose` (a fresh function identity every render) —
+either directly (e.g. `ChannelModal`'s `onClose={onClose}`, whose owner `VoiceChannelView.tsx`
+re-renders frequently for reasons unrelated to any open dialog, always with a fresh inline closure) or
+via a locally-defined handler recreated on every render (e.g. `AddServerDialog`'s own
+`resetAndClose`). A controlled form input's own `onChange` re-renders its owner on every keystroke, so
+typing anywhere in a modal form — Add Server, Create/Edit Channel, Create Category, and every other
+`Modal`-based form — re-ran this effect on every keystroke even though `open` itself never changed.
+The re-run's cleanup and re-establishment always resolved initial focus to the first focusable element
+in DOM order, which is the header Close button (it precedes the form body), yanking focus out of
+whatever field the user was actively typing into after every single character. This made normal typing
+in any modal form dialog effectively impossible.
+
+Fixed at the shared primitive, not per-form, in two parts:
+
+- The effect that installs the Escape/Tab-trap keydown listener and establishes initial focus now
+  depends on `[open]` alone. `onClose` is read through a ref (`onCloseRef`, mirroring the same
+  ref-for-latest-callback pattern `ChannelModal.tsx`'s own load effect already used for exactly this
+  reason) so Escape always calls the current handler without needing it in the dependency array. The
+  effect now only ever runs on a genuine closed↔open transition, never on an ordinary re-render.
+- Fixing that alone would still let the effect override a consumer's own `autoFocus` field (e.g.
+  `AddServerDialog`'s name input) with the first-focusable fallback, since React commits a child's
+  native `autoFocus` during the mutation phase — strictly before any of `Modal`'s own effects run. The
+  effect now checks whether `document.activeElement` is already inside the dialog before falling back
+  to the first focusable element, and the "what was focused before this dialog opened" capture (needed
+  to restore focus correctly on close) moved to a render-time, gated-by-a-ref read — the only point at
+  which `document.activeElement` still reflects the real external trigger, before React's own
+  `autoFocus` commit can move it.
+
+Regression coverage lives at the shared level (`tests/desktop/components/modal.test.tsx` — typing
+across re-renders, an ordinary re-render mid-session, Tab containment and Escape after re-renders,
+`autoFocus` preference, restore-focus-on-close after typing) and at the real-consumer level
+(`add-server-dialog.test.tsx`, `channel-modal.test.tsx` — typing a complete name end to end, including
+a parent that supplies a brand-new `onClose` closure on every render, mirroring `VoiceChannelView`'s
+real shape).
+
 ## What T13.1 deliberately does not do
 
 Channel create/edit/delete/hierarchy and richer server admin UX (T13.2); real server/user avatar
 upload or storage, member directory/presence, online/away/DND, custom status (T13.3 — now
 implemented, see above); push-to-talk, voice-activity UX, speaking indicator, per-user volume, local
-participant mute, join/leave sounds (T13.4); Discord-like stream viewing/focus, camera layout,
-detached stream window/PiP, final call UX integration (T13.5). `Avatar`'s fallback remains
-deterministic initials for any target with no avatar set — upload/storage/backend now exist (T13.3),
-scoped entirely server-local per Dedicated Server.
+participant mute, join/leave sounds (T13.4 — now implemented, see above); Discord-like stream
+viewing/focus, camera layout, detached stream window/PiP, final call UX integration (T13.5).
+`Avatar`'s fallback remains deterministic initials for any target with no avatar set —
+upload/storage/backend now exist (T13.3), scoped entirely server-local per Dedicated Server.

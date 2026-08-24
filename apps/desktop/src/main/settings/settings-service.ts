@@ -2,10 +2,13 @@ import { randomUUID } from 'node:crypto';
 
 import {
   DEFAULT_CLIENT_SETTINGS,
+  MAX_VOICE_PREFERENCE_ENTRIES,
   readClientSettingsFile,
   writeClientSettingsFile,
   type StoredBookmark,
   type StoredClientSettings,
+  type StoredPttBinding,
+  type StoredVoicePreferenceEntry,
 } from './settings-file.js';
 
 /**
@@ -32,7 +35,16 @@ export interface ClientSettingsPatch {
   screenShare?:
     | { qualityPreset?: StoredClientSettings['screenShare']['qualityPreset'] | undefined }
     | undefined;
-  voice?: { startMuted?: boolean | undefined; startDeafened?: boolean | undefined } | undefined;
+  voice?:
+    | {
+        startMuted?: boolean | undefined;
+        startDeafened?: boolean | undefined;
+        inputMode?: StoredClientSettings['voice']['inputMode'] | undefined;
+        pttBinding?: StoredPttBinding | null | undefined;
+        voiceActivitySensitivity?: number | undefined;
+        joinLeaveSoundsEnabled?: boolean | undefined;
+      }
+    | undefined;
   lastServerAddress?: string | null | undefined;
   connectOnStartup?: boolean | undefined;
 }
@@ -112,11 +124,98 @@ export async function updateClientSettings(
     voice: {
       startMuted: resolve(patch.voice?.startMuted, current.voice.startMuted),
       startDeafened: resolve(patch.voice?.startDeafened, current.voice.startDeafened),
+      inputMode: resolve(patch.voice?.inputMode, current.voice.inputMode),
+      pttBinding: resolve(patch.voice?.pttBinding, current.voice.pttBinding),
+      voiceActivitySensitivity: resolve(
+        patch.voice?.voiceActivitySensitivity,
+        current.voice.voiceActivitySensitivity,
+      ),
+      joinLeaveSoundsEnabled: resolve(
+        patch.voice?.joinLeaveSoundsEnabled,
+        current.voice.joinLeaveSoundsEnabled,
+      ),
     },
     lastServerAddress: resolve(patch.lastServerAddress, current.lastServerAddress),
     connectOnStartup: resolve(patch.connectOnStartup, current.connectOnStartup),
   };
   return persist(next);
+}
+
+/**
+ * T13.4 — reads one `(serverScopeKey, identityRef)` voice preference entry, or `undefined` if none
+ * has ever been saved for that pair (the caller treats this identically to `{ volumePercent: 100,
+ * locallyMuted: false }`, the product default — never persisted as such just to be "read back",
+ * mirroring `getClientSettings`'s own "absent means default" discipline). `identityRef` is the
+ * durable, per-server correlation token from `@disco-voador/protocol`'s `identityRefSchema` — never
+ * the raw, portable `identityId` (see `settings-file.ts`'s own doc comment on this schema).
+ */
+export async function getVoicePreference(
+  serverScopeKey: string,
+  identityRef: string,
+): Promise<StoredVoicePreferenceEntry | undefined> {
+  const current = await getOrLoadSettings();
+  return current.voicePreferences[serverScopeKey]?.[identityRef];
+}
+
+/**
+ * Writes (or overwrites) exactly one `(serverScopeKey, identityRef)` entry — never the whole map at
+ * once, matching this feature's own "one entry at a time" IPC contract (see `main/ipc.ts`). Enforces
+ * {@link MAX_VOICE_PREFERENCE_ENTRIES} itself (in addition to `settings-file.ts`'s own schema-level
+ * `.refine()`, which only ever runs against bytes actually read back off disk) so a caller cannot
+ * grow the in-memory map past the bound this service ever intentionally persists; once at the
+ * ceiling, the *oldest inserted* entry (by `Map`/object key insertion order) is evicted first —
+ * simple, and this data is a pure local UI convenience with no correctness requirement beyond a
+ * bounded size.
+ */
+export async function setVoicePreference(
+  serverScopeKey: string,
+  identityRef: string,
+  entry: StoredVoicePreferenceEntry,
+): Promise<void> {
+  const current = await getOrLoadSettings();
+  // Built as nested `Map`s (never a dynamically-keyed plain object) purely so eviction below can use
+  // `Map.delete` — a real method call, not the `delete obj[dynamicKey]` operator this codebase's own
+  // lint rules forbid — then converted back to the plain-object shape `StoredClientSettings` requires
+  // immediately before persisting.
+  const nextOuter = new Map<string, Map<string, StoredVoicePreferenceEntry>>();
+  for (const [scopeKey, inner] of Object.entries(current.voicePreferences)) {
+    nextOuter.set(scopeKey, new Map(Object.entries(inner)));
+  }
+  let innerMap = nextOuter.get(serverScopeKey);
+  if (!innerMap) {
+    innerMap = new Map();
+    nextOuter.set(serverScopeKey, innerMap);
+  }
+  const isNewEntry = !innerMap.has(identityRef);
+  innerMap.set(identityRef, entry);
+
+  if (isNewEntry) {
+    let total = 0;
+    for (const inner of nextOuter.values()) total += inner.size;
+    while (total > MAX_VOICE_PREFERENCE_ENTRIES) {
+      const oldestScopeKey = [...nextOuter.keys()][0];
+      if (oldestScopeKey === undefined) break;
+      const inner = nextOuter.get(oldestScopeKey);
+      if (!inner) {
+        nextOuter.delete(oldestScopeKey);
+        continue;
+      }
+      const oldestIdentityRef = [...inner.keys()][0];
+      if (oldestIdentityRef === undefined) {
+        nextOuter.delete(oldestScopeKey);
+        continue;
+      }
+      inner.delete(oldestIdentityRef);
+      total -= 1;
+      if (inner.size === 0) nextOuter.delete(oldestScopeKey);
+    }
+  }
+
+  const voicePreferences: Record<string, Record<string, StoredVoicePreferenceEntry>> = {};
+  for (const [scopeKey, inner] of nextOuter) {
+    voicePreferences[scopeKey] = Object.fromEntries(inner);
+  }
+  await persist({ ...current, voicePreferences });
 }
 
 export async function addBookmark(input: BookmarkInput): Promise<StoredBookmark> {

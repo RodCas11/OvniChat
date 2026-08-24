@@ -550,8 +550,9 @@ Renderer/Main trust boundary.
 There is no running Coturn stack (templates exist but no TURN credential minting), installer/maker
 artifact, or SFU. Production configuration/TLS termination and Docker packaging for the Dedicated
 Server are also not yet implemented — this work is now **T14** (see the T13 redefinition below).
-Voice-activity/push-to-talk UX and Discord-like stream/camera layout are not yet implemented — this
-is **T13.4-T13.5**. Real avatars/presence/status (T13.3) are now implemented — see below. Voice,
+Discord-like stream/camera layout is not yet implemented — this is **T13.5**. Real avatars/presence/
+status (T13.3) and the gamer voice experience (T13.4 — Push to Talk, Voice Activity, speaking
+indicators, per-user volume, local mute, join/leave sounds) are now implemented — see below. Voice,
 camera, screen-video, and screen-audio
 sharing (T3–T6, P2P-mesh, small-room, self-hosted scope), local cryptographic client identity (T7),
 the Dedicated Server product boundary (T8), server-local groups/permissions/tokens/bans (T9),
@@ -577,8 +578,22 @@ manual Online/Away/Do Not Disturb presence with a server-derived Offline, a rede
 Member Panel grouped into two safe closed role buckets, a member profile popover with zero DM/social
 affordance, and a moderation action that can clear but never rewrite another member's own
 presentation data — all server-local per Dedicated Server, in a fourth independent SQLite file, with
-a session-scoped `memberRef` structurally unrelated to the cross-server-stable `identityId`) are all
-implemented, mechanism-verified, and live-verified end to end. The product is now marketed as
+a session-scoped `memberRef` structurally unrelated to the cross-server-stable `identityId`), and the
+gamer voice experience (T13.4 — a global Push-to-Talk hotkey and a Voice-Activity mode both owned by a
+single `TransmitGate` state machine that can never resume transmission after a reconnect, real
+audio-energy-based speaking indicators for self and remote participants, per-participant local
+playback volume and "Mute for Me," subtle original join/leave notification sounds, and a redesigned
+Voice & Video settings section — all pure client-local UX with zero server/protocol change and no
+server-authoritative "who may speak" control, reaffirming T13.2's own conclusion on that point) are
+all implemented, mechanism-verified, and live-verified end to end. A small T13.4 UI-consistency
+follow-up then closed the two remaining visual gaps between voice and Member Panel: `ParticipantRow`
+now shows a participant's real current server-local avatar (the same `UserAvatar` component and
+`avatarCache` Member Panel already used, correlated via the pre-existing, already-broadcast
+`memberRef` — no second avatar system), and `MemberRow` now shows the same speaking-ring indicator
+`ParticipantRow` already had, wherever the local client is actually authorized/visible to that
+member's voice channel (structurally never leaked for a hidden channel). See
+[`architecture/GAMER_VOICE_EXPERIENCE.md`](architecture/GAMER_VOICE_EXPERIENCE.md)'s "UI consistency
+follow-up" section for the full design. The product is now marketed as
 **OvniChat** (see [`PRODUCT.md`](PRODUCT.md)); the internal `@disco-voador/*` package namespace is
 unchanged.
 
@@ -588,8 +603,8 @@ T13 was redefined, by explicit product direction, from a single "self-hosting pr
 task into a five-part Product Experience series (T13.1-T13.5) — see
 [`tasks/STATUS.md`](tasks/STATUS.md) for the full renumbering (production self-hosting is now T14,
 installer/releases T15, private-beta polish T16, SFU T17, hardening/release-candidate T18).
-**T13.4 — Gamer voice experience** is next, building on the profile/presence system T13.3
-established. Do not implement it until its own task document exists.
+**T13.5 — Streams / Camera / Product Integration** is next, building on the voice-experience system
+T13.4 established. Do not implement it until its own task document exists.
 
 Non-blocking follow-ups still open, cheap relative to the risk they guard against: (1) ~~a
 frequency-domain (e.g. dominant-frequency-near-440Hz) check for `e2e:screen-audio-smoke`'s
@@ -1132,6 +1147,82 @@ notes and
 [`architecture/SERVER_LOCAL_PROFILES_AND_PRESENCE.md`](architecture/SERVER_LOCAL_PROFILES_AND_PRESENCE.md)
 for the full record, including the storage/ephemeral-vs-persistent/image-validation/`memberRef`-
 privacy design (ADR 0020) and both post-implementation hardening fixes.
+
+T13.4’s clean-state evidence is the same gate with 1576 Vitest tests across 120 files (up from
+T13.3’s 1373; the same one pre-existing, already-allowlisted high-severity dependency advisory —
+`uiohook-napi` introduced zero new ones) — formatting, lint, whole-repo typecheck, `vitest run`,
+composite build, and `verify-repository.mjs` all pass via one canonical `corepack pnpm check` run,
+and `electron-forge package` succeeds with the real native PTT dependency correctly unpacked and
+copied into the packaged artifact. A `software-architect` review preceded implementation and resolved
+four consequential decisions (the global-hotkey mechanism, the microphone-transmit state machine, the
+remote-audio-graph architecture, and the settings/persistence schema — see
+[ADR 0021](adr/0021-global-ptt-in-process-keyboard-hook.md)). Real-runtime evidence: `e2e:ptt-smoke`
+(new) passes all three phases end to end (no transmission before PTT is held, real transmission
+throughout the hold, none after release) via the real `setPttShortcut`/`onPttState` IPC surface, never
+simulated key injection; `e2e:voice-smoke` and `e2e:reconnect-smoke` (pre-existing) were re-verified
+passing against the final, gate-integrated code, including a real fix to a one-shot-guard bug in
+`VoiceChannelView.tsx` that had prevented a PTT-simulation marker from re-firing after a post-reconnect
+rejoin. This task also introduced this repository’s permanent **impact-based regression-testing
+policy** (see [`DEVELOPMENT.md`](DEVELOPMENT.md)) — future tasks identify the subsystems their diff
+actually touches and run E2Es for those plus genuine shared dependencies, reserving a full historical
+E2E sweep for explicit milestone/release gates; intrusive media E2Es (`e2e:camera-smoke`,
+`e2e:screen-smoke`, `e2e:screen-audio-smoke`, `e2e:process-audio-smoke`) and real audible speaker
+output are never run as a routine default. Accordingly, T13.4’s own final regression ran only
+`e2e:ptt-smoke`, `e2e:voice-smoke`, and `e2e:reconnect-smoke` — the subsystems this task’s diff
+actually touches — and deliberately did not re-run the camera/screen/screen-audio/process-audio E2E
+scripts, since nothing in this task’s diff shares a dependency with those subsystems. `security-reviewer`
+found and this task fixed one real, release-blocking issue before completion — a test-only PTT-
+simulation hook (`armE2EPttSimulation`) reachable in a packaged build because it was missing the
+`!app.isPackaged` gate every sibling `armE2E*` hook already has — and independently confirmed, by
+direct code reading, every other named invariant (no generic keylogger path, no server Speak ACL, no
+voice telemetry, `identityId`-keyed not `memberRef`-keyed preferences, honest documentation of the
+weak-conflict-detection and UIPI-elevation limitations). `qa-engineer` found and this task fixed two
+real, severe product defects via live hands-on verification, not merely unit tests: a materially
+too-tight default Voice-Activity sensitivity threshold that had regressed two pre-existing E2E scripts,
+and a Vite/Rollup native-module bundling defect that made the real global PTT hotkey completely
+non-functional in any packaged build (with a raw diagnostic string leaking into user-facing Settings
+copy) — fixed via proper Rollup externalization plus an `asar.unpack`/packaging hook, verified against
+the real packaged `.exe` over CDP. A third, deeper issue surfaced during this session’s own follow-up
+investigation into why the threshold fix alone didn’t fully explain the remaining E2E failure: a
+genuine Chromium decode-pipeline defect — a remote WebRTC audio track was never actually decoded
+unless a real `HTMLMediaElement` was attached to the stream and playing, silently breaking remote
+microphone audio for every real voice session the moment `<audio>` elements were retired in favor of
+the new per-participant Web Audio graph — confirmed via direct `RTCPeerConnection.getStats()` evidence
+and a controlled differential test, and fixed with a hidden, muted "decode keep-alive" element that is
+never part of the audible path. All Definition of Done items are satisfied. See
+[`tasks/T13_4_GAMER_VOICE_EXPERIENCE.md`](tasks/T13_4_GAMER_VOICE_EXPERIENCE.md)’s handoff notes and
+[`architecture/GAMER_VOICE_EXPERIENCE.md`](architecture/GAMER_VOICE_EXPERIENCE.md) for the full
+record, including the `TransmitGate`/global-hotkey/remote-audio-graph design and both severe-defect
+investigations in full technical detail. While closing this task, a severe, repository-wide UX
+regression was reported and fixed: `Modal.tsx` (a shared dialog primitive dating to T13.1, not a T13.4
+defect) depended on `[open, onClose]` in its focus-management effect, and every real consumer passes
+an `onClose` with a fresh identity every render — so typing into any modal form (Add Server,
+Create/Edit Channel, etc.) reran that effect and yanked focus to the Close button on every keystroke.
+Fixed at the shared primitive (effect now depends on `open` alone, `onClose` read via a ref, and a
+consumer's own `autoFocus` field is now correctly respected) with regression coverage at both the
+shared-component and real-consumer levels — see
+[`architecture/PRODUCT_UI_FOUNDATION.md`](architecture/PRODUCT_UI_FOUNDATION.md)'s "Cross-cutting fix"
+section.
+
+A second targeted fix closed T13.4's own disclosed session-only persistence gap: per-participant
+local volume/"Mute for Me" now survive leave/rejoin, reconnect, and application relaunch, keyed by a
+new `identityRef` — a durable, per-Dedicated-Server-only opaque correlation token
+(`packages/protocol`'s `voiceParticipantSchema`, `CURRENT_PROTOCOL_VERSION` bumped 4→5, see
+[ADR 0022](adr/0022-durable-per-server-identity-ref-for-local-voice-preferences.md)) — never the raw,
+cross-server-portable `identityId`, and never T13.3's session-scoped `memberRef`. Real-runtime
+evidence: a new `e2e:voice-preference-smoke` script proves the actual bug report fixed through four
+real Electron relaunches of the same profile (set 55%, relaunch and confirm it restores automatically,
+toggle mute only, relaunch again and confirm both 55% and muted restore together); a real,
+infrastructure-only issue was found and fixed along the way (externally killing an Electron instance
+mid-session corrupted that profile's `safeStorage`-encrypted identity file, fixed by having each
+instance self-exit gracefully before a same-profile relaunch, mirroring
+`armE2EIdentityPersistenceExit`'s already-proven technique). A focused `security-reviewer` pass scoped
+to exactly this diff (no raw identity leak, genuine cross-server anti-correlation, no spoofing, no
+hidden-channel leak, no preference value ever reaching the server) found no release-blocking issues.
+See [`tasks/T13_4_GAMER_VOICE_EXPERIENCE.md`](tasks/T13_4_GAMER_VOICE_EXPERIENCE.md)'s "Targeted fix"
+handoff section and [`architecture/GAMER_VOICE_EXPERIENCE.md`](architecture/GAMER_VOICE_EXPERIENCE.md)'s
+"Persisted preferences: identityRef" section for the full record. **T13.4 is marked COMPLETE in
+[`tasks/STATUS.md`](tasks/STATUS.md)**.
 
 Then perform the task’s required manual/platform checks. Apply
 [`DEFINITION_OF_DONE.md`](DEFINITION_OF_DONE.md) and update status only when every applicable item

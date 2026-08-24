@@ -1,5 +1,16 @@
 import type { AvatarImageFormat } from '@disco-voador/protocol';
 import type { RtcIceServerConfig } from '@disco-voador/rtc-core';
+import type { PttBinding } from '@disco-voador/windows-media';
+
+// Re-exported so Preload/Renderer code — which `scripts/verify-architecture.mjs` categorically
+// forbids from importing anything specifier-matching `@disco-voador/windows-media` at all, even a
+// type-only import that is erased at compile time (the guardrail is a source-text scan, not
+// type-instantiation-aware, and this repository's own convention is to respect its stricter,
+// simpler rule rather than special-case around it) — can still reference this shape via this file's
+// own already-sanctioned `apps/desktop/src/shared/` location instead of importing the real package
+// directly. `main/ptt-hotkey.ts` and `main/ipc.ts` (both Main-process, not subject to this rule) are
+// the only places that import the real `@disco-voador/windows-media` package.
+export type { PttBinding };
 
 /**
  * Canonical, narrow IPC contract shared by Main and Preload. Renderer only ever sees the typed
@@ -55,6 +66,18 @@ export const IPC_CHANNELS = {
   // T13.3 — profile/avatar image handling. See `main/avatar-images.ts`.
   selectAvatarImageFile: 'app:select-avatar-image-file',
   validateAvatarImageBytes: 'app:validate-avatar-image-bytes',
+  // T13.4 — global Push-to-Talk hotkey. See `main/ptt-hotkey.ts` and ADR 0021.
+  setPttShortcut: 'app:set-ptt-shortcut',
+  clearPttShortcut: 'app:clear-ptt-shortcut',
+  /** Main -> Renderer only, via `webContents.send`/`ipcRenderer.on` — mirrors `processAudioEnded`'s
+   * push shape exactly (never Renderer-invoked). One event per real `'down'`/`'up'` edge the
+   * currently-configured binding produces, forwarded unchanged from
+   * `@disco-voador/windows-media`'s `startPttHotkeyListener` — see `DesktopPttEvent`. */
+  pttState: 'app:ptt-state',
+  // T13.4 — per-(serverScopeKey, identityRef) local voice preferences (volume/local-mute). See
+  // `main/settings/settings-service.ts`'s `getVoicePreference`/`setVoicePreference`.
+  getVoicePreference: 'app:get-voice-preference',
+  setVoicePreference: 'app:set-voice-preference',
 } as const;
 
 export interface DesktopVersionInfo {
@@ -88,6 +111,28 @@ export interface DesktopRealtimeConfig {
 export interface DesktopE2EVoiceConfig {
   readonly channelId: string;
   readonly displayName: string;
+  /** T13.4 — automated `e2e:ptt-smoke` only: switches this instance to Push to Talk mode once
+   * auto-joined, via the exact same production `actions.setVoiceInputMode` call the Voice & Video
+   * settings UI drives. See `VoiceChannelView.tsx`'s own auto-push-to-talk effect. */
+  readonly autoPushToTalk: boolean;
+  /**
+   * T13.4 — automated `e2e:ptt-smoke` only, viewer role: milliseconds after a remote participant's
+   * microphone stream first appears before re-probing it, expecting *silence* — proves the
+   * publisher's mic is genuinely not transmitting before the publisher's own scripted PTT-down
+   * simulation fires (see `main/index.ts`'s `armE2EPttSimulation`). Uses a distinct marker prefix
+   * (`E2E_PTT_PRE_HOLD`) so it is never confused with the default, always-on `E2E_AUDIO_LEVEL_*`
+   * proof (which is expected to report `_OK` once PTT-down actually fires, later in the same run).
+   * Both delay fields must be set together; `undefined` means this scenario is not active.
+   */
+  readonly pttPreHoldProbeDelayMs: number | undefined;
+  /** Mirrors `pttPreHoldProbeDelayMs`, timed to land after the publisher's scripted PTT-down
+   * simulation but before its scripted PTT-up — proves real, transmitted (non-silent) audio while
+   * PTT is genuinely held. Marker prefix `E2E_PTT_DURING_HOLD`. */
+  readonly pttDuringHoldProbeDelayMs: number | undefined;
+  /** Mirrors `pttPreHoldProbeDelayMs` exactly, timed to land after the publisher's scripted PTT-up
+   * simulation — proves the publisher's mic genuinely stops transmitting again on release, not just
+   * that it transmitted at some point. Marker prefix `E2E_PTT_POST_RELEASE`. */
+  readonly pttPostReleaseProbeDelayMs: number | undefined;
   readonly autoCamera: boolean;
   /** Milliseconds after camera turns on before it's automatically disabled again; `undefined` means
    * never auto-disable. Meaningless unless `autoCamera` is also `true`. */
@@ -374,6 +419,15 @@ export interface DesktopClientSettings {
   readonly voice: {
     readonly startMuted: boolean;
     readonly startDeafened: boolean;
+    /** T13.4 — see `@disco-voador/media-core`'s `TransmitGate`/`VoiceInputMode`. */
+    readonly inputMode: 'voice-activity' | 'push-to-talk';
+    /** `null` means no shortcut has ever been configured — Push to Talk mode is then unreachable
+     * until the user picks one (never a silently-inherited stale binding). */
+    readonly pttBinding: PttBinding | null;
+    /** 0 (least sensitive/most silence-tolerant) to 1 (most sensitive) — see the local
+     * voice-activity detector `renderer/voice/voice-activity-detector.ts`. */
+    readonly voiceActivitySensitivity: number;
+    readonly joinLeaveSoundsEnabled: boolean;
   };
   readonly bookmarks: readonly DesktopServerBookmark[];
   /** The last address a user actually connected to (manually or via a bookmark) — pre-fills
@@ -381,6 +435,19 @@ export interface DesktopClientSettings {
   readonly lastServerAddress: string | null;
   /** Explicit opt-in only (T11 Section 15) — never enabled by default. */
   readonly connectOnStartup: boolean;
+}
+
+/**
+ * T13.4 — one local, per-`(serverScopeKey, identityRef)` voice preference: a participant's
+ * locally-adjusted playback volume (0-200%) and "Mute for Me" state. `identityRef` is the durable,
+ * per-server correlation token (`@disco-voador/protocol`'s `identityRefSchema`) — never the raw,
+ * portable `identityId`. Never sent to any Dedicated Server, never visible to the muted person or
+ * anyone else — see `apps/desktop/src/renderer/voice/remote-audio-graph.ts` and
+ * `main/settings/settings-file.ts`'s `deriveServerScopeKey`.
+ */
+export interface DesktopVoicePreferenceEntry {
+  readonly volumePercent: number;
+  readonly locallyMuted: boolean;
 }
 
 /** A narrow, explicitly-named patch — never a whole-object replacement — mirroring this file's
@@ -398,10 +465,38 @@ export interface DesktopClientSettingsPatch {
     | { readonly qualityPreset?: DesktopClientSettings['screenShare']['qualityPreset'] | undefined }
     | undefined;
   readonly voice?:
-    | { readonly startMuted?: boolean | undefined; readonly startDeafened?: boolean | undefined }
+    | {
+        readonly startMuted?: boolean | undefined;
+        readonly startDeafened?: boolean | undefined;
+        readonly inputMode?: DesktopClientSettings['voice']['inputMode'] | undefined;
+        readonly pttBinding?: PttBinding | null | undefined;
+        readonly voiceActivitySensitivity?: number | undefined;
+        readonly joinLeaveSoundsEnabled?: boolean | undefined;
+      }
     | undefined;
   readonly lastServerAddress?: string | null | undefined;
   readonly connectOnStartup?: boolean | undefined;
+}
+
+/**
+ * T13.4 — the local, best-effort `globalShortcut.register()`-then-immediately-`unregister()` probe
+ * described in ADR 0021 found the same accelerator already registered by another Windows
+ * application (a narrow, real, but incomplete "no conflict *detected*" signal — never an unqualified
+ * "not in use", see that ADR's "Conflict detection is honestly weak" section). The real
+ * `uiohook-napi` listener is never started when this is the outcome.
+ */
+export type SetPttShortcutFailureReason =
+  'conflict' | 'native-module-load-failed' | 'hook-start-failed';
+
+export type DesktopSetPttShortcutResult =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly reason: SetPttShortcutFailureReason; readonly message: string };
+
+/** Mirrors `@disco-voador/windows-media`'s `PttEdgeEvent` exactly — pushed by Main for every real
+ * `'down'`/`'up'` edge of the currently-configured binding, whether or not this window currently has
+ * focus (the whole point of a global hook — see ADR 0021). */
+export interface DesktopPttEvent {
+  readonly type: 'down' | 'up';
 }
 
 /**
@@ -592,4 +687,34 @@ export interface DesktopApi {
     format: AvatarImageFormat,
     maxDimension: AvatarMaxDimension,
   ) => Promise<DesktopAvatarValidationResult>;
+  /**
+   * T13.4 — validates `binding`'s shape, best-effort-probes for a conflicting `RegisterHotKey`
+   * accelerator (see {@link SetPttShortcutFailureReason}), and if clear, starts (or restarts —
+   * stopping any previous listener only after the new one is confirmed running, per ADR 0021's
+   * "never leave two active" rule) the real global keyboard/mouse hook and persists `binding` to
+   * settings on success.
+   */
+  setPttShortcut: (binding: PttBinding) => Promise<DesktopSetPttShortcutResult>;
+  /** Stops the currently-running PTT listener (if any) and clears the persisted binding. Idempotent. */
+  clearPttShortcut: () => Promise<void>;
+  /**
+   * T13.4 — subscribes to `pttState` push notifications (see {@link DesktopPttEvent}); returns an
+   * unsubscribe function. Fires for every real edge regardless of which window (if any) has focus —
+   * the Renderer decides whether/how to act on it (see `@disco-voador/media-core`'s `TransmitGate`).
+   */
+  onPttState: (listener: (event: DesktopPttEvent) => void) => () => void;
+  /** T13.4 — reads one `(serverScopeKey, identityRef)` local voice preference; `undefined` means the
+   * product default (100% volume, not locally muted) — never persisted merely to be read back. */
+  getVoicePreference: (
+    serverScopeKey: string,
+    identityRef: string,
+  ) => Promise<DesktopVoicePreferenceEntry | undefined>;
+  /** Writes exactly one `(serverScopeKey, identityRef)` entry — never the whole map at once. Callers
+   * should debounce a live-adjusted volume slider themselves rather than calling this on every pixel
+   * of drag movement. */
+  setVoicePreference: (
+    serverScopeKey: string,
+    identityRef: string,
+    entry: DesktopVoicePreferenceEntry,
+  ) => Promise<void>;
 }

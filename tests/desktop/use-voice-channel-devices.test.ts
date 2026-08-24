@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   deviceIdConstraint,
+  participantIdsForIdentityRef,
   resolveDeviceFallback,
 } from '../../apps/desktop/src/renderer/voice/use-voice-channel.js';
 
@@ -39,5 +40,40 @@ describe('deviceIdConstraint', () => {
 
   it('includes a concrete deviceId when a preference is set', () => {
     expect(deviceIdConstraint('device-1')).toEqual({ deviceId: 'device-1' });
+  });
+});
+
+describe('participantIdsForIdentityRef (T13.4)', () => {
+  it('returns an empty array when no participant maps to the given identityRef', () => {
+    const map = new Map([['participant-a', 'identity-ref-1']]);
+    expect(participantIdsForIdentityRef(map, 'identity-ref-2')).toEqual([]);
+  });
+
+  it('returns the single matching participantId for an identity with one active session', () => {
+    const map = new Map([
+      ['participant-a', 'identity-ref-1'],
+      ['participant-b', 'identity-ref-2'],
+    ]);
+    expect(participantIdsForIdentityRef(map, 'identity-ref-1')).toEqual(['participant-a']);
+  });
+
+  it('returns every participantId sharing the same identityRef — the multi-connection-same-identity case', () => {
+    const map = new Map([
+      ['participant-a', 'identity-ref-1'],
+      ['participant-b', 'identity-ref-2'],
+      ['participant-c', 'identity-ref-1'],
+    ]);
+    expect(participantIdsForIdentityRef(map, 'identity-ref-1')).toEqual([
+      'participant-a',
+      'participant-c',
+    ]);
+  });
+
+  it('never includes a participantId belonging to a different identityRef, even one that looks similar', () => {
+    const map = new Map([
+      ['participant-a', 'identity-ref-1'],
+      ['participant-b', 'identity-ref-10'],
+    ]);
+    expect(participantIdsForIdentityRef(map, 'identity-ref-1')).toEqual(['participant-a']);
   });
 });

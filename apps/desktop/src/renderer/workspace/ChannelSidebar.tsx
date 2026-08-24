@@ -1,4 +1,4 @@
-import { useState, type MouseEvent, type ReactElement } from 'react';
+import { useCallback, useState, type MouseEvent, type ReactElement } from 'react';
 import { MessageSquare } from 'lucide-react';
 
 import type { ChannelNodeView } from '@disco-voador/protocol';
@@ -37,6 +37,8 @@ interface ChannelSidebarProps {
   readonly state: VoiceChannelState;
   readonly actions: VoiceChannelActions;
   readonly onChannelAdminIntent: (intent: ChannelAdminIntent) => void;
+  /** T13.4 — opens the local per-participant "User Volume"/"Mute for Me" controls. */
+  readonly onOpenVoiceControls?: ((participantId: string) => void) | undefined;
 }
 
 interface FlatEntry {
@@ -84,6 +86,7 @@ export function ChannelSidebar({
   state,
   actions,
   onChannelAdminIntent,
+  onOpenVoiceControls,
 }: ChannelSidebarProps): ReactElement {
   const entries = flatten(buildChannelTree(channelTree));
   const [menuTarget, setMenuTarget] = useState<ChannelContextMenuTarget | undefined>(undefined);
@@ -92,6 +95,22 @@ export function ChannelSidebar({
     event.preventDefault();
     setMenuTarget({ node, x: event.clientX, y: event.clientY });
   }
+
+  // T13.4 (UI consistency follow-up) — reuses the exact same T13.3 `actions.requestAvatar` this
+  // component already has via its own `actions` prop (the same one `MemberPanel`'s
+  // `handleRequestMemberAvatar` in `VoiceChannelView.tsx` calls) — never a second, voice-specific
+  // avatar-fetch mechanism. Fires at most once per distinct, not-yet-cached hash regardless of how
+  // many `ParticipantRow`s call it (`useAvatarUrl`'s own per-hash dedup).
+  const handleRequestParticipantAvatar = useCallback(
+    (participant: VoiceParticipantView) => {
+      if (participant.participantId === selfParticipantId) {
+        actions.requestAvatar('self');
+      } else if (participant.memberRef) {
+        actions.requestAvatar('member', participant.memberRef);
+      }
+    },
+    [actions, selfParticipantId],
+  );
 
   return (
     <nav className={styles.sidebar} aria-label="Channels">
@@ -152,6 +171,11 @@ export function ChannelSidebar({
                 remoteScreenParticipantIds={remoteScreenParticipantIds}
                 selfCameraEnabled={selfCameraEnabled}
                 selfSharingScreen={selfSharingScreen}
+                speakingParticipantIds={state.speakingParticipantIds}
+                selfSpeaking={state.selfSpeaking}
+                avatarCache={state.avatarCache}
+                onRequestAvatar={handleRequestParticipantAvatar}
+                onOpenVoiceControls={onOpenVoiceControls}
                 onSelect={() => {
                   onSelectChatTarget({ scope: 'channel', channelId: node.nodeId });
                 }}

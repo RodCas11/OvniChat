@@ -36,6 +36,21 @@ const mainEntry = path.join(desktopDir, '.vite', 'build', 'main.cjs');
 
 const INSTANCE_TIMEOUT_MS = 90_000;
 
+// T13.4 — real bug found via QA of this exact script: T13.4 made 'voice-activity' the default input
+// mode, which gates transmission on Chromium's fake-microphone signal actually clearing the default
+// energy threshold after real echoCancellation/noiseSuppression/autoGainControl processing — measured
+// (by an independent QA pass) at ~0.016 for the plain fake-device generator, roughly 10x below the
+// default threshold, so the mic never transmitted at all and this test regressed to permanent
+// silence. This script's own purpose predates T13.4 entirely and has nothing to do with Voice-Activity
+// threshold calibration — it exists to prove the P2P audio *delivery* pipeline works, using Chromium's
+// fake device as a stand-in for "any audio at all." Decoupled from VAD calibration (a separate, real,
+// but different concern — see `voice-activity-detector.ts`'s own doc comment) by forcing Push-to-Talk
+// mode; `main/index.ts`'s `armE2EPttHoldOnJoin` then reacts to this instance's own
+// `E2E_LOCAL_PUSH_TO_TALK_MODE` marker and simulates a held key — marker-driven rather than a fixed
+// delay-since-launch pair, after a first attempt at the latter raced against this script's own
+// audio-level probe (which starts sampling immediately on peer-connect, with no relationship to any
+// fixed PTT timing) and lost; see that function's own doc comment for the full account.
+
 function fail(message) {
   console.error(message);
   process.exit(1);
@@ -60,6 +75,11 @@ function runVoiceInstance(label, realtimeUrl, displayName) {
         DISCO_VOADOR_E2E_VOICE_AUTO_JOIN_CHANNEL: 'general',
         DISCO_VOADOR_E2E_VOICE_DISPLAY_NAME: displayName,
         DISCO_VOADOR_E2E_VOICE_SMOKE: '1',
+        // See this file's own top-of-file T13.4 comment: decouples this test from Voice-Activity
+        // threshold calibration. `main/index.ts`'s `armE2EPttHoldOnJoin` (gated on
+        // `DISCO_VOADOR_E2E_VOICE_SMOKE` above) reacts to the resulting join marker itself — no
+        // additional timing env vars needed here.
+        DISCO_VOADOR_E2E_VOICE_AUTO_PUSH_TO_TALK: '1',
       }),
       stdio: ['ignore', 'pipe', 'pipe'],
     });

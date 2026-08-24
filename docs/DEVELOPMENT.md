@@ -80,6 +80,61 @@ does not replace manual Electron/media/package verification when those surfaces 
 
 See the `testing-quality` skill for selecting applicable layers.
 
+## Regression testing: impact, not habit
+
+**Since T13.4**, choosing which E2E scripts to re-run at the end of a task is a deliberate,
+diff-driven decision — not a fixed checklist run every time regardless of what changed. This
+repository now has enough historical E2E scripts (voice, camera, screen, screen-audio,
+process-audio, identity, authorization, channels, profiles, settings, reconnect, product-shell) that
+running all of them per task wastes development time and session context, and several of them are
+genuinely intrusive on the operator's real machine — they open the camera, capture the screen, or
+drive real Windows native audio capture. Running them when the actual change could not possibly
+affect them is not "being thorough," it is noise that also has a real-world side effect the operator
+did not ask for.
+
+**Before choosing final regression E2Es:**
+
+1. Inspect the final `git diff` for the task (files actually changed, not the task's own
+   description of itself).
+2. Identify which subsystems those files belong to, including genuinely shared dependencies (e.g. a
+   change to `packages/rtc-core`'s `MediaTransport` interface is shared by voice, camera, screen, and
+   screen-audio; a change scoped to `apps/desktop/src/renderer/voice/RemoteAudio.tsx`'s
+   volume/gain handling is not, by itself, a camera or screen change).
+3. Run the E2E scripts that exercise those subsystems, plus any new scripts the task itself added.
+4. Run the full historical E2E matrix only at an explicit milestone/release gate (e.g. before a
+   version tag or install-candidate build) or after a change that is genuinely cross-cutting
+   (a shared transport/protocol/IPC boundary change with no way to scope it to fewer scripts) — never
+   as routine per-task hygiene.
+
+**State the reasoning, not just the result.** A task's final report should include a short impact
+matrix: what changed, which E2Es were selected because of it, and — just as importantly — which
+historically-relevant-looking E2Es were deliberately _not_ run and why their dependency path was
+untouched. "I ran the full suite to be safe" is not an acceptable substitute for this reasoning; it
+is exactly the habit this policy replaces.
+
+**Intrusive/physical-side-effect E2Es require explicit justification before running, every time:**
+`e2e:camera-smoke` (opens the real camera), `e2e:screen-smoke`/`e2e:screen-audio-smoke` (captures the
+real screen/system audio), `e2e:process-audio-smoke` (drives the real native Windows process-loopback
+helper). Before running any of these, state the exact changed dependency that requires it (e.g. "this
+task changed `packages/rtc-core`'s shared renegotiation path, which all four media sources go
+through"). Do not run them "just in case" or because a task touched an adjacent, non-shared file in
+the same directory.
+
+**Audible tests are not a routine regression default.** A test that plays a real, audible tone
+through the operator's actual speakers (or drives a real microphone-to-speaker loop) must not run
+as part of ordinary automated development — it makes noise on a real machine every time the suite
+runs, which is a genuine, avoidable disruption. Prefer an instrumented, non-audible proof wherever
+one is practical: a fake/mocked audio sink, an assertion on playback-triggering events or computed
+gain/level values, or a synthetic Web Audio signal fed through the real processing path with output
+captured programmatically rather than played. Reserve an actual audible run for deliberate, manual,
+explicitly-opted-into verification (e.g. a human confirming a notification sound's real loudness
+once, by choice) — never as something an agent or CI triggers by default.
+
+This policy does not relax the underlying `DEFINITION_OF_DONE.md` requirement that a real,
+non-mocked scenario validate a claimed capability — it only changes _which_ real scenarios run _by
+default_ for a given task, and requires the choice to be reasoned from the actual diff rather than
+copied from the last task's checklist.
+
 ## Architecture changes
 
 An architecture change modifies ownership, dependency direction, trust boundaries, persistence,

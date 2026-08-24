@@ -8,6 +8,7 @@ import {
   displayNameSchema,
   participantIdSchema,
 } from '../identifiers.js';
+import { identityRefSchema, memberRefSchema } from '../profile.js';
 
 // Reused here purely so a password may be attached to `voice:join` without an import cycle against
 // `channels.ts` (which itself imports `MAX_CHANNEL_PARTICIPANTS` from `identifiers.ts` below) —
@@ -48,19 +49,38 @@ export const clientVoiceLeaveMessageSchema = z
 export type ClientVoiceLeaveMessage = z.infer<typeof clientVoiceLeaveMessageSchema>;
 
 /**
- * A participant as seen by other participants — never includes `connectionId` or `identityId`.
+ * A participant as seen by other participants — never includes `connectionId` or raw `identityId`.
  * T9: `groups` is an optional snapshot of the participant's server-local group badges at the
  * moment they joined (see `authorization.ts`'s `groupBadgeSchema`) — display-only, never a trust
  * signal, and never live-updated to other viewers if the participant's groups change mid-session
  * (see `docs/architecture/SERVER_AUTHORIZATION.md`'s known limitations). Absent/empty for a
  * connection whose authorization port grants no group badges (e.g. `services/realtime`'s own
  * no-op default).
+ *
+ * T13.4: `identityRef` is a durable, per-`(server, identity)` opaque correlation token — see
+ * `identityRefSchema`'s own doc comment (`../profile.ts`) for the full reasoning, including exactly
+ * why this is safe to send (unlike raw `identityId`) and what it is for (letting a client's local
+ * per-participant voice preferences survive that remote user's reconnect/relaunch, keyed by this
+ * value rather than `participantId`/`memberRef`, both of which are session-scoped and would silently
+ * orphan a saved preference on the very next reconnect).
+ *
+ * T13.4 (UI consistency follow-up): `memberRef` is the same online-session-scoped token
+ * `memberPresenceSchema` (`../profile.ts`) already broadcasts server-wide for every online
+ * identity — reused here, not duplicated, purely so a voice participant's row can resolve the exact
+ * same `MemberPresence.avatarRef` the Member Panel already has for that person (`state.members`,
+ * keyed by `memberRef`), without inventing a second avatar-correlation mechanism or ever putting
+ * avatar bytes/refs directly on a voice participant. Never used for persistence (that is
+ * `identityRef`'s job, precisely because `memberRef` does not survive a reconnect) — this is a
+ * live-presentation-only correlation, safe to be session-scoped since it is re-resolved fresh on
+ * every join anyway.
  */
 export const voiceParticipantSchema = z
   .object({
     participantId: participantIdSchema,
     displayName: displayNameSchema,
     groups: groupBadgeListSchema.optional(),
+    identityRef: identityRefSchema,
+    memberRef: memberRefSchema,
   })
   .strict();
 

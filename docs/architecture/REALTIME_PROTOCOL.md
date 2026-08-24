@@ -80,8 +80,8 @@ an optional `replyTo` when the offending message's `id` could be recovered.
 ## Versioning
 
 ```ts
-CURRENT_PROTOCOL_VERSION = 4;
-SUPPORTED_PROTOCOL_VERSIONS = [4];
+CURRENT_PROTOCOL_VERSION = 5;
+SUPPORTED_PROTOCOL_VERSIONS = [5];
 ```
 
 Bumped 1 → 2 for T7: `client:hello` gained required `nickname`/`publicKey` fields and the
@@ -138,6 +138,34 @@ mutation. This is not a protocol-version concern (an old client simply receives 
 message of a type it may not recognize; `.strict()` schema validation is per-message, not per-burst),
 but any code — test helper or otherwise — that drains a _fixed count_ of a connection's initial
 messages needs to account for the new count.
+
+Bumped 4 → 5 for the T13.4 local-voice-preference-persistence targeted fix: `voiceParticipantSchema`
+(`voice:joined.participants[]`, `voice:participant-joined.participant`) gained a required
+`identityRef` field — a durable, per-Dedicated-Server-only correlation token letting a client's local
+volume/"Mute for Me" preference for a remote participant survive that peer's reconnect/relaunch
+without ever exposing the real, cross-server-portable `identityId` (see
+[`docs/adr/0022-durable-per-server-identity-ref-for-local-voice-preferences.md`](../adr/0022-durable-per-server-identity-ref-for-local-voice-preferences.md)
+for the full design). Deliberately _not_ made optional the way T9's `groups` field was: every real
+server can always compute an `identityRef` for a connected identity (unlike `groups`, genuinely
+absent for a server with no authorization store), so there is no legitimate "missing" case for a
+consumer to degrade against. An old client's `.strict()` parser would reject the new, larger
+participant shape outright, and a new client talking to an old server would find a field it now
+requires simply missing — a real breaking change either direction, exactly like T7/T8/T13.2's own
+required-field bumps, not an additive one. v4 support was dropped rather than kept as a parallel
+codepath, matching that same precedent.
+
+**Still v5 (no further bump)** for the T13.4 UI-consistency follow-up that immediately followed:
+`voiceParticipantSchema` also gained a required `memberRef` field, so a client can correlate a voice
+participant with the same `memberRef`-keyed `server:presence-updated`/`memberPresenceSchema` entry
+Member Panel already reads `avatarRef` from — letting `ParticipantRow` show the same live, server-local
+avatar Member Panel shows, without inventing a second avatar-correlation mechanism. Unlike
+`identityRef`, this introduces no new exposure at all: `memberRef` was already broadcast server-wide to
+every connected client via `server:presence-updated`/`server:presence-snapshot` since T13.3 (see
+[`SERVER_LOCAL_PROFILES_AND_PRESENCE.md`](SERVER_LOCAL_PROFILES_AND_PRESENCE.md)); this change only
+reuses it in one more place. Shape-wise it is exactly as breaking as `identityRef`'s own addition
+(another required field on the same `.strict()` schema), but since v5 had not yet shipped when
+`memberRef` was added, both fields ship together under the one v5 bump rather than forcing a v6 for a
+version that never existed in the wild.
 
 A WebSocket connection's protocol version cannot change mid-connection, so it is negotiated exactly
 once during the handshake rather than repeated on every message. `client:hello.protocolVersion` is

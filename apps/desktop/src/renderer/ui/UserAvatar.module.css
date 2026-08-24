@@ -1,0 +1,19 @@
+/* T13.4 (UI consistency follow-up) — the one shared speaking-ring visual treatment, previously
+   duplicated (with slightly different structure) inside `ParticipantRow.module.css` alone. Applying
+   it here, at the `UserAvatar` level, is what lets `ParticipantRow`/`MemberRow` (and any future
+   consumer) render an identical ring with a single `speaking` prop rather than each maintaining its
+   own copy. A plain, non-visual `inline-flex` wrapper around the avatar so the ring (an outline, not
+   a background) never affects avatar sizing/layout, and never replaces/hides another avatar-adjacent
+   indicator (e.g. `MemberRow`'s own presence dot, which lives on its own separate, outer wrapper). */
+.ring {
+  display: inline-flex;
+  border-radius: 999px;
+  /* Reserves the ring's own width so speaking toggling on/off never shifts adjacent layout. */
+  outline: 2px solid transparent;
+  outline-offset: 2px;
+  transition: outline-color var(--ovni-transition-fast);
+}
+
+.speakingRing {
+  outline-color: var(--ovni-accent);
+}

@@ -39,6 +39,27 @@ const PRESENCE_DOT_CLASS: Record<'online' | 'away' | 'dnd', string> = {
  * treatment for muted/deafened/camera-on/sharing (a filled/danger icon swap, not merely a color
  * change) — see each `IconButton`'s `active`/`danger` usage below.
  */
+/**
+ * T13.4 — a short, human-readable status suffix appended after the mic button's own accessible
+ * name (never replacing it — see this file's own doc comment on why `ariaLabel` itself must stay
+ * exactly "Mute microphone"/"Unmute microphone") so PTT-held/Voice-Activity-listening/no-input-device
+ * states are immediately legible via the button's tooltip, distinct from merely "is currently
+ * speaking" (never claimed here — that indicator lives on the avatar itself, see `ParticipantRow`/
+ * `MemberRow`'s speaking ring).
+ */
+function micStatusDetail(state: VoiceChannelState): string {
+  if (state.micDisconnected) return 'Microphone disconnected';
+  if (state.muted) return 'Muted';
+  if (state.voiceInputMode === 'push-to-talk') {
+    return state.pttHeld
+      ? 'Push to Talk — transmitting'
+      : 'Push to Talk — hold your shortcut to talk';
+  }
+  return state.selfVoiceActivityDetected
+    ? 'Voice Activity — transmitting'
+    : 'Voice Activity — listening';
+}
+
 export function UserControlBar({
   state,
   actions,
@@ -49,6 +70,13 @@ export function UserControlBar({
 }: UserControlBarProps): ReactElement {
   const inChannel = Boolean(state.currentChannelId);
   const presenceDotClass = styles[PRESENCE_DOT_CLASS[state.selfPresence]];
+  // T13.4 — the mic control turns green (the same `active` treatment already used for camera-on/
+  // sharing) the instant the configured PTT key is physically held, *separate* from the muted/danger
+  // (red) treatment below — deliberately distinct, immediate visual feedback from "is actually
+  // speaking" (product spec: this is "PTT is currently open", not "voice energy detected").
+  const pttHeldIndicator =
+    inChannel && state.voiceInputMode === 'push-to-talk' && state.pttHeld && !state.muted;
+  const micTooltip = `${state.muted ? 'Unmute microphone' : 'Mute microphone'} — ${micStatusDetail(state)}`;
 
   return (
     <div className={styles.bar}>
@@ -86,7 +114,8 @@ export function UserControlBar({
         <IconButton
           icon={state.muted ? MicOff : Mic}
           ariaLabel={state.muted ? 'Unmute microphone' : 'Mute microphone'}
-          active={state.muted}
+          tooltip={micTooltip}
+          active={state.muted || pttHeldIndicator}
           danger={state.muted}
           disabled={!inChannel}
           onClick={() => {

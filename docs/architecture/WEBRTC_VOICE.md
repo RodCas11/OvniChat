@@ -233,6 +233,24 @@ stdout and watches for.
 **Status: implemented and passing.** `pnpm --filter @disco-voador/desktop run e2e:voice-smoke` has
 passed three consecutive runs, each with both instances reaching `'connected'` and receiving
 genuinely non-silent decoded audio (RMS one to two orders of magnitude above the silence threshold).
+**T13.4 addendum**: `e2e:ptt-smoke` (new) reuses this same fake-media/`AnalyserNode`-probe pattern to
+prove the global Push-to-Talk gate end to end — driving the actual `setPttShortcut`/`onPttState` IPC
+surface (never real physical key injection) to simulate a press/release while the remote side samples
+real audio energy. All three phases pass, including audio expected _during_ the PTT hold. An earlier
+draft of this addendum attributed a during-hold silence to Chromium's own Opus DTX/VAD suppressing a
+synthetic sine-tone test signal; that diagnosis was wrong. The real cause, found during this task, was
+a genuine product defect: on this app's pinned Electron/Chromium build, a remote WebRTC audio track is
+never decoded at all (`totalSamplesReceived`/`audioLevel` pinned at 0 despite healthy RTP delivery)
+unless at least one real `HTMLMediaElement` is attached to the stream and playing — a pure Web Audio
+consumption graph, which is exactly what `RemoteAudioGraphController` used once `<audio>` elements
+were retired in favor of per-participant `GainNode`/`AnalyserNode` routing, never triggers decode on
+its own. This would have broken microphone audio for every real voice session, not just the test.
+Fixed via a hidden, muted, autoplaying "decode keep-alive" `HTMLAudioElement` attached per participant
+(never part of the audible path). See [`GAMER_VOICE_EXPERIENCE.md`](GAMER_VOICE_EXPERIENCE.md) for the
+full finding, evidence, and fix. `e2e:voice-smoke` itself was re-run against the final T13.4 code
+(microphone playback/gating now routes through `TransmitGate` and `RemoteAudioGraphController`) with
+no regression.
+
 Getting here required fixing a real bug in the script: `ELECTRON_RUN_AS_NODE` must be genuinely
 _absent_ from the spawned child's environment, not merely set to `''` — Electron's native bootstrap
 checks presence, not truthiness, and a present-but-empty value crashed Electron 43 before any window
@@ -255,7 +273,17 @@ note).
   open. A future task could add real ICE-restart for that narrower case.
 - No SFU — see ADR 0006; the mesh does not scale past a small room.
 - No TURN credential minting — see [ICE servers](#ice-servers) above.
-- No speaking indicators or per-participant volume — explicitly out of T3's scope. Device selection
-  is no longer entirely absent: T11 added the `deviceId`/`replaceTrack` primitives described in
-  [Microphone lifecycle](#microphone-lifecycle) above, but the device-picker UI and its
-  `use-voice-channel.ts` wiring are tracked separately, outside `rtc-core`/`media-core`.
+- Speaking indicators and per-participant local volume were explicitly out of T3's scope; both are
+  now implemented (T13.4), entirely as Renderer-side Web Audio processing over the same
+  `MediaTransport`/`RemoteAudio`-supplied streams — no change to this document's own transport
+  design, mesh topology, or offer/answer ownership rule was needed. See
+  [`GAMER_VOICE_EXPERIENCE.md`](GAMER_VOICE_EXPERIENCE.md) for the full design: a
+  `MediaStreamAudioSourceNode -> GainNode -> destination` path per remote participant (retiring
+  `<audio>` for microphone-audio playback specifically; screen/system audio is unaffected) plus an
+  analysis-only `AnalyserNode` tap for speaking detection, and a `TransmitGate` state machine
+  (`packages/media-core`) that gates local transmission for Push-to-Talk/Voice-Activity purely via
+  the same `track.enabled` mechanism this document's own "Microphone lifecycle" section already
+  established for mute — no renegotiation, no new transport primitive. Device selection is no longer
+  entirely absent: T11 added the `deviceId`/`replaceTrack` primitives described in
+  [Microphone lifecycle](#microphone-lifecycle) above, and the device-picker UI/`use-voice-channel.ts`
+  wiring living outside `rtc-core`/`media-core` is complete.

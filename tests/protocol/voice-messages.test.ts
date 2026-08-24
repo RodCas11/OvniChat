@@ -92,7 +92,9 @@ describe('server voice messages', () => {
       id: 'j1',
       channelId: 'general',
       participantId: 'p1',
-      participants: [{ participantId: 'p2', displayName: 'Arthur' }],
+      participants: [
+        { participantId: 'p2', displayName: 'Arthur', identityRef: 'ref-2', memberRef: 'member-2' },
+      ],
     });
     expect(result.success).toBe(true);
   });
@@ -103,9 +105,45 @@ describe('server voice messages', () => {
         type: 'voice:participant-joined',
         id: 'e1',
         channelId: 'general',
-        participant: { participantId: 'p1', displayName: 'Rodrigo' },
+        participant: {
+          participantId: 'p1',
+          displayName: 'Rodrigo',
+          identityRef: 'ref-1',
+          memberRef: 'member-1',
+        },
       }).success,
     ).toBe(true);
+  });
+
+  // T13.4 — `identityRef` (a durable, per-server opaque correlation token) is required on every
+  // wire participant; the wire shape must never accept — or silently strip and still succeed with —
+  // a bare `identityId`-shaped field name in its place, which would be a strong signal something
+  // upstream is about to leak the real portable identifier (see `identityRefSchema`'s own doc
+  // comment for why that must never happen).
+  it('rejects a voice:joined participant missing identityRef', () => {
+    const result = serverVoiceJoinedMessageSchema.safeParse({
+      type: 'voice:joined',
+      id: 'j1',
+      channelId: 'general',
+      participantId: 'p1',
+      participants: [{ participantId: 'p2', displayName: 'Arthur' }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a voice:participant-joined event whose participant carries identityId instead of identityRef', () => {
+    expect(
+      serverVoiceParticipantJoinedMessageSchema.safeParse({
+        type: 'voice:participant-joined',
+        id: 'e1',
+        channelId: 'general',
+        participant: {
+          participantId: 'p1',
+          displayName: 'Rodrigo',
+          identityId: 'dv1_should-not-appear-here',
+        },
+      }).success,
+    ).toBe(false);
   });
 
   it('accepts a valid voice:participant-left event', () => {

@@ -166,6 +166,45 @@
   transition: width 80ms linear;
 }
 
+/* T13.4 — Input Mode radio group (Voice Activity / Push to Talk) and its per-mode detail block. */
+.radioGroup {
+  display: flex;
+  gap: var(--ovni-space-4);
+}
+
+.radioOption {
+  display: flex;
+  align-items: center;
+  gap: var(--ovni-space-1);
+  font-size: var(--ovni-text-sm);
+  color: var(--ovni-text-primary);
+  cursor: pointer;
+}
+
+.inputModeDetail {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--ovni-space-2);
+  padding: var(--ovni-space-3);
+  border-radius: var(--ovni-radius-md);
+  background: var(--ovni-bg-surface-alt);
+}
+
+.sliderLabel {
+  font-size: var(--ovni-text-sm);
+  color: var(--ovni-text-primary);
+}
+
+.checkboxOption {
+  display: flex;
+  align-items: center;
+  gap: var(--ovni-space-1);
+  font-size: var(--ovni-text-sm);
+  color: var(--ovni-text-primary);
+  cursor: pointer;
+}
+
 .cameraPreviewBox {
   width: 100%;
   max-width: 360px;

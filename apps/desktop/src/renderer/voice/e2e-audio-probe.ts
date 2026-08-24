@@ -31,6 +31,11 @@ export function probeRemoteAudioLevel(
   stream: MediaStream,
   participantId: string,
   markerPrefix = 'E2E_AUDIO_LEVEL',
+  // T13.4 — `apps/desktop/scripts/e2e-ptt-smoke.mjs` needs several short, back-to-back,
+  // independently-timed probes (pre-hold/during-hold/post-release) rather than one long one; a
+  // caller-supplied bound keeps that scenario fast without changing this constant's own default (and
+  // therefore every existing caller's behavior) at all.
+  sampleCount = SAMPLE_COUNT,
 ): void {
   try {
     const AudioContextCtor =
@@ -65,7 +70,7 @@ export function probeRemoteAudioLevel(
         return;
       }
 
-      if (samplesTaken >= SAMPLE_COUNT) {
+      if (samplesTaken >= sampleCount) {
         clearInterval(intervalId);
         void audioContext.close();
         console.info(`${markerPrefix}_SILENT:${participantId}:${maxRms.toFixed(4)}`);

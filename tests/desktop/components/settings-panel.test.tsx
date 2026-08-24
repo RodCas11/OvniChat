@@ -232,13 +232,16 @@ describe('SettingsPanel (T13.1.1) — controls still wire to their real producti
   });
 
   it('selecting a speaker calls the real onOutputDeviceChange callback and persists the preference', async () => {
-    const { onOutputDeviceChange } = renderSettingsPanel();
+    const { onOutputDeviceChange, actions } = renderSettingsPanel();
     fireEvent.click(screen.getByTestId('settings-nav-voice'));
 
     await screen.findByText('USB Speaker');
     fireEvent.change(screen.getByLabelText('Speaker'), { target: { value: 'speaker-1' } });
 
     expect(onOutputDeviceChange).toHaveBeenCalledWith('speaker-1');
+    // T13.4 — also tells the shared remote-audio graph/join-leave-sound playback which device to
+    // route to, mirroring the microphone/camera device-change handlers' own live-action pattern.
+    expect(actions.setOutputDevice).toHaveBeenCalledWith('speaker-1');
     await waitFor(() => {
       expect(window.desktopApp.updateClientSettings).toHaveBeenCalledWith({
         audio: { outputDeviceId: 'speaker-1' },
@@ -298,5 +301,185 @@ describe('SettingsPanel (T13.1.1) — controls still wire to their real producti
 
     fireEvent.click(screen.getByRole('button', { name: 'Stop test tone' }));
     expect(screen.getByRole('button', { name: 'Play test tone' })).toBeInTheDocument();
+  });
+});
+
+describe('SettingsPanel — T13.4 Input Mode / Push to Talk', () => {
+  it('Voice Activity mode shows the sensitivity slider and level meter, never the shortcut control', () => {
+    installAudioTestMocks();
+    renderSettingsPanel({ state: createVoiceState({ voiceInputMode: 'voice-activity' }) });
+    fireEvent.click(screen.getByTestId('settings-nav-voice'));
+
+    expect(screen.getByTestId('voice-input-mode-voice-activity')).toBeChecked();
+    expect(screen.getByTestId('voice-activity-sensitivity-slider')).toBeInTheDocument();
+    expect(screen.getByTestId('voice-activity-level-meter')).toBeInTheDocument();
+    expect(screen.queryByTestId('ptt-shortcut-capture-button')).not.toBeInTheDocument();
+  });
+
+  it('Push to Talk mode shows the shortcut capture control, never the sensitivity slider', () => {
+    renderSettingsPanel({ state: createVoiceState({ voiceInputMode: 'push-to-talk' }) });
+    fireEvent.click(screen.getByTestId('settings-nav-voice'));
+
+    expect(screen.getByTestId('voice-input-mode-push-to-talk')).toBeChecked();
+    expect(screen.getByTestId('ptt-shortcut-capture-button')).toBeInTheDocument();
+    expect(screen.queryByTestId('voice-activity-sensitivity-slider')).not.toBeInTheDocument();
+  });
+
+  it('selecting Push to Talk calls the real setVoiceInputMode action', () => {
+    const { actions } = renderSettingsPanel();
+    fireEvent.click(screen.getByTestId('settings-nav-voice'));
+
+    fireEvent.click(screen.getByTestId('voice-input-mode-push-to-talk'));
+    expect(actions.setVoiceInputMode).toHaveBeenCalledWith('push-to-talk');
+  });
+
+  it('adjusting the sensitivity slider calls the real setVoiceActivitySensitivity action', () => {
+    installAudioTestMocks();
+    const { actions } = renderSettingsPanel({
+      state: createVoiceState({ voiceInputMode: 'voice-activity' }),
+    });
+    fireEvent.click(screen.getByTestId('settings-nav-voice'));
+
+    fireEvent.change(screen.getByTestId('voice-activity-sensitivity-slider'), {
+      target: { value: '0.8' },
+    });
+    expect(actions.setVoiceActivitySensitivity).toHaveBeenCalledWith(0.8);
+  });
+
+  it('capturing a supported key calls the real setPttShortcut action and shows the registered state', async () => {
+    const { actions } = renderSettingsPanel({
+      state: createVoiceState({ voiceInputMode: 'push-to-talk' }),
+    });
+    (actions.setPttShortcut as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true });
+    fireEvent.click(screen.getByTestId('settings-nav-voice'));
+
+    fireEvent.click(screen.getByTestId('ptt-shortcut-capture-button'));
+    expect(screen.getByText('Press a key… (Esc to cancel)')).toBeInTheDocument();
+
+    fireEvent.keyDown(window, { code: 'KeyV' });
+    expect(actions.setPttShortcut).toHaveBeenCalledWith({
+      kind: 'keyboard',
+      keycode: 47,
+      modifiers: { ctrl: false, alt: false, shift: false, meta: false },
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('ptt-shortcut-status')).toHaveTextContent('Shortcut registered');
+    });
+  });
+
+  it('shows the honest conflict message when setPttShortcut reports a conflict', async () => {
+    const { actions } = renderSettingsPanel({
+      state: createVoiceState({ voiceInputMode: 'push-to-talk' }),
+    });
+    (actions.setPttShortcut as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: false,
+      reason: 'conflict',
+      message: 'already registered elsewhere',
+    });
+    fireEvent.click(screen.getByTestId('settings-nav-voice'));
+
+    fireEvent.click(screen.getByTestId('ptt-shortcut-capture-button'));
+    fireEvent.keyDown(window, { code: 'KeyV' });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('ptt-shortcut-status')).toHaveTextContent(
+        'already in use — choose another key',
+      );
+    });
+  });
+
+  // T13.4 QA fix — `result.message` for `'native-module-load-failed'`/`'hook-start-failed'` is an
+  // arbitrary, jargon-heavy native-diagnostic string (see `ptt-hotkey-listener.ts`'s own
+  // `describeError`), never curated copy. This previously appeared verbatim in the Settings UI (a
+  // real QA-caught defect — a raw string like "No native build was found for platform=win32 arch=x64
+  // ... loaded from: ...\.vite" is not something a real user should ever see); it must now show a
+  // short, honest, jargon-free message instead, while the raw diagnostic is still logged
+  // (`console.error`) rather than discarded entirely.
+  it.each(['native-module-load-failed', 'hook-start-failed'] as const)(
+    'shows curated copy (never the raw native message) when setPttShortcut reports %s',
+    async (reason) => {
+      const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      const { actions } = renderSettingsPanel({
+        state: createVoiceState({ voiceInputMode: 'push-to-talk' }),
+      });
+      (actions.setPttShortcut as ReturnType<typeof vi.fn>).mockResolvedValue({
+        ok: false,
+        reason,
+        message: 'SetWindowsHookEx failed',
+      });
+      fireEvent.click(screen.getByTestId('settings-nav-voice'));
+
+      fireEvent.click(screen.getByTestId('ptt-shortcut-capture-button'));
+      fireEvent.keyDown(window, { code: 'KeyV' });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('ptt-shortcut-status')).toHaveTextContent(
+          'Shortcut unavailable — something went wrong starting the global hotkey listener. Try restarting OvniChat, or contact support if this keeps happening.',
+        );
+      });
+      expect(screen.getByTestId('ptt-shortcut-status')).not.toHaveTextContent(
+        'SetWindowsHookEx failed',
+      );
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        `ptt-shortcut: ${reason}`,
+        'SetWindowsHookEx failed',
+      );
+
+      consoleErrorSpy.mockRestore();
+    },
+  );
+
+  it('Escape cancels capture without calling setPttShortcut', () => {
+    const { actions } = renderSettingsPanel({
+      state: createVoiceState({ voiceInputMode: 'push-to-talk' }),
+    });
+    fireEvent.click(screen.getByTestId('settings-nav-voice'));
+
+    fireEvent.click(screen.getByTestId('ptt-shortcut-capture-button'));
+    fireEvent.keyDown(window, { code: 'Escape' });
+
+    expect(actions.setPttShortcut).not.toHaveBeenCalled();
+    expect(screen.getByTestId('ptt-shortcut-capture-button')).toHaveTextContent('Press a key…');
+  });
+
+  it('an unsupported key keeps capturing rather than silently mis-binding', () => {
+    const { actions } = renderSettingsPanel({
+      state: createVoiceState({ voiceInputMode: 'push-to-talk' }),
+    });
+    fireEvent.click(screen.getByTestId('settings-nav-voice'));
+
+    fireEvent.click(screen.getByTestId('ptt-shortcut-capture-button'));
+    fireEvent.keyDown(window, { code: 'ControlLeft' });
+
+    expect(actions.setPttShortcut).not.toHaveBeenCalled();
+    expect(screen.getByText('Press a key… (Esc to cancel)')).toBeInTheDocument();
+  });
+
+  it('shows an already-configured shortcut and offers to clear it', () => {
+    const { actions } = renderSettingsPanel({
+      state: createVoiceState({
+        voiceInputMode: 'push-to-talk',
+        pttBinding: {
+          kind: 'keyboard',
+          keycode: 47,
+          modifiers: { ctrl: false, alt: false, shift: false, meta: false },
+        },
+      }),
+    });
+    fireEvent.click(screen.getByTestId('settings-nav-voice'));
+
+    expect(screen.getByTestId('ptt-shortcut-capture-button')).toHaveTextContent('V');
+    fireEvent.click(screen.getByTestId('ptt-shortcut-clear-button'));
+    expect(actions.clearPttShortcut).toHaveBeenCalledTimes(1);
+  });
+
+  it('the join/leave sounds toggle calls the real setJoinLeaveSoundsEnabled action', () => {
+    const { actions } = renderSettingsPanel({
+      state: createVoiceState({ joinLeaveSoundsEnabled: true }),
+    });
+    fireEvent.click(screen.getByTestId('settings-nav-voice'));
+
+    fireEvent.click(screen.getByTestId('join-leave-sounds-toggle'));
+    expect(actions.setJoinLeaveSoundsEnabled).toHaveBeenCalledWith(false);
   });
 });

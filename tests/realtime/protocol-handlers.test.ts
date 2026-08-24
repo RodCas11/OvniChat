@@ -544,6 +544,92 @@ describe('routeClientMessage — voice:join / voice:leave', () => {
     expect(idA).not.toBe(idB);
   });
 
+  it('T13.4: includes a stable identityRef for each participant, consistent between voice:joined and voice:participant-joined', () => {
+    const registry = new VoiceRegistry();
+    registry.join('conn-a', 'general', 'Rodrigo', 'identity-a', MAX_CHANNEL_PARTICIPANTS);
+
+    const ctx = makeContext({ connectionId: 'conn-b', voiceRegistry: registry });
+    const result = routeClientMessage(
+      { type: 'voice:join', id: 'j2', channelId: 'general', displayName: 'Arthur' },
+      'ready',
+      ctx,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const [joined] = replies(result.actions);
+    const joinedParticipant = (joined as { participants: { identityRef: string }[] })
+      .participants[0];
+    expect(joinedParticipant?.identityRef).toEqual(expect.stringMatching(/^[0-9a-f-]{36}$/u));
+
+    const notified = deliveries(result.actions);
+    const notifiedParticipant = (notified[0]?.message as { participant: { identityRef: string } })
+      .participant;
+    // Different identities (identity-a already in the channel vs identity-b just joining) must get
+    // different refs — never the same value, and never a raw identityId leaking through unchanged.
+    expect(notifiedParticipant.identityRef).not.toBe(joinedParticipant?.identityRef);
+    expect(notifiedParticipant.identityRef).not.toBe('identity-b');
+    expect(joinedParticipant?.identityRef).not.toBe('identity-a');
+  });
+
+  it('T13.4: identityRef stays the same across a leave and rejoin, even though participantId changes — the whole point of this field over participantId/memberRef', () => {
+    const registry = new VoiceRegistry();
+    const profile = createNoopProfilePort();
+    const ctxA = makeContext({ connectionId: 'conn-a', voiceRegistry: registry, profile });
+    const ctxB = makeContext({ connectionId: 'conn-b', voiceRegistry: registry, profile });
+
+    // conn-a (identity-a) is already in the channel when B joins, so B observes A's identityRef via
+    // `voice:joined.participants`.
+    const firstJoinResult = routeClientMessage(
+      { type: 'voice:join', id: 'a1', channelId: 'general', displayName: 'Rodrigo' },
+      'ready',
+      makeContext({ connectionId: 'conn-a', voiceRegistry: registry, profile }),
+    );
+    expect(firstJoinResult.ok).toBe(true);
+
+    const bJoin1 = routeClientMessage(
+      { type: 'voice:join', id: 'b1', channelId: 'general', displayName: 'Arthur' },
+      'ready',
+      ctxB,
+    );
+    expect(bJoin1.ok).toBe(true);
+    if (!bJoin1.ok) return;
+    const firstSnapshot = (
+      replies(bJoin1.actions)[0] as { participants: { identityRef: string }[] }
+    ).participants[0];
+    const firstIdentityRef = firstSnapshot?.identityRef;
+    expect(firstIdentityRef).toEqual(expect.stringMatching(/^[0-9a-f-]{36}$/u));
+
+    // A leaves and rejoins — a real new participantId is assigned (see VoiceRegistry.join), but the
+    // same underlying identity.
+    routeClientMessage({ type: 'voice:leave', id: 'a-leave' }, 'ready', ctxA);
+    const rejoinResult = routeClientMessage(
+      { type: 'voice:join', id: 'a2', channelId: 'general', displayName: 'Rodrigo' },
+      'ready',
+      ctxA,
+    );
+    expect(rejoinResult.ok).toBe(true);
+
+    const bJoin2 = routeClientMessage(
+      { type: 'voice:join', id: 'b2', channelId: 'games', displayName: 'Arthur' },
+      'ready',
+      ctxB,
+    );
+    expect(bJoin2.ok).toBe(true);
+    // Rejoin B back into "general" to observe A's post-rejoin identityRef the same way as before.
+    const bJoin3 = routeClientMessage(
+      { type: 'voice:join', id: 'b3', channelId: 'general', displayName: 'Arthur' },
+      'ready',
+      ctxB,
+    );
+    expect(bJoin3.ok).toBe(true);
+    if (!bJoin3.ok) return;
+    const secondSnapshot = (
+      replies(bJoin3.actions)[0] as { participants: { identityRef: string }[] }
+    ).participants[0];
+    expect(secondSnapshot?.identityRef).toBe(firstIdentityRef);
+  });
+
   it('rejects joining an unknown channel (non-fatal)', () => {
     const ctx = makeContext();
     const result = routeClientMessage(

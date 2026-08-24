@@ -18,7 +18,14 @@ export function createClientSettings(
     audio: { inputDeviceId: null, outputDeviceId: null },
     video: { cameraDeviceId: null },
     screenShare: { qualityPreset: 'high' },
-    voice: { startMuted: false, startDeafened: false },
+    voice: {
+      startMuted: false,
+      startDeafened: false,
+      inputMode: 'voice-activity',
+      pttBinding: null,
+      voiceActivitySensitivity: 0.5,
+      joinLeaveSoundsEnabled: true,
+    },
     bookmarks: [],
     lastServerAddress: null,
     connectOnStartup: false,
@@ -66,6 +73,12 @@ export function createDesktopAppMock(overrides: Partial<DesktopApi> = {}): Deskt
     validateAvatarImageBytes: vi
       .fn()
       .mockResolvedValue({ ok: true, format: 'png', width: 64, height: 64 }),
+    // T13.4
+    setPttShortcut: vi.fn().mockResolvedValue({ ok: true }),
+    clearPttShortcut: vi.fn().mockResolvedValue(undefined),
+    onPttState: vi.fn().mockReturnValue(() => undefined),
+    getVoicePreference: vi.fn().mockResolvedValue(undefined),
+    setVoicePreference: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   } as unknown as DesktopApi;
 }

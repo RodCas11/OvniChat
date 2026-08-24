@@ -6,6 +6,8 @@ import { z } from 'zod';
 
 import { writeFileAtomic } from '../identity/atomic-write.js';
 
+export { deriveServerScopeKey } from '../../shared/voice-preference-scope.js';
+
 /**
  * T11 local client settings — device preferences, bookmarks, and other deliberate UI choices the
  * Client owns for itself (see `docs/architecture/CLIENT_SETTINGS_AND_RECONNECT.md`). Deliberately
@@ -44,6 +46,37 @@ const bookmarkSchema = z
 
 export type StoredBookmark = z.infer<typeof bookmarkSchema>;
 
+/**
+ * T13.4 — mirrors `@disco-voador/windows-media`'s `PttModifierState`/`PttBinding` shapes exactly
+ * (see `ptt-binding.ts`) so a value this schema accepts is always one that module's matching logic
+ * can consume unchanged. Deliberately re-declared here (not imported) — this file has no runtime
+ * dependency on `@disco-voador/windows-media` today, and a `zod` schema needs its own literal shape
+ * regardless of where the TypeScript type comes from; `ptt-hotkey.ts` (Main) is responsible for
+ * keeping the two in sync (a type-only cross-check, enforced at compile time — see that file).
+ */
+const pttModifierStateSchema = z
+  .object({ ctrl: z.boolean(), alt: z.boolean(), shift: z.boolean(), meta: z.boolean() })
+  .strict();
+
+const pttBindingSchema = z.discriminatedUnion('kind', [
+  z
+    .object({
+      kind: z.literal('keyboard'),
+      keycode: z.number().int().nonnegative(),
+      modifiers: pttModifierStateSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('mouseButton'),
+      button: z.number().int().nonnegative(),
+      modifiers: pttModifierStateSchema,
+    })
+    .strict(),
+]);
+
+export type StoredPttBinding = z.infer<typeof pttBindingSchema>;
+
 // Each top-level section has its own schema, kept separate from `settingsFileSchema` below, so a
 // corrupted file can be salvaged section-by-section (see `salvageSections`) instead of one bad
 // field forcing every section — including the bookmark list, the most painful one to lose — back
@@ -55,10 +88,63 @@ const videoSchema = z.object({ cameraDeviceId: deviceIdSchema }).strict();
 const screenShareSchema = z
   .object({ qualityPreset: z.enum(['standard', 'high', 'smooth', 'smooth720']) })
   .strict();
-const voiceSchema = z.object({ startMuted: z.boolean(), startDeafened: z.boolean() }).strict();
+// T13.4 — `inputMode`/`pttBinding`/`voiceActivitySensitivity`/`joinLeaveSoundsEnabled` are new
+// fields, each with its own `.default(...)` — under `zod`'s `.strict()`, a *missing* key with a
+// default parses cleanly (only an *unrecognized* key is rejected), so a pre-T13.4 (v1-shaped)
+// settings file that never wrote these fields still parses successfully here, picking up these
+// defaults, with no `SETTINGS_FILE_VERSION` bump required (see
+// `tests/desktop/settings-file.test.ts`'s dedicated old-file-fixture round-trip test).
+const voiceSchema = z
+  .object({
+    startMuted: z.boolean(),
+    startDeafened: z.boolean(),
+    inputMode: z.enum(['voice-activity', 'push-to-talk']).default('voice-activity'),
+    pttBinding: pttBindingSchema.nullable().default(null),
+    voiceActivitySensitivity: z.number().min(0).max(1).default(0.5),
+    joinLeaveSoundsEnabled: z.boolean().default(true),
+  })
+  .strict();
 const bookmarksSchema = z.array(bookmarkSchema).max(MAX_BOOKMARKS);
 const lastServerAddressSchema = z.string().max(MAX_SERVER_ADDRESS_LENGTH).nullable();
 const connectOnStartupSchema = z.boolean();
+
+/** T13.4 — one local, per-`(serverScopeKey, identityRef)` voice preference: a participant's
+ * locally-adjusted playback volume and "Mute for Me" state. See `deriveServerScopeKey` for how the
+ * outer key is derived, and this file's own module doc comment / `docs/architecture/
+ * SERVER_LOCAL_PROFILES_AND_PRESENCE.md` for why the inner key is the durable, per-server
+ * `identityRef` (`@disco-voador/protocol`'s `identityRefSchema`) — never the raw, portable
+ * `identityId` (would reopen a cross-server correlation privacy hole), and never `memberRef` (a
+ * session-scoped id reassigned every reconnect — persisting by it would silently orphan every saved
+ * preference on the next reconnect). */
+const voicePreferenceEntrySchema = z
+  .object({ volumePercent: z.number().min(0).max(200), locallyMuted: z.boolean() })
+  .strict();
+
+export type StoredVoicePreferenceEntry = z.infer<typeof voicePreferenceEntrySchema>;
+
+/** A single flat ceiling across every server scope and identity combined — mirrors
+ * `MAX_BOOKMARKS`'s own simplicity rather than a separate per-server cap, since this data is exactly
+ * as low-stakes (a local-only UI convenience, never security-relevant) and does not need finer
+ * bookkeeping. */
+export const MAX_VOICE_PREFERENCE_ENTRIES = 500;
+
+function countVoicePreferenceLeaves(
+  map: Readonly<Record<string, Readonly<Record<string, unknown>>>>,
+): number {
+  let total = 0;
+  for (const inner of Object.values(map)) total += Object.keys(inner).length;
+  return total;
+}
+
+const voicePreferencesSchema = z
+  .record(z.string(), z.record(z.string(), voicePreferenceEntrySchema))
+  .refine(
+    (map) => countVoicePreferenceLeaves(map) <= MAX_VOICE_PREFERENCE_ENTRIES,
+    `Too many voice preference entries (max ${String(MAX_VOICE_PREFERENCE_ENTRIES)})`,
+  )
+  .default({});
+
+export type StoredVoicePreferences = z.infer<typeof voicePreferencesSchema>;
 
 const settingsFileSchema = z
   .object({
@@ -70,6 +156,10 @@ const settingsFileSchema = z
     bookmarks: bookmarksSchema,
     lastServerAddress: lastServerAddressSchema,
     connectOnStartup: connectOnStartupSchema,
+    // T13.4 — new top-level section; `.default({})` on `voicePreferencesSchema` above means a
+    // pre-T13.4 file (missing this key entirely) parses cleanly with an empty map, matching every
+    // other newly-added field's backward-compatibility discipline in this same change.
+    voicePreferences: voicePreferencesSchema,
   })
   .strict();
 
@@ -80,10 +170,18 @@ export const DEFAULT_CLIENT_SETTINGS: StoredClientSettings = {
   audio: { inputDeviceId: null, outputDeviceId: null },
   video: { cameraDeviceId: null },
   screenShare: { qualityPreset: 'high' },
-  voice: { startMuted: false, startDeafened: false },
+  voice: {
+    startMuted: false,
+    startDeafened: false,
+    inputMode: 'voice-activity',
+    pttBinding: null,
+    voiceActivitySensitivity: 0.5,
+    joinLeaveSoundsEnabled: true,
+  },
   bookmarks: [],
   lastServerAddress: null,
   connectOnStartup: false,
+  voicePreferences: {},
 };
 
 function settingsFilePath(): string {
@@ -128,6 +226,9 @@ function salvageSections(parsedJson: unknown): StoredClientSettings {
   const bookmarks = bookmarksSchema.safeParse(source.bookmarks);
   const lastServerAddress = lastServerAddressSchema.safeParse(source.lastServerAddress);
   const connectOnStartup = connectOnStartupSchema.safeParse(source.connectOnStartup);
+  // T13.4 — its own independent salvage entry, matching every other section: a malformed
+  // `voicePreferences` blob must never take down bookmarks (or any other section) and vice versa.
+  const voicePreferences = voicePreferencesSchema.safeParse(source.voicePreferences);
 
   return {
     version: SETTINGS_FILE_VERSION,
@@ -142,6 +243,9 @@ function salvageSections(parsedJson: unknown): StoredClientSettings {
     connectOnStartup: connectOnStartup.success
       ? connectOnStartup.data
       : DEFAULT_CLIENT_SETTINGS.connectOnStartup,
+    voicePreferences: voicePreferences.success
+      ? voicePreferences.data
+      : DEFAULT_CLIENT_SETTINGS.voicePreferences,
   };
 }
 

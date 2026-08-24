@@ -50,6 +50,8 @@ export function MemberRow({
             avatarRef={member.avatarRef}
             avatarCache={avatarCache}
             onRequestAvatar={onRequestAvatar}
+            speaking={member.isSpeaking}
+            testId={`member-row-avatar-wrap-${member.key}`}
           />
           {PRESENCE_DOT_CLASS[member.presence] && (
             <span

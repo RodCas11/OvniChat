@@ -107,6 +107,31 @@ describe('AddServerDialog (T13.1, F-1 regression coverage)', () => {
     expect(screen.getByTestId('add-server-name-input')).toHaveValue('Server A (typing…)');
   });
 
+  // Regression (T13.4 UX bug): `AddServerDialog` passes `Modal` a locally-defined `resetAndClose`,
+  // given a fresh identity on every one of `AddServerDialog`'s own re-renders — including the
+  // re-render each keystroke causes via `setDisplayName`. `Modal`'s focus-management effect used to
+  // depend on that `onClose` identity, so every keystroke re-ran it and yanked focus to the header
+  // Close button. See `Modal.tsx`'s own fix and `tests/desktop/components/modal.test.tsx` for the
+  // shared-level coverage; this proves the fix holds through a real consumer end to end.
+  it('typing a full server name keeps focus on the field the whole time, never jumping to Close', () => {
+    const actions = bookmarksActions();
+    render(<AddServerDialog open={true} onClose={vi.fn()} actions={actions} />);
+
+    const input = screen.getByTestId('add-server-name-input') as HTMLInputElement;
+    input.focus();
+    expect(input).toHaveFocus();
+
+    const name = 'My Gaming Server';
+    for (let i = 0; i < name.length; i += 1) {
+      const value = name.slice(0, i + 1);
+      fireEvent.change(input, { target: { value } });
+      expect(input).toHaveFocus();
+      expect(screen.getByRole('button', { name: 'Close' })).not.toHaveFocus();
+    }
+
+    expect(input).toHaveValue(name);
+  });
+
   it('saves an edit against the currently-open bookmark, never a stale one', async () => {
     const updateBookmark = vi.fn().mockResolvedValue(true);
     const actions = bookmarksActions({ updateBookmark });

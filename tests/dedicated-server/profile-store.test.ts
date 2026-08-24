@@ -252,6 +252,76 @@ describe('SqliteProfileStore — cross-server isolation', () => {
   });
 });
 
+describe('SqliteProfileStore — getOrCreateIdentityRef (T13.4)', () => {
+  it('returns the same value on repeated calls for the same identity', () => {
+    const store = openStore();
+    const first = store.getOrCreateIdentityRef('identity-a');
+    const second = store.getOrCreateIdentityRef('identity-a');
+    expect(second).toBe(first);
+    store.close();
+  });
+
+  it('returns different values for different identities', () => {
+    const store = openStore();
+    const a = store.getOrCreateIdentityRef('identity-a');
+    const b = store.getOrCreateIdentityRef('identity-b');
+    expect(a).not.toBe(b);
+    store.close();
+  });
+
+  it('never derives the value from identityId itself (not a substring/transform of it)', () => {
+    const store = openStore();
+    const ref = store.getOrCreateIdentityRef('identity-a');
+    expect(ref).not.toContain('identity-a');
+    expect(ref).toEqual(expect.stringMatching(/^[0-9a-f-]{36}$/u) as unknown as string);
+    store.close();
+  });
+
+  it('is safe to call for an identity that already has a profile row from an unrelated mutation (lazy backfill never clobbers existing fields)', () => {
+    const store = openStore();
+    store.setCustomStatus('identity-a', 'already had a row');
+    store.setPresencePreference('identity-a', 'dnd');
+    const ref = store.getOrCreateIdentityRef('identity-a');
+    expect(ref).toEqual(expect.stringMatching(/^[0-9a-f-]{36}$/u) as unknown as string);
+    const profile = store.getUserProfile('identity-a');
+    expect(profile.customStatus).toBe('already had a row');
+    expect(profile.presencePreference).toBe('dnd');
+    // Calling it again after the row already existed must still be stable.
+    expect(store.getOrCreateIdentityRef('identity-a')).toBe(ref);
+    store.close();
+  });
+
+  it('survives closing and reopening the same file (restart persistence)', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'disco-voador-profile-store-identity-ref-'));
+    const dbPath = path.join(dir, 'profiles.sqlite');
+    try {
+      const store1 = openStore(dbPath);
+      const ref1 = store1.getOrCreateIdentityRef('identity-a');
+      store1.close();
+
+      const store2 = openStore(dbPath);
+      const ref2 = store2.getOrCreateIdentityRef('identity-a');
+      expect(ref2).toBe(ref1);
+      store2.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('two independent stores (two independently-operated Dedicated Servers) mint unrelated values for the same identityId — the anti-cross-server-correlation property this column exists for', () => {
+    const storeA = openStore();
+    const storeB = openStore();
+
+    const refOnA = storeA.getOrCreateIdentityRef('shared-identity');
+    const refOnB = storeB.getOrCreateIdentityRef('shared-identity');
+
+    expect(refOnA).not.toBe(refOnB);
+
+    storeA.close();
+    storeB.close();
+  });
+});
+
 describe('SqliteProfileStore — data minimization', () => {
   it('the migration schema never declares a nickname/email/phone/IP/device-fingerprint/geo/lastSeen column', () => {
     const forbiddenSubstrings = [

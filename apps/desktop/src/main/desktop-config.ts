@@ -61,6 +61,19 @@ const desktopConfigSchema = z.object({
   // before ever acting on it — see docs/architecture/WEBRTC_VOICE.md and the security review of
   // this flag for why that second, Electron-level gate is load-bearing, not just this schema.
   DISCO_VOADOR_E2E_FAKE_MEDIA: z.enum(['1', '0']).optional(),
+  // T13.4 — Chromium's own `--use-file-for-fake-audio-capture=<wav>` switch, layered on top of
+  // `DISCO_VOADOR_E2E_FAKE_MEDIA` (meaningless without it): the plain fake-audio-device generator
+  // produces literal silence in at least one real sandboxed CI/build environment this task was
+  // verified against (confirmed directly — even bypassing `TransmitGate` entirely and forcing
+  // `track.enabled = true` from the very start, the default fake device still produced 0.0000 RMS
+  // for the full sample window), which made `e2e:voice-smoke`'s own long-standing non-silence proof
+  // unable to pass there independent of anything this task changed. Pointing Chromium at a real,
+  // deterministic PCM WAV file instead is the documented, supported way to get controllable fake
+  // microphone content (also exactly what `e2e:ptt-smoke`/`e2e:voice-activity-smoke` need: real
+  // audio content that is reliably present so a *transmission-gated* silence, not device-level
+  // silence, is what's actually being proven). Same `!app.isPackaged` gating as
+  // `DISCO_VOADOR_E2E_FAKE_MEDIA` itself, applied at the same call site in `main/index.ts`.
+  DISCO_VOADOR_E2E_FAKE_AUDIO_FILE: z.string().min(1).optional(),
   // Comma-separated `stun:`/`stuns:` URLs, e.g. "stun:turn.example.com:3478,stun:stun2.example.com".
   DISCO_VOADOR_STUN_URLS: stunUrlsSchema,
   // Automated two-Electron-instance voice smoke test only (see
@@ -80,6 +93,18 @@ const desktopConfigSchema = z.object({
   // persist across a relaunch of the same `--user-data-dir` — see `e2e-authorization.mjs`'s own
   // proven relaunch technique).
   DISCO_VOADOR_E2E_VOICE_AUTO_JOIN_PASSWORD: z.string().min(1).max(128).optional(),
+  // T13.4 — automated `e2e-voice-preference-smoke.mjs` only: once this instance observes its first
+  // real peer connection, drives the actual "User Volume"/"Mute for Me" UI (real DOM clicks/input
+  // events on the real production controls, never a direct action/IPC call) to set that peer's local
+  // volume to this percent, proving the persisted-preference pipeline end to end through a genuine
+  // Electron relaunch rather than only through unit tests of its individual layers. Meaningless
+  // without `DISCO_VOADOR_E2E_VOICE_AUTO_JOIN_CHANNEL` also set; gated behind `!app.isPackaged` at
+  // the same point as everything else here.
+  DISCO_VOADOR_E2E_VOICE_PREFERENCE_SET_PERCENT: z.coerce.number().min(0).max(200).optional(),
+  // T13.4 — same scenario as above, additionally (or independently) clicks "Mute for Me" — kept as
+  // its own flag (not folded into the percent one) so a later relaunch can toggle mute alone without
+  // re-touching (and therefore risking resetting) the already-persisted volume.
+  DISCO_VOADOR_E2E_VOICE_PREFERENCE_SET_MUTE: z.enum(['1', '0']).optional(),
   // T13.2: after the initial auto-join above lands, schedules up to two further *scripted*
   // `voice:join` attempts against a second channel — real production `actions.join()` calls fired by
   // a fixed timer (mirroring `DISCO_VOADOR_E2E_VOICE_AUTO_CAMERA_OFF_MS`'s own "config-driven scripted
@@ -215,17 +240,54 @@ const desktopConfigSchema = z.object({
   DISCO_VOADOR_E2E_SCREENSHOT_BOOKMARK_A_ADDRESS: z.string().min(1).optional(),
   DISCO_VOADOR_E2E_SCREENSHOT_BOOKMARK_B_NAME: z.string().min(1).optional(),
   DISCO_VOADOR_E2E_SCREENSHOT_BOOKMARK_B_ADDRESS: z.string().min(1).optional(),
+  // T13.4 — automated global-PTT smoke test only (`apps/desktop/scripts/e2e-ptt-smoke.mjs`):
+  // switches this instance to Push to Talk mode once auto-joined, via the exact same production
+  // `actions.setVoiceInputMode('push-to-talk')` call the Voice & Video settings UI drives. Meaningless
+  // without an auto-join channel also configured. Same `!app.isPackaged` gating as everything else
+  // here.
+  DISCO_VOADOR_E2E_VOICE_AUTO_PUSH_TO_TALK: z.enum(['1', '0']).optional(),
+  // T13.4 — simulates a real global PTT `'down'`/`'up'` edge by pushing directly on the same
+  // `pttState` IPC channel Main's real `uiohook-napi` listener uses (see `main/ptt-hotkey.ts`), at a
+  // fixed delay after app launch — deliberately *not* real physical/OS-level key injection (this
+  // task's own brief explicitly asks for an IPC-driven simulation, not a physical-input harness).
+  // This never touches `main/ptt-hotkey.ts`'s own listener lifecycle at all — it is indistinguishable,
+  // from the Renderer's point of view, from a real edge the native hook would have produced. Both
+  // must be set together; same `!app.isPackaged` gating as everything else here.
+  DISCO_VOADOR_E2E_PTT_DOWN_AFTER_MS: z.coerce.number().int().positive().optional(),
+  DISCO_VOADOR_E2E_PTT_UP_AFTER_MS: z.coerce.number().int().positive().optional(),
+  // T13.4 — viewer role only, see `DesktopE2EVoiceConfig.pttPreHoldProbeDelayMs`'s own doc comment.
+  // `.nonnegative()`, not `.positive()` — `0` ("probe immediately") is a legitimate value for the
+  // pre-hold phase in particular.
+  DISCO_VOADOR_E2E_PTT_PRE_HOLD_PROBE_DELAY_MS: z.coerce.number().int().nonnegative().optional(),
+  DISCO_VOADOR_E2E_PTT_DURING_HOLD_PROBE_DELAY_MS: z.coerce.number().int().nonnegative().optional(),
+  DISCO_VOADOR_E2E_PTT_POST_RELEASE_PROBE_DELAY_MS: z.coerce
+    .number()
+    .int()
+    .nonnegative()
+    .optional(),
 });
 
 export interface DesktopConfig {
   readonly realtimeUrl: string;
   readonly e2eFakeMediaRequested: boolean;
+  // T13.4 — see the schema field's own doc comment above.
+  readonly e2eFakeAudioFile: string | undefined;
   readonly iceServers: readonly RtcIceServerConfig[];
+  // T13.4 — Main-only (never exposed to the Renderer): `main/index.ts`'s `bootstrap()` schedules
+  // pushing a simulated `pttState` edge at each configured delay. `undefined` unless both delays are
+  // set together.
+  readonly e2ePttSimulation:
+    { readonly downAfterMs: number; readonly upAfterMs: number } | undefined;
   readonly e2eVoiceAutoJoin:
     | {
         readonly channelId: string;
         readonly displayName: string;
         readonly autoCamera: boolean;
+        // T13.4 — see the schema fields' own doc comments above.
+        readonly autoPushToTalk: boolean;
+        readonly pttPreHoldProbeDelayMs: number | undefined;
+        readonly pttDuringHoldProbeDelayMs: number | undefined;
+        readonly pttPostReleaseProbeDelayMs: number | undefined;
         readonly autoCameraOffAfterMs: number | undefined;
         readonly autoScreenShare: boolean;
         readonly autoScreenShareOffAfterMs: number | undefined;
@@ -272,6 +334,10 @@ export interface DesktopConfig {
         readonly bookmarkB: { readonly displayName: string; readonly serverAddress: string };
       }
     | undefined;
+  // T13.4 — `e2e-voice-preference-smoke.mjs` only; see the two schema fields' own doc comments.
+  // `undefined` unless at least one of the two underlying flags is set.
+  readonly e2eVoicePreferenceAdjust:
+    { readonly percent: number | undefined; readonly mute: boolean } | undefined;
 }
 
 export function loadDesktopConfig(
@@ -283,12 +349,25 @@ export function loadDesktopConfig(
   return {
     realtimeUrl: parsed.DISCO_VOADOR_REALTIME_URL ?? DEFAULT_REALTIME_URL,
     e2eFakeMediaRequested: parsed.DISCO_VOADOR_E2E_FAKE_MEDIA === '1',
+    e2eFakeAudioFile: parsed.DISCO_VOADOR_E2E_FAKE_AUDIO_FILE,
     iceServers: parsed.DISCO_VOADOR_STUN_URLS.map((urls) => ({ urls })),
+    e2ePttSimulation:
+      parsed.DISCO_VOADOR_E2E_PTT_DOWN_AFTER_MS !== undefined &&
+      parsed.DISCO_VOADOR_E2E_PTT_UP_AFTER_MS !== undefined
+        ? {
+            downAfterMs: parsed.DISCO_VOADOR_E2E_PTT_DOWN_AFTER_MS,
+            upAfterMs: parsed.DISCO_VOADOR_E2E_PTT_UP_AFTER_MS,
+          }
+        : undefined,
     e2eVoiceAutoJoin: autoJoinChannel
       ? {
           channelId: autoJoinChannel,
           displayName: parsed.DISCO_VOADOR_E2E_VOICE_DISPLAY_NAME ?? 'e2e-tester',
           autoCamera: parsed.DISCO_VOADOR_E2E_VOICE_AUTO_CAMERA === '1',
+          autoPushToTalk: parsed.DISCO_VOADOR_E2E_VOICE_AUTO_PUSH_TO_TALK === '1',
+          pttPreHoldProbeDelayMs: parsed.DISCO_VOADOR_E2E_PTT_PRE_HOLD_PROBE_DELAY_MS,
+          pttDuringHoldProbeDelayMs: parsed.DISCO_VOADOR_E2E_PTT_DURING_HOLD_PROBE_DELAY_MS,
+          pttPostReleaseProbeDelayMs: parsed.DISCO_VOADOR_E2E_PTT_POST_RELEASE_PROBE_DELAY_MS,
           autoCameraOffAfterMs: parsed.DISCO_VOADOR_E2E_VOICE_AUTO_CAMERA_OFF_MS,
           autoScreenShare: parsed.DISCO_VOADOR_E2E_VOICE_AUTO_SCREEN_SHARE === '1',
           autoScreenShareOffAfterMs: parsed.DISCO_VOADOR_E2E_VOICE_AUTO_SCREEN_SHARE_OFF_MS,
@@ -354,6 +433,14 @@ export function loadDesktopConfig(
               displayName: parsed.DISCO_VOADOR_E2E_SCREENSHOT_BOOKMARK_B_NAME,
               serverAddress: parsed.DISCO_VOADOR_E2E_SCREENSHOT_BOOKMARK_B_ADDRESS,
             },
+          }
+        : undefined,
+    e2eVoicePreferenceAdjust:
+      parsed.DISCO_VOADOR_E2E_VOICE_PREFERENCE_SET_PERCENT !== undefined ||
+      parsed.DISCO_VOADOR_E2E_VOICE_PREFERENCE_SET_MUTE === '1'
+        ? {
+            percent: parsed.DISCO_VOADOR_E2E_VOICE_PREFERENCE_SET_PERCENT,
+            mute: parsed.DISCO_VOADOR_E2E_VOICE_PREFERENCE_SET_MUTE === '1',
           }
         : undefined,
   };

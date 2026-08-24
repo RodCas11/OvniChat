@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, Menu, session } from 'electron';
+import { app, BrowserWindow, dialog, globalShortcut, Menu, session } from 'electron';
 import { promises as fsPromises } from 'node:fs';
 import path from 'node:path';
 
@@ -6,8 +6,11 @@ import { loadDesktopConfig } from './desktop-config.js';
 import { allowedRendererOrigins } from './origins.js';
 import { installPermissionHandlers } from './permissions.js';
 import { disposeProcessAudioSession } from './process-audio.js';
+import { initializePttHotkeyFromSettings, stopPttHotkeyListener } from './ptt-hotkey.js';
 import { registerAppProtocolHandler, registerAppProtocolPrivileges } from './protocol.js';
 import { installScreenShareHandlers } from './screen-share.js';
+import { getClientSettings } from './settings/settings-service.js';
+import { IPC_CHANNELS } from '../shared/ipc-contract.js';
 import { createMainWindow, devServerUrl } from './window.js';
 
 // Must run before `app` becomes ready.
@@ -28,6 +31,12 @@ const config = loadDesktopConfig();
 if (config.e2eFakeMediaRequested && !app.isPackaged) {
   app.commandLine.appendSwitch('use-fake-device-for-media-stream');
   app.commandLine.appendSwitch('use-fake-ui-for-media-stream');
+  // T13.4 — see `desktop-config.ts`'s own doc comment on `DISCO_VOADOR_E2E_FAKE_AUDIO_FILE` for why
+  // this exists (the plain fake-device generator produces literal silence on at least one real
+  // verified environment) and why it is gated identically to the switches above.
+  if (config.e2eFakeAudioFile) {
+    app.commandLine.appendSwitch('use-file-for-fake-audio-capture', config.e2eFakeAudioFile);
+  }
   console.info('[disco-voador] E2E fake media devices enabled (development/test only)');
 }
 
@@ -52,6 +61,25 @@ const e2eAuthorizationExitMarker = isE2EAuthorization
   ? process.env['DISCO_VOADOR_E2E_EXIT_ON_MARKER']
   : undefined;
 const isE2ETextChat = process.env['DISCO_VOADOR_E2E_TEXT_CHAT'] === '1' && !app.isPackaged;
+// T13.4 — `apps/desktop/scripts/e2e-ptt-smoke.mjs` needs the Renderer's own console output relayed
+// to this process's stdout (the orchestrating script watches for `E2E_PTT_*` markers there) — mirrors
+// `isE2ETextChat`'s own minimal "just relay, no exit logic" pattern (`armE2ETextChatRelay`) rather
+// than `isE2EVoiceSmoke`'s bundled exit-on-success behavior, since this scenario's own success
+// criteria (three phase-specific audio-level markers) don't match `armE2EVoiceSmokeExit`'s.
+const isE2EPttSmoke = process.env['DISCO_VOADOR_E2E_PTT_SMOKE'] === '1' && !app.isPackaged;
+// T13.4 — `apps/desktop/scripts/e2e-voice-preference-smoke.mjs` needs both instances' Renderer
+// console output relayed to stdout (`disco-voador:voice-joined:...`, `E2E_PEER_CONNECTED:...`, and
+// this task's own `disco-voador:voice-preference-applied:...` marker) — mirrors `isE2EPttSmoke`'s
+// own minimal "just relay, no exit logic" pattern exactly.
+const isE2EVoicePreferenceSmoke =
+  process.env['DISCO_VOADOR_E2E_VOICE_PREFERENCE_SMOKE'] === '1' && !app.isPackaged;
+// T13.4 — set only on a "verify only" relaunch (no `SET_PERCENT`/`SET_MUTE`): this instance should
+// self-exit gracefully once it has reported its own restored preference, rather than staying alive —
+// see `armE2EVoicePreferenceAdjust`'s own doc comment for why. Deliberately separate from
+// `isE2EVoicePreferenceSmoke` (the base relay flag every instance in this scenario sets, including
+// the persistent "B" instance, which must never self-exit early).
+const isE2EVoicePreferenceVerify =
+  process.env['DISCO_VOADOR_E2E_VOICE_PREFERENCE_VERIFY'] === '1' && !app.isPackaged;
 const isE2ESettingsPersistence = config.e2eSettingsPersistence !== undefined && !app.isPackaged;
 const isE2EReconnectSmoke =
   process.env['DISCO_VOADOR_E2E_RECONNECT_SMOKE'] === '1' && !app.isPackaged;
@@ -233,6 +261,26 @@ function armE2EChannelAdminExit(window: BrowserWindow): void {
  */
 function armE2ETextChatRelay(window: BrowserWindow): void {
   if (!isE2ETextChat) return;
+
+  window.webContents.on('console-message', (_event, _level, message) => {
+    console.info(`[renderer] ${message}`);
+  });
+}
+
+/** T13.4 — see `isE2EPttSmoke`'s own doc comment for why this is a plain relay (mirroring
+ * `armE2ETextChatRelay` exactly) rather than a bundled exit-on-success watcher. */
+function armE2EPttSmokeRelay(window: BrowserWindow): void {
+  if (!isE2EPttSmoke) return;
+
+  window.webContents.on('console-message', (_event, _level, message) => {
+    console.info(`[renderer] ${message}`);
+  });
+}
+
+/** Drives `apps/desktop/scripts/e2e-voice-preference-smoke.mjs` — relay-only, exactly like
+ * `armE2EPttSmokeRelay` above. */
+function armE2EVoicePreferenceSmokeRelay(window: BrowserWindow): void {
+  if (!isE2EVoicePreferenceSmoke) return;
 
   window.webContents.on('console-message', (_event, _level, message) => {
     console.info(`[renderer] ${message}`);
@@ -1309,6 +1357,12 @@ interface ProfileSmokeStep {
   readonly timeoutMs?: number;
   readonly width?: number;
   readonly height?: number;
+  /** `screenshot` only, optional: when `x`/`y` are set alongside `width`/`height`, crops the capture
+   * to that rectangle (`webContents.capturePage(rect)`) instead of the whole page — used for a tight,
+   * high-relative-detail close-up during manual visual QA (e.g. confirming a small ring/badge renders
+   * correctly) without needing a separate image-processing tool. */
+  readonly x?: number;
+  readonly y?: number;
 }
 
 function parseProfileSmokeSteps(raw: string): readonly ProfileSmokeStep[] {
@@ -1420,9 +1474,14 @@ function armE2EProfileSmoke(window: BrowserWindow): void {
     await click(`[data-testid="${testId}"] [aria-label="Close"]`);
   }
 
-  async function saveScreenshot(name: string): Promise<void> {
+  async function saveScreenshot(
+    name: string,
+    rect?: { x: number; y: number; width: number; height: number },
+  ): Promise<void> {
     if (!screenshotDir) throw new Error('DISCO_VOADOR_E2E_PROFILE_SCREENSHOT_DIR is not set');
-    const image = await window.webContents.capturePage();
+    const image = rect
+      ? await window.webContents.capturePage(rect)
+      : await window.webContents.capturePage();
     await fsPromises.writeFile(path.join(screenshotDir, name), image.toPNG());
     console.info(`E2E_SCREENSHOT_SAVED:${name}`);
   }
@@ -1669,7 +1728,21 @@ function armE2EProfileSmoke(window: BrowserWindow): void {
         }
         case 'screenshot':
           if (!step.name) throw new Error('"screenshot" needs a name');
-          await saveScreenshot(step.name);
+          if (
+            step.x !== undefined &&
+            step.y !== undefined &&
+            step.width !== undefined &&
+            step.height !== undefined
+          ) {
+            await saveScreenshot(step.name, {
+              x: step.x,
+              y: step.y,
+              width: step.width,
+              height: step.height,
+            });
+          } else {
+            await saveScreenshot(step.name);
+          }
           break;
         case 'resize':
           if (!step.width || !step.height) throw new Error('"resize" needs width and height');
@@ -1733,6 +1806,438 @@ function armE2EProfileSmoke(window: BrowserWindow): void {
   });
 }
 
+/**
+ * T13.4 — automated `e2e:ptt-smoke` only: pushes a simulated global PTT `'down'`/`'up'` edge on the
+ * exact same `pttState` IPC channel Main's real `uiohook-napi` listener uses (see
+ * `main/ptt-hotkey.ts`), at fixed delays after app launch — deliberately IPC-driven, never real
+ * physical/OS-level key injection. This function never touches `main/ptt-hotkey.ts`'s own listener
+ * lifecycle (no real hook is started, stopped, or interfered with) — from the Renderer's point of
+ * view, this push is indistinguishable from a real edge the native hook would have produced.
+ * `undefined` (`config.e2ePttSimulation`) for every real user and every other scenario, always.
+ *
+ * **Security-review finding, fixed here**: `config.e2ePttSimulation` (`desktop-config.ts`) is
+ * derived purely from two environment variables, with no `app.isPackaged` check of its own — unlike
+ * every sibling `armE2E*` gate in this file (e.g. `armE2EProfileSmoke`'s `isArmed = ... &&
+ * !app.isPackaged`), this function was the one place that forgot to add it at the consuming end
+ * either, so a real packaged build launched with those two environment variables set (a malicious
+ * shortcut, a compromised launcher, a persistent machine-level env var) could have a fake PTT
+ * down-then-up edge injected with no user interaction. `app.isPackaged` reflects how the binary was
+ * actually built/launched, not anything an environment variable can spoof, so gating on it here
+ * makes this structurally inert in a packaged build regardless of environment state, matching this
+ * file's own established, non-negotiable convention (see `docs/SECURITY.md`).
+ */
+function armE2EPttSimulation(window: BrowserWindow): void {
+  const simulation = app.isPackaged ? undefined : config.e2ePttSimulation;
+  if (!simulation) return;
+
+  setTimeout(() => {
+    if (window.isDestroyed()) return;
+    window.webContents.send(IPC_CHANNELS.pttState, { type: 'down' });
+    console.info('E2E_PTT_SIMULATED_DOWN');
+  }, simulation.downAfterMs);
+
+  setTimeout(() => {
+    if (window.isDestroyed()) return;
+    window.webContents.send(IPC_CHANNELS.pttState, { type: 'up' });
+    console.info('E2E_PTT_SIMULATED_UP');
+  }, simulation.upAfterMs);
+}
+
+/**
+ * `e2e-voice-smoke.mjs` and `e2e-reconnect-smoke.mjs` only (gated on their own already-existing
+ * `isE2EVoiceSmoke`/`isE2EReconnectSmoke` flags, both already `!app.isPackaged`-gated — no new env
+ * var needed). Real bug found via QA of these exact scripts: T13.4 made `'voice-activity'` the
+ * default input mode, gating transmission on Chromium's fake-microphone signal clearing a real
+ * energy threshold after real noise-suppression/AGC processing — measured by an independent QA pass
+ * at roughly 10x below the default threshold, so the mic never transmitted at all and these
+ * pre-existing regression tests (unrelated to Voice-Activity calibration) broke.
+ *
+ * **Deliberately marker-driven, not a fixed delay-since-launch pair like `armE2EPttSimulation`
+ * above — a real timing bug found while fixing this.** A first attempt used a fixed
+ * `PTT_DOWN_AFTER_MS` for `e2e-voice-smoke.mjs`, sized by analogy to `e2e:ptt-smoke`'s own 20s
+ * margin — but that script's own audio probe (`probeRemoteAudioLevel`) starts sampling immediately
+ * once the peer connection reaches `'connected'` and gives up after its own fixed sample window,
+ * with no relationship to any PTT timing at all; a fixed delay picked by analogy raced against that
+ * independent window and lost in practice. Listening for `VoiceChannelView.tsx`'s own
+ * `E2E_LOCAL_PUSH_TO_TALK_MODE` console marker instead — logged immediately after each successful
+ * join, once the microphone is already acquired and this connection's `TransmitGate` already exists
+ * — and pushing one simulated `'down'` edge shortly after each occurrence removes the race entirely:
+ * it reacts to what actually happened instead of guessing when it would happen. `e2e-reconnect-smoke.mjs`
+ * additionally needs this to repeat: its own audio proof must succeed *twice* (once before an
+ * unexpected server loss, once after a real reconnect), and a reconnect constructs a brand-new
+ * `TransmitGate` (`pttHeld` always restarts `false`, by design) with no knowledge of an earlier
+ * simulated press — the marker itself now correctly re-fires on every distinct (re)join, including
+ * the post-reconnect rejoin, after a related fix to that effect's one-shot guard.
+ *
+ * No matching `'up'` is ever pushed — held for the rest of that join, which is exactly what an
+ * audio-*delivery* proof needs (neither script has any interest in proving press/release semantics;
+ * `e2e:ptt-smoke` already owns that). This is simulation only, identical in kind to
+ * `armE2EPttSimulation` above (never touches `main/ptt-hotkey.ts`'s real listener lifecycle).
+ */
+function armE2EPttHoldOnJoin(window: BrowserWindow): void {
+  if (!isE2EReconnectSmoke && !isE2EVoiceSmoke) return;
+
+  window.webContents.on('console-message', (_event, _level, message) => {
+    if (!message.includes('E2E_LOCAL_PUSH_TO_TALK_MODE')) return;
+    setTimeout(() => {
+      if (window.isDestroyed()) return;
+      window.webContents.send(IPC_CHANNELS.pttState, { type: 'down' });
+      console.info('E2E_PTT_SIMULATED_DOWN');
+    }, 300);
+  });
+}
+
+/**
+ * `e2e-voice-preference-smoke.mjs` only — throwaway automation, never reachable in a packaged build
+ * (`!app.isPackaged`, same as every other `armE2E*` function here). Once this instance's first real
+ * peer connection is observed (`E2E_PEER_CONNECTED`, the same marker `e2e-ptt-smoke.mjs`/
+ * `e2e-voice-smoke.mjs` already rely on), drives the actual "User Volume"/"Mute for Me" UI via real
+ * DOM clicks and a real `input` event on the real production controls — never a direct action/IPC
+ * call — so the resulting persisted preference is genuine end-to-end product behavior, not a
+ * fabricated shortcut. `percent`/`mute` are independently optional so a later relaunch can toggle
+ * mute alone without re-touching (and risking resetting) an already-persisted volume — see
+ * `DesktopConfig.e2eVoicePreferenceAdjust`'s own doc comment. With no adjustment configured at all
+ * (a "verify only" relaunch — this instance's job is only to prove a previously-set preference
+ * restored on its own), this instead just waits for the normal, unconditional
+ * `disco-voador:voice-preference-applied:` marker every attach already emits.
+ *
+ * Either way, this instance self-exits gracefully (`app.exit()`) once its job is done — found live,
+ * not guessed: an earlier version of this scenario had the orchestrating script externally
+ * `child.kill()` each instance instead, which corrupted this profile's `safeStorage`-encrypted
+ * identity file badly enough that the *next* relaunch of the same `--user-data-dir` failed to decrypt
+ * it at all (reproduced independent of this task's own changes, and confirmed absent when using this
+ * same self-exit technique `armE2EIdentityPersistenceExit` already relies on) — an abrupt external
+ * kill mid-session is not a safe way to end an Electron instance that is about to be relaunched
+ * against the same profile.
+ */
+function armE2EVoicePreferenceAdjust(window: BrowserWindow): void {
+  if (!isE2EVoicePreferenceSmoke) return;
+  const adjust = config.e2eVoicePreferenceAdjust;
+
+  const wait = (ms: number): Promise<void> =>
+    new Promise((resolve) => {
+      setTimeout(resolve, ms);
+    });
+
+  let exited = false;
+  function exitGracefully(): void {
+    if (exited) return;
+    exited = true;
+    setTimeout(() => app.exit(0), 250);
+  }
+
+  if (!adjust) {
+    if (!isE2EVoicePreferenceVerify) return;
+    window.webContents.on('console-message', (_event, _level, message) => {
+      if (message.includes('disco-voador:voice-preference-applied:')) exitGracefully();
+    });
+    return;
+  }
+
+  let started = false;
+  window.webContents.on('console-message', (_event, _level, message) => {
+    const match = /E2E_PEER_CONNECTED:(.+)/.exec(message);
+    if (started || !match) return;
+    started = true;
+    const peerId = match[1]?.trim();
+    if (!peerId) return;
+
+    void (async () => {
+      try {
+        await wait(500); // let the participant row actually render before clicking it.
+        await window.webContents.executeJavaScript(
+          `document.querySelector('[data-testid="participant-row-voice-controls-${peerId}"]')?.click();`,
+        );
+        await wait(300);
+
+        if (adjust.percent !== undefined) {
+          await window.webContents.executeJavaScript(`
+            (function () {
+              const el = document.querySelector('[data-testid="participant-user-volume-slider"]');
+              if (!el) return;
+              const setter = Object.getOwnPropertyDescriptor(
+                window.HTMLInputElement.prototype,
+                'value',
+              ).set;
+              setter.call(el, ${JSON.stringify(String(adjust.percent))});
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+            })();
+          `);
+          await wait(200);
+        }
+
+        if (adjust.mute) {
+          await window.webContents.executeJavaScript(
+            `document.querySelector('[data-testid="participant-local-mute-toggle"]')?.click();`,
+          );
+          await wait(200);
+        }
+
+        // Past the 400ms volume-persist debounce (see `use-voice-channel.ts`'s
+        // `VOICE_PREFERENCE_PERSIST_DEBOUNCE_MS`) so the real IPC write actually fires before this
+        // instance exits.
+        await wait(700);
+        await window.webContents.executeJavaScript(
+          `document.querySelector('[aria-label="Close"]')?.click();`,
+        );
+        console.info('E2E_VOICE_PREFERENCE_ADJUSTED');
+        exitGracefully();
+      } catch (error) {
+        console.error('E2E voice-preference adjust failed', error);
+      }
+    })();
+  });
+}
+
+/**
+ * QA-pass (T13.4) screenshot-capture tooling only — throwaway automation added solely to produce
+ * this task's QA evidence set, never a permanent regression test and never reachable in a packaged
+ * build (`!app.isPackaged`, same as every other `armE2E*` function here). Mirrors
+ * `armE2EScreenshotWorkspaceCapture`'s own "drive real testids via `webContents.executeJavaScript`,
+ * resize the real `BrowserWindow`, `capturePage()` between shots" technique exactly, extended with
+ * `webContents.sendInputEvent` for the two screenshots that need a genuine native keyboard event
+ * (the PTT shortcut capture control only ever listens for real `keydown`, never a synthetic
+ * `dispatchEvent`) and a real, momentary `globalShortcut.register()` call (the same mechanism
+ * `main/ptt-hotkey.ts`'s own conflict probe uses) to produce a deterministic, real conflict rather
+ * than a fabricated one.
+ */
+function armE2ET134PresenterScreenshotCapture(window: BrowserWindow): void {
+  const captureDirEnv = process.env['DISCO_VOADOR_E2E_T134_SCREENSHOT_DIR'];
+  const channelId = config.e2eVoiceAutoJoin?.channelId;
+  if (!captureDirEnv || !channelId || app.isPackaged) return;
+  const captureDir = captureDirEnv;
+
+  const wait = (ms: number): Promise<void> =>
+    new Promise((resolve) => {
+      setTimeout(resolve, ms);
+    });
+
+  async function saveCapture(name: string): Promise<void> {
+    const image = await window.webContents.capturePage();
+    await fsPromises.writeFile(path.join(captureDir, name), image.toPNG());
+    console.info(`E2E_SCREENSHOT_SAVED:${name}`);
+  }
+
+  async function click(selector: string): Promise<void> {
+    await window.webContents.executeJavaScript(
+      `document.querySelector(${JSON.stringify(selector)})?.click();`,
+    );
+  }
+
+  async function clickByText(tag: string, text: string): Promise<void> {
+    await window.webContents.executeJavaScript(`
+      (function () {
+        const el = Array.from(document.querySelectorAll(${JSON.stringify(tag)}))
+          .find((n) => n.textContent && n.textContent.trim() === ${JSON.stringify(text)});
+        el?.click();
+      })();
+    `);
+  }
+
+  async function setRangeValue(selector: string, value: number): Promise<void> {
+    await window.webContents.executeJavaScript(`
+      (function () {
+        const el = document.querySelector(${JSON.stringify(selector)});
+        if (!el) return;
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+        setter.call(el, ${JSON.stringify(String(value))});
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+      })();
+    `);
+  }
+
+  async function waitForText(
+    selector: string,
+    includes: string,
+    timeoutMs: number,
+  ): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const text: string = await window.webContents.executeJavaScript(
+        `document.querySelector(${JSON.stringify(selector)})?.textContent ?? '';`,
+      );
+      if (text.includes(includes)) return true;
+      await wait(200);
+    }
+    return false;
+  }
+
+  function sendKeyTap(keyCode: string): void {
+    window.webContents.sendInputEvent({ type: 'keyDown', keyCode });
+    window.webContents.sendInputEvent({ type: 'keyUp', keyCode });
+  }
+
+  let started = false;
+  const joinedMarker = `disco-voador:voice-joined:${channelId}`;
+
+  window.webContents.on('console-message', (_event, _level, message) => {
+    if (started || !message.includes(joinedMarker)) return;
+    started = true;
+
+    void (async () => {
+      try {
+        await wait(1500); // let the just-joined UI settle.
+        window.setBounds({ width: 1920, height: 1080 });
+        await wait(400);
+
+        await click('[data-testid="user-control-settings"]');
+        await wait(500);
+        await click('[data-testid="settings-nav-voice"]');
+        await wait(400);
+
+        // --- Voice Activity: meter + sensitivity ---
+        await clickByText('button', 'Test microphone');
+        await setRangeValue('#voice-activity-sensitivity', 0.8);
+        await wait(1200); // let the live meter animate a few frames.
+        await saveCapture('01-settings-voice-activity.png');
+        await clickByText('button', 'Stop microphone test');
+        await wait(300);
+
+        // --- Push to Talk: unbound state ---
+        await click('[data-testid="voice-input-mode-push-to-talk"]');
+        await wait(400);
+        await saveCapture('02-settings-ptt-unbound.png');
+
+        // --- Push to Talk: a real, deterministic conflict (momentary globalShortcut.register, the
+        // same mechanism main/ptt-hotkey.ts's own conflict probe uses) ---
+        const conflictAccelerator = 'Q';
+        const registered = globalShortcut.register(conflictAccelerator, () => {
+          // Intentionally empty — this only exists to make Q report "already in use".
+        });
+        if (registered) {
+          await click('[data-testid="ptt-shortcut-capture-button"]');
+          await wait(200);
+          sendKeyTap('Q');
+          const gotConflict = await waitForText(
+            '[data-testid="ptt-shortcut-status"]',
+            'already in use',
+            4000,
+          );
+          if (gotConflict) await saveCapture('03-settings-ptt-conflict.png');
+          else console.error('E2E_T134_SCREENSHOT_WARNING: conflict state never appeared');
+          globalShortcut.unregister(conflictAccelerator);
+        } else {
+          console.error(
+            'E2E_T134_SCREENSHOT_WARNING: could not pre-register Q for the conflict demo',
+          );
+        }
+
+        // --- Push to Talk: real registered binding (F9) ---
+        await click('[data-testid="ptt-shortcut-capture-button"]');
+        await wait(200);
+        sendKeyTap('F9');
+        await waitForText('[data-testid="ptt-shortcut-status"]', 'registered', 4000);
+        await wait(300);
+        await saveCapture('04-settings-ptt-registered.png');
+
+        // --- User control bar with PTT actively held ---
+        await click('[aria-label="Close"]');
+        await wait(400);
+        window.webContents.send(IPC_CHANNELS.pttState, { type: 'down' });
+        console.info('E2E_T134_PTT_HELD_FOR_SCREENSHOT');
+        await wait(600);
+        await saveCapture('05-user-control-bar-ptt-held.png');
+        await wait(19_000); // stay held long enough for the paired viewer instance to observe it.
+        window.webContents.send(IPC_CHANNELS.pttState, { type: 'up' });
+
+        // --- Settings at 1366x768 ---
+        window.setBounds({ width: 1366, height: 768 });
+        await wait(400);
+        await click('[data-testid="user-control-settings"]');
+        await wait(500);
+        await click('[data-testid="settings-nav-voice"]');
+        await wait(400);
+        await saveCapture('07-settings-1366x768.png');
+
+        console.info('E2E_T134_SCREENSHOT_CAPTURE_DONE');
+        setTimeout(() => app.exit(0), 250);
+      } catch (error) {
+        console.error('E2E T13.4 presenter screenshot capture failed', error);
+        setTimeout(() => app.exit(1), 250);
+      }
+    })();
+  });
+}
+
+/**
+ * QA-pass (T13.4) screenshot-capture tooling only — the paired "viewer" half of
+ * `armE2ET134PresenterScreenshotCapture`: waits for a real peer connection, then best-effort polls
+ * for the *presenter's own* speaking ring (`[data-testid="participant-row-avatar-wrap-<peerId>"]
+ * [data-speaking="true"]`, `ParticipantRow.tsx`) before capturing the participant list regardless of
+ * whether it ever appeared (a missing subject is reported via a console marker, never silently
+ * hidden), then opens that same participant's real "User Volume" modal for the final shot.
+ *
+ * Found and fixed live during this task's own screenshot review: an earlier version of this poll used
+ * an unscoped `document.querySelector('[data-speaking="true"]')`, which matches *any* speaking
+ * participant on the page — including the viewer's own self-row (this harness's fake microphone
+ * device emits real audio energy, so a viewer left in the default Voice Activity mode legitimately
+ * speaks locally). That self-row match resolved the poll near-immediately, well before the
+ * presenter's remotely transmitted audio could register, so the captured screenshot showed the
+ * viewer's own ring rather than the intended remote subject — the marker said "observed" without
+ * actually proving cross-peer speaking detection. Scoping the selector to the presenter's own
+ * `peerId` (already captured from `E2E_PEER_CONNECTED`) makes this prove what it claims.
+ */
+function armE2ET134ViewerScreenshotCapture(window: BrowserWindow): void {
+  const captureDirEnv = process.env['DISCO_VOADOR_E2E_T134_VIEWER_SCREENSHOT_DIR'];
+  const channelId = config.e2eVoiceAutoJoin?.channelId;
+  if (!captureDirEnv || !channelId || app.isPackaged) return;
+  const captureDir = captureDirEnv;
+
+  const wait = (ms: number): Promise<void> =>
+    new Promise((resolve) => {
+      setTimeout(resolve, ms);
+    });
+
+  async function saveCapture(name: string): Promise<void> {
+    const image = await window.webContents.capturePage();
+    await fsPromises.writeFile(path.join(captureDir, name), image.toPNG());
+    console.info(`E2E_SCREENSHOT_SAVED:${name}`);
+  }
+
+  let peerId: string | undefined;
+  let started = false;
+
+  window.webContents.on('console-message', (_event, _level, message) => {
+    const peerMatch = /E2E_PEER_CONNECTED:(.+)/.exec(message);
+    if (peerMatch) peerId = peerMatch[1]?.trim();
+    if (started || !peerId) return;
+    started = true;
+
+    void (async () => {
+      try {
+        window.setBounds({ width: 1920, height: 1080 });
+        await wait(1000);
+
+        const deadline = Date.now() + 25_000;
+        let speaking = false;
+        while (Date.now() < deadline) {
+          speaking = await window.webContents.executeJavaScript(
+            `document.querySelector('[data-testid="participant-row-avatar-wrap-${String(peerId)}"][data-speaking="true"]') !== null;`,
+          );
+          if (speaking) break;
+          await wait(300);
+        }
+        console.info(
+          speaking ? 'E2E_T134_SPEAKING_RING_OBSERVED' : 'E2E_T134_SPEAKING_RING_NOT_OBSERVED',
+        );
+        await saveCapture('06-participant-list-speaking.png');
+
+        await window.webContents.executeJavaScript(
+          `document.querySelector('[data-testid="participant-row-voice-controls-${String(peerId)}"]')?.click();`,
+        );
+        await wait(500);
+        await saveCapture('06b-participant-volume-modal.png');
+
+        console.info('E2E_T134_VIEWER_SCREENSHOT_CAPTURE_DONE');
+        setTimeout(() => app.exit(0), 250);
+      } catch (error) {
+        console.error('E2E T13.4 viewer screenshot capture failed', error);
+        setTimeout(() => app.exit(1), 250);
+      }
+    })();
+  });
+}
+
 async function bootstrap(): Promise<void> {
   await app.whenReady();
 
@@ -1747,6 +2252,17 @@ async function bootstrap(): Promise<void> {
   installScreenShareHandlers(session.defaultSession, allowedOrigins);
 
   const window = createMainWindow(config, allowedOrigins);
+
+  // T13.4 — starts the global PTT hook from whatever binding was persisted last session, if any.
+  // Deliberately independent of window/connection lifecycle from here on (ADR 0021) — only an
+  // explicit `setPttShortcut`/`clearPttShortcut` IPC call or app quit (`stopPttHotkeyListener` below)
+  // ever changes it again. A failure here is logged, never thrown — must not block app startup.
+  void getClientSettings()
+    .then((settings) => initializePttHotkeyFromSettings(settings.voice.pttBinding))
+    .catch((error: unknown) => {
+      console.error('ptt-hotkey: failed to read persisted settings at startup', error);
+    });
+
   armSmokeTestExit(window);
   armE2EVoiceSmokeExit(window);
   armE2ECameraSmokeExit(window);
@@ -1766,6 +2282,13 @@ async function bootstrap(): Promise<void> {
   armE2EChannelAdminScreenshotCapture(window);
   armE2EChannelGuestScreenshotCapture(window);
   armE2EProfileSmoke(window);
+  armE2EPttSmokeRelay(window);
+  armE2EVoicePreferenceSmokeRelay(window);
+  armE2EPttSimulation(window);
+  armE2EPttHoldOnJoin(window);
+  armE2EVoicePreferenceAdjust(window);
+  armE2ET134PresenterScreenshotCapture(window);
+  armE2ET134ViewerScreenshotCapture(window);
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -1786,6 +2309,9 @@ app.on('window-all-closed', () => {
 // source in this app backed by an actual OS child process.
 app.on('before-quit', () => {
   disposeProcessAudioSession();
+  // T13.4 — never leave a native `uiohook-napi` keyboard/mouse hook running after the app itself has
+  // exited (mirrors `disposeProcessAudioSession`'s own "no lingering native resource" discipline).
+  stopPttHotkeyListener();
 });
 
 bootstrap().catch((error: unknown) => {

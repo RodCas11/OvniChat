@@ -5,18 +5,21 @@ interface RemoteAudioProps {
   readonly stream: MediaStream;
   readonly muted: boolean;
   /** T11 — the user's preferred output device (`null` = system default), applied via
-   * `HTMLMediaElement.setSinkId()`. Every `<audio>` element playing remote media honors this — both
-   * this microphone-audio use (`VoiceChannelView.tsx`'s `remoteAudioStreams` loop) and the
-   * screen-audio use (T6's `remoteScreenAudioStreams` loop, also rendered via this same component,
-   * per T11 Section 80's explicit requirement that both classes of remote audio honor the setting,
-   * not just microphone). Optional so this component stays usable even before the caller has loaded
-   * a preference (treated identically to `null`/system default while `undefined`). */
+   * `HTMLMediaElement.setSinkId()`. T13.4 note: remote *microphone* audio no longer renders through
+   * this component at all — it moved to `remote-audio-graph.ts`'s Web Audio graph (per-participant
+   * volume/speaking detection needed something richer than a plain `<audio>` element), which calls
+   * `AudioContext.setSinkId()` once at the context level instead. This component (and this prop) is
+   * used only for screen/system audio now (T6's `remoteScreenAudioStreams` loop in
+   * `VoiceChannelView.tsx`), which has no per-participant-volume requirement and was left on its
+   * original, already-working `<audio>` path. Optional so this component stays usable even before the
+   * caller has loaded a preference (treated identically to `null`/system default while `undefined`). */
   readonly outputDeviceId?: string | null | undefined;
 }
 
 /**
- * Plays one remote participant's audio track. `srcObject` has no React prop equivalent, so it is
- * set imperatively; `muted` implements deafen as a purely local-playback concern — the peer
+ * Plays one remote participant's *screen/system* audio track (T13.4: no longer used for microphone
+ * audio — see `outputDeviceId`'s own doc comment above). `srcObject` has no React prop equivalent, so
+ * it is set imperatively; `muted` implements deafen as a purely local-playback concern — the peer
  * connection and remote track keep flowing regardless (see `docs/architecture/WEBRTC_VOICE.md`).
  *
  * `setSinkId()` (T11) only changes *where* audio would play, never *whether* it is audible —

@@ -47,6 +47,24 @@ See [ADR 0015](../adr/0015-local-client-settings-and-bookmarks.md) for why this 
 section-by-section corruption-salvage discipline (a malformed `screenShare` section does not also
 discard the bookmark list).
 
+**T13.4 precedent: additive schema growth needs no version bump.** `voice` gained
+`inputMode`/`pttBinding`/`voiceActivitySensitivity`/`joinLeaveSoundsEnabled` (each `zod`
+`.default(...)`), and a new top-level `voicePreferences: Record<serverScopeKey, Record<identityRef,
+{volumePercent, locallyMuted}>>` section was added, both without touching `SETTINGS_FILE_VERSION` —
+under `.strict()`, `zod` rejects only _unrecognized_ keys, not _missing_ keys that carry a default, so
+a pre-T13.4 file simply picks up the new defaults on next read. Verified concretely (not just reasoned
+about) by a dedicated test reading a byte-for-byte pre-T13.4 fixture and confirming it parses as a
+genuine schema success, never the corrupted-file salvage path. `voicePreferences`'s inner key,
+`identityRef`, is a durable, per-server-only correlation token — deliberately never the local client's
+own real `identityId` discussed below, and never the remote peer's either (see
+[ADR 0022](../adr/0022-durable-per-server-identity-ref-for-local-voice-preferences.md)) —
+`deriveServerScopeKey` itself now lives in `apps/desktop/src/shared/voice-preference-scope.ts` (a
+single source of truth reused by both Main, which persists by it, and the Renderer, which must derive
+the same key for the server it is currently connected to). This is now the established pattern for
+growing this file: reach for an additive, defaulted field first, and reserve an actual version bump
+for a genuine breaking change (a field whose _meaning_ changes, or
+whose removal would break an old file's semantics, not merely add to them).
+
 ### IPC surface
 
 Five narrow methods on `DesktopApi`
@@ -135,16 +153,17 @@ afterward (T11's race requirement).
   microphone), and re-requests history for whichever chat threads were open before the loss.
 - **`connectionFailed`** — sets a human-readable `state.connectionError`, shown by `VoiceChannelView`.
 
-| Source                   | Restored after reconnect?                                                                                                                                                             |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Voice-channel membership | Yes — via `join()`                                                                                                                                                                    |
-| Microphone               | Yes — reacquired fresh by `join()`, current mute state re-applied                                                                                                                     |
-| Mute / deafen            | Yes — never reset by the reconnect cycle in the first place                                                                                                                           |
-| Camera                   | **No** — released the instant a loss is detected, never auto-restarted                                                                                                                |
-| Screen video/audio       | **No** — same treatment as camera                                                                                                                                                     |
-| Chat threads             | Reloaded from the server (fresh history request), never from client memory                                                                                                            |
-| Profile/presence (T13.3) | Yes, accurately — the server proactively pushes the identity's real persisted avatar/status/presence as part of every connection's initial burst, never left as a stale/default guess |
-| Member list (T13.3)      | Reloaded from the server (`server:presence-snapshot`), never carried over from before the loss                                                                                        |
+| Source                                     | Restored after reconnect?                                                                                                                                                                                                                                                                                                                                                                   |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Voice-channel membership                   | Yes — via `join()`                                                                                                                                                                                                                                                                                                                                                                          |
+| Microphone                                 | Yes — reacquired fresh by `join()`, current mute state re-applied                                                                                                                                                                                                                                                                                                                           |
+| Mute / deafen                              | Yes — never reset by the reconnect cycle in the first place                                                                                                                                                                                                                                                                                                                                 |
+| Camera                                     | **No** — released the instant a loss is detected, never auto-restarted                                                                                                                                                                                                                                                                                                                      |
+| Screen video/audio                         | **No** — same treatment as camera                                                                                                                                                                                                                                                                                                                                                           |
+| Chat threads                               | Reloaded from the server (fresh history request), never from client memory                                                                                                                                                                                                                                                                                                                  |
+| Profile/presence (T13.3)                   | Yes, accurately — the server proactively pushes the identity's real persisted avatar/status/presence as part of every connection's initial burst, never left as a stale/default guess                                                                                                                                                                                                       |
+| Member list (T13.3)                        | Reloaded from the server (`server:presence-snapshot`), never carried over from before the loss                                                                                                                                                                                                                                                                                              |
+| Push to Talk / Voice Activity mode (T13.4) | **No** — deliberately not "restored." A held PTT key never resumes transmission after a reconnect (a fresh `TransmitGate` is constructed for the new session, always starting `pttHeld: false`); the user's chosen input mode/binding/sensitivity settings themselves persist locally exactly like any other local preference, but _transmission state_ is never carried across a reconnect |
 
 Camera and screen non-restoration is a mandatory, non-negotiable product/privacy constraint, not a
 convenience trade-off — see ADR 0016.

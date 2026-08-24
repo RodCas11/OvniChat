@@ -804,12 +804,38 @@ export function handleClientPing(message: ClientPingMessage): ServerMessage {
 function toWireParticipant(
   record: VoiceParticipantRecord,
   ctx: HandlerContext,
-): { participantId: string; displayName: string; groups: { groupId: string; name: string }[] } {
+): {
+  participantId: string;
+  displayName: string;
+  groups: { groupId: string; name: string }[];
+  identityRef: string;
+  memberRef: string;
+} {
   return {
     participantId: record.participantId,
     displayName: record.displayName,
     groups: [...ctx.authorization.getPublicBadges(record.identityId)],
+    identityRef: ctx.profile.getOrCreateIdentityRef(record.identityId),
+    memberRef: resolveMemberRefForVoiceParticipant(record.identityId, record.participantId, ctx),
   };
+}
+
+/**
+ * `PresenceRegistry.getMemberRef` is typed `string | undefined` only because it is a general lookup
+ * — for a real, currently-joined voice participant this is structurally always defined (reaching
+ * `ready` always registers presence first; see `PresenceRegistry`'s own doc comment), exactly the
+ * same invariant `buildMemberPresenceView` already relies on elsewhere in this file. Falling back to
+ * `participantId` (never a real `memberRef`, but a validly-shaped, harmless opaque string) rather
+ * than throwing keeps this defensive-not-load-bearing: in the practically-unreachable case this ever
+ * fired, the affected client would simply find no matching `state.members` entry and render the
+ * ordinary no-avatar fallback, never a crash or a real correlation to the wrong person.
+ */
+function resolveMemberRefForVoiceParticipant(
+  identityId: string,
+  participantId: string,
+  ctx: HandlerContext,
+): string {
+  return ctx.presenceRegistry.getMemberRef(identityId) ?? participantId;
 }
 
 function notifyParticipantLeft(
@@ -1059,6 +1085,8 @@ function handleVoiceJoin(message: ClientVoiceJoinMessage, ctx: HandlerContext): 
           participantId: outcome.participantId,
           displayName: outcome.displayName,
           groups: [...ctx.authorization.getPublicBadges(identityId)],
+          identityRef: ctx.profile.getOrCreateIdentityRef(identityId),
+          memberRef: resolveMemberRefForVoiceParticipant(identityId, outcome.participantId, ctx),
         },
       }),
     );

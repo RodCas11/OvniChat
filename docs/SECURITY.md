@@ -600,6 +600,107 @@ to this document:
   trusts the _format safety_ of server-supplied avatar bytes (per the re-validation point above) but
   has no basis to trust their _authenticity/attribution_ in a self-hosted, operator-controlled model.
 
+**Implemented (T13.4 — gamer voice experience: Push to Talk, Voice Activity, speaking indicators,
+per-user volume, local mute, join/leave sounds):** see
+`docs/architecture/GAMER_VOICE_EXPERIENCE.md` and
+[ADR 0021](adr/0021-global-ptt-in-process-keyboard-hook.md) for the full design. Key points relevant
+to this document:
+
+- **No server-authoritative "who may speak" control was introduced, deliberately, again.** This
+  reaffirms T13.2's own "Speak-permission" conclusion rather than reopening it: `packages/protocol`
+  and `services/realtime` are completely untouched by this task, and there is no channel Speak ACL,
+  no moderator server-mute pretending to be enforceable, and no remote microphone-suppression
+  capability of any kind. Push to Talk, Voice Activity, per-user volume, and local mute are all
+  purely client-local playback/transmit UX, verified by inspecting the actual diff rather than
+  trusting the task's own framing.
+- **The global-hotkey native listener lives inside `packages/windows-media`, never directly in
+  `apps/desktop/src/main`** — the existing, binding rule from this document, not new to this task.
+  `packages/windows-media/src/ptt-hotkey-listener.ts` wraps `uiohook-napi`'s process-wide `WH_KEYBOARD_LL`
+  hook behind a narrow interface; the Renderer never imports `@disco-voador/windows-media` (even
+  type-only), enforced by `scripts/verify-architecture.mjs`.
+- **No generic keylogger path exists.** The native listener is narrowed to exactly one
+  caller-configured binding's `'down'`/`'up'` edges; every other raw input event is discarded in the
+  same tick it arrives, never buffered, logged, or forwarded anywhere — audited directly against
+  `ptt-binding.ts`'s matcher, not assumed from its doc comment.
+- **The IPC surface is deliberately narrow**: `setPttShortcut(binding)`, `clearPttShortcut()`, and a
+  push-style `onPttState(listener)` subscription — never a generic "register any hotkey" capability.
+  Every handler is `assertTrustedSender`-gated and validates the binding shape against a local zod
+  schema before acting on it, matching every other IPC channel's own precedent.
+- **PTT cannot get stuck transmitting.** `packages/media-core/src/transmit-gate.ts`'s `TransmitGate`
+  structurally excludes `pttHeld` from its constructor's initial-state type, so no code path can
+  construct an already-"held" gate; a fresh instance is built on every real microphone acquisition
+  (join, reconnect), never reused, which is what guarantees a key still physically held across a
+  reconnect cannot silently resume transmission. Explicit mute always overrides a held PTT key or
+  detected voice activity, checked directly in the gate's derivation, not merely documented.
+- **No renegotiation for any mute/PTT/Voice-Activity/local-mute/volume transition** — only
+  `track.enabled` toggling and Web Audio gain/analysis nodes; device switching remains the only
+  legitimate `replaceTrack` use, unchanged from T11.
+- **No microphone-activity, speaking, or PTT-usage telemetry or history, anywhere.** PTT bindings,
+  Voice Activity sensitivity, and per-participant volume/mute are stored only in the existing local
+  settings file; no protocol field, server message, or log statement carries a preference _value_ of
+  any kind — audited directly against `packages/protocol/src/messages/`. (A later targeted fix, below,
+  did add one minimal, reviewed correlation field to this package — `identityRef` — but it carries no
+  preference data itself, only an opaque identity handle.)
+- **Per-participant volume/mute preferences are never keyed by T13.3's session-scoped `memberRef`, and
+  never by the cross-server-portable `identityId`.** They are keyed by a normalized server-scope
+  string (`deriveServerScopeKey`) plus `identityRef` — a durable, per-server-only correlation token
+  introduced by the targeted fix below — so a reconnect (which reassigns `memberRef`) cannot silently
+  orphan a saved preference, and no client ever needs to learn another identity's real, portable
+  `identityId` to benefit from this feature. A `MAX_VOICE_PREFERENCE_ENTRIES = 500` bound prevents
+  unbounded local storage growth, mirroring `MAX_BOOKMARKS`'s existing precedent.
+- **Targeted fix (`identityRef`): the one deliberate exception to "packages/protocol/services/realtime
+  untouched" above, reviewed on its own.** The initial T13.4 pass had no stable correlation between a
+  voice-channel `participantId` and a remote user's actual identity, so per-participant preferences
+  could not survive a reconnect/relaunch at all. Fixed by adding `identityRef` — a durable, per-
+  `(Dedicated Server, identity)` opaque token (`ProfilePort.getOrCreateIdentityRef`, a fresh
+  `randomUUID()` generated once and persisted in `identity_profiles.identity_ref`, migration v2) — to
+  `voiceParticipantSchema`. Never the raw `identityId` (would reopen the cross-server correlation
+  channel ADR 0011 closed): two independently-operated Dedicated Servers mint two _unrelated_ random
+  values for the very same real identity, verified directly (not merely reasoned about) via a
+  dedicated two-independent-`SqliteProfileStore`-instances test. `getOrCreateIdentityRef` is always
+  called with a server-resolved `identityId` (from the verified Ed25519 identity-proof handshake),
+  never a client-supplied value — not spoofable. Scoped to `voiceParticipantSchema` only, introducing
+  no new hidden-channel or server-wide-presence leak. This is a required-field wire change, so
+  `CURRENT_PROTOCOL_VERSION` was bumped 4 → 5 (see
+  [ADR 0022](adr/0022-durable-per-server-identity-ref-for-local-voice-preferences.md)). A focused
+  `security-reviewer` pass scoped to exactly this diff found no release-blocking issues; one
+  informational finding (internal IPC parameter names in the local-settings persistence path still
+  said `identityId` even though they always carried `identityRef` values — a naming leftover from
+  before this correlation problem was solved) was fixed by renaming throughout, not left as a note.
+- **Found and fixed before this task's completion: a test-only PTT-simulation hook was reachable in a
+  packaged build.** `armE2EPttSimulation` (later generalized to `armE2EPttHoldOnJoin`) — the
+  Main-process hook that injects a simulated PTT edge over IPC for the `e2e:ptt-smoke`/
+  `e2e:voice-smoke`/`e2e:reconnect-smoke` scripts — was missing the `!app.isPackaged` gate every
+  sibling `armE2E*` hook in `apps/desktop/src/main/index.ts` already has. A real packaged build
+  launched with the right environment variables set (a malicious shortcut, a compromised launcher, a
+  persistent machine-level env var) could have had a fake PTT down-then-up edge injected with no user
+  interaction. Fixed by gating the config value itself on `!app.isPackaged`, matching this
+  repository's own non-negotiable "test-only automation must be structurally inert in a packaged
+  build" rule.
+- **Global-hotkey conflict detection is honestly weak, by the nature of the OS mechanism, not by an
+  implementation shortcut.** The best-effort probe (`globalShortcut.register()`/`unregister()`) only
+  detects another application that itself used `RegisterHotKey` for the identical accelerator; a
+  passive `WH_KEYBOARD_LL` hook has no OS-level concept of "already taken." Documented in ADR 0021 as
+  an accepted limitation, never presented to the user as a guarantee.
+- **PTT while an elevated/anti-cheat-protected game has focus is a genuine, documented Windows UIPI
+  boundary** (ADR 0021) — no privilege-escalation workaround was attempted or is planned.
+- **A real Chromium decode-pipeline defect, found and fixed, is a correctness fix with no security
+  implication of its own** (a remote audio track failed to decode without a keep-alive
+  `HTMLMediaElement` attached) — noted here only because it was found during this task's security/QA
+  hardening pass; see `GAMER_VOICE_EXPERIENCE.md`'s "Remote audio" section for the full technical
+  record. It introduces no new audible/inaudible cross-participant leak: the keep-alive element is
+  muted before `srcObject` is ever assigned and is never inserted into the DOM.
+- **Join/leave notification sounds carry no new dependency-audit or content-supply-chain exposure.**
+  The two tones are original, synthesized, inline base64 WAV bytes (~1-1.2 KB each) committed directly
+  in source — no remote URL fetch, no third-party licensed asset, no new asset-loading code path.
+- **`uiohook-napi` was checked before adoption, not merely trusted by name.** MIT-licensed,
+  N-API-based (ABI-stable across the Node/Electron versions this app pins), ships prebuilt binaries
+  via `node-gyp-build`/`prebuildify` so no arbitrary build-time script executes attacker-controlled
+  code on install; `pnpm-workspace.yaml`'s `allowBuilds` entry for it was resolved (not left as an
+  unreviewed placeholder) with a comment explaining why its own install script is a no-op when a
+  matching prebuild exists. The dependency audit gate in `corepack pnpm check` shows no new advisory
+  introduced by it.
+
 ## Secrets and configuration
 
 - No real credentials, private keys, TURN shared secret, auth tokens, or certificates in Git.

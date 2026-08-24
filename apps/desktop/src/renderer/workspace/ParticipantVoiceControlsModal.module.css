@@ -1,0 +1,28 @@
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ovni-space-2);
+  padding-bottom: var(--ovni-space-4);
+  margin-bottom: var(--ovni-space-4);
+  border-bottom: 1px solid var(--ovni-border);
+}
+
+.section:last-child {
+  padding-bottom: 0;
+  margin-bottom: 0;
+  border-bottom: none;
+}
+
+.volumeLabel {
+  display: flex;
+  align-items: center;
+  gap: var(--ovni-space-1);
+  font-size: var(--ovni-text-sm);
+  color: var(--ovni-text-primary);
+}
+
+.hint {
+  margin: 0;
+  font-size: var(--ovni-text-xs);
+  color: var(--ovni-text-tertiary);
+}

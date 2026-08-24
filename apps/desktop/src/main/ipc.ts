@@ -6,6 +6,7 @@ import {
   identityExpiresAtSchema,
   identityNonceSchema,
 } from '@disco-voador/protocol';
+import type { PttBinding } from '@disco-voador/windows-media';
 import { app, BrowserWindow, ipcMain } from 'electron';
 import type { IpcMainInvokeEvent, WebContents } from 'electron';
 import { z } from 'zod';
@@ -29,7 +30,9 @@ import {
   type DesktopRealtimeConfig,
   type DesktopScreenSource,
   type DesktopServerBookmark,
+  type DesktopSetPttShortcutResult,
   type DesktopVersionInfo,
+  type DesktopVoicePreferenceEntry,
 } from '../shared/ipc-contract.js';
 import { selectAvatarImageFile, validateAvatarImageBytes } from './avatar-images.js';
 import {
@@ -39,6 +42,7 @@ import {
 } from './identity/identity-service.js';
 import { getNickname, setNickname } from './identity/nickname-store.js';
 import { isAllowedOrigin } from './origins.js';
+import { clearPttShortcut, setPttPushTarget, setPttShortcut } from './ptt-hotkey.js';
 import {
   cancelProcessAudioEnumeration,
   getProcessAudioCapability,
@@ -50,7 +54,9 @@ import { listScreenShareSources, selectScreenShareSource } from './screen-share.
 import {
   addBookmark,
   getClientSettings,
+  getVoicePreference,
   removeBookmark,
+  setVoicePreference,
   updateBookmark,
   updateClientSettings,
 } from './settings/settings-service.js';
@@ -89,6 +95,30 @@ const MAX_DEVICE_ID_LENGTH = 256;
 
 const deviceIdPatchSchema = z.string().min(1).max(MAX_DEVICE_ID_LENGTH).nullable();
 
+/** T13.4 — mirrors `settings-file.ts`'s own `pttModifierStateSchema`/`pttBindingSchema` exactly
+ * (see that file's doc comment for why this is re-declared rather than imported: no runtime
+ * dependency on `@disco-voador/windows-media`'s types is needed for a `zod` literal shape). Main is
+ * never willing to accept a shape here that the storage layer itself would reject. */
+const pttModifierStateSchema = z
+  .object({ ctrl: z.boolean(), alt: z.boolean(), shift: z.boolean(), meta: z.boolean() })
+  .strict();
+const pttBindingSchema = z.discriminatedUnion('kind', [
+  z
+    .object({
+      kind: z.literal('keyboard'),
+      keycode: z.number().int().nonnegative(),
+      modifiers: pttModifierStateSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('mouseButton'),
+      button: z.number().int().nonnegative(),
+      modifiers: pttModifierStateSchema,
+    })
+    .strict(),
+]);
+
 const clientSettingsPatchSchema = z
   .object({
     audio: z
@@ -103,7 +133,14 @@ const clientSettingsPatchSchema = z
       .partial()
       .optional(),
     voice: z
-      .object({ startMuted: z.boolean(), startDeafened: z.boolean() })
+      .object({
+        startMuted: z.boolean(),
+        startDeafened: z.boolean(),
+        inputMode: z.enum(['voice-activity', 'push-to-talk']),
+        pttBinding: pttBindingSchema.nullable(),
+        voiceActivitySensitivity: z.number().min(0).max(1),
+        joinLeaveSoundsEnabled: z.boolean(),
+      })
       .strict()
       .partial()
       .optional(),
@@ -111,6 +148,29 @@ const clientSettingsPatchSchema = z
     connectOnStartup: z.boolean().optional(),
   })
   .strict();
+
+/** T13.4 — bounds a `serverScopeKey`/`identityRef` argument before it ever reaches
+ * `getVoicePreference`/`setVoicePreference`: `serverScopeKey` mirrors
+ * `MAX_SERVER_ADDRESS_LENGTH` (it is derived from a server address, see `deriveServerScopeKey`)
+ * plus headroom for the always-explicit `:port` suffix; `identityRef` mirrors
+ * `@disco-voador/protocol`'s own `IDENTITY_REF_MAX_LENGTH` generously (a durable, per-server
+ * correlation token — never the raw, portable `identityId`; see `identityRefSchema`'s doc comment). */
+const MAX_SERVER_SCOPE_KEY_LENGTH = 320;
+const MAX_IDENTITY_REF_LENGTH = 128;
+
+const voicePreferenceEntryInputSchema = z
+  .object({ volumePercent: z.number().min(0).max(200), locallyMuted: z.boolean() })
+  .strict();
+
+function isValidServerScopeKey(value: unknown): value is string {
+  return (
+    typeof value === 'string' && value.length > 0 && value.length <= MAX_SERVER_SCOPE_KEY_LENGTH
+  );
+}
+
+function isValidIdentityRef(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= MAX_IDENTITY_REF_LENGTH;
+}
 
 const bookmarkInputSchema = z
   .object({
@@ -203,6 +263,10 @@ export function registerIpcHandlers(
   currentE2EVoiceConfig = e2eVoiceConfig;
   currentE2ESettingsPersistenceConfig = e2eSettingsPersistenceConfig;
   currentE2EScreenshotConfig = e2eScreenshotConfig;
+  // T13.4 — every PTT `'down'`/`'up'` edge is pushed to whichever window is currently "the" main
+  // window, mirroring how every other `current*` field above is kept up to date on window
+  // (re)creation.
+  setPttPushTarget(mainWebContents);
 
   if (handlersRegistered) return;
   handlersRegistered = true;
@@ -442,6 +506,66 @@ export function registerIpcHandlers(
         parsed.data.format,
         parsed.data.maxDimension satisfies AvatarMaxDimension,
       );
+    },
+  );
+
+  // --- T13.4 — global Push-to-Talk hotkey (ADR 0021) ---------------------------------------------
+
+  ipcMain.handle(
+    IPC_CHANNELS.setPttShortcut,
+    async (event: IpcMainInvokeEvent, binding: unknown): Promise<DesktopSetPttShortcutResult> => {
+      assertTrustedSender(event, IPC_CHANNELS.setPttShortcut);
+      const parsed = pttBindingSchema.safeParse(binding);
+      if (!parsed.success) throw new Error('Invalid PTT binding');
+
+      const result = await setPttShortcut(parsed.data as PttBinding);
+      if (result.ok) {
+        // Persisted only on success — a rejected (conflict/native-failure) attempt must never
+        // silently overwrite whatever binding (or lack of one) was working before.
+        await updateClientSettings({ voice: { pttBinding: parsed.data as PttBinding } });
+      }
+      return result;
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.clearPttShortcut,
+    async (event: IpcMainInvokeEvent): Promise<void> => {
+      assertTrustedSender(event, IPC_CHANNELS.clearPttShortcut);
+      clearPttShortcut();
+      await updateClientSettings({ voice: { pttBinding: null } });
+    },
+  );
+
+  // --- T13.4 — per-(serverScopeKey, identityRef) local voice preferences --------------------------
+
+  ipcMain.handle(
+    IPC_CHANNELS.getVoicePreference,
+    async (
+      event: IpcMainInvokeEvent,
+      serverScopeKey: unknown,
+      identityRef: unknown,
+    ): Promise<DesktopVoicePreferenceEntry | undefined> => {
+      assertTrustedSender(event, IPC_CHANNELS.getVoicePreference);
+      if (!isValidServerScopeKey(serverScopeKey) || !isValidIdentityRef(identityRef))
+        return undefined;
+      return getVoicePreference(serverScopeKey, identityRef);
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.setVoicePreference,
+    async (
+      event: IpcMainInvokeEvent,
+      serverScopeKey: unknown,
+      identityRef: unknown,
+      entry: unknown,
+    ): Promise<void> => {
+      assertTrustedSender(event, IPC_CHANNELS.setVoicePreference);
+      if (!isValidServerScopeKey(serverScopeKey) || !isValidIdentityRef(identityRef)) return;
+      const parsed = voicePreferenceEntryInputSchema.safeParse(entry);
+      if (!parsed.success) return;
+      await setVoicePreference(serverScopeKey, identityRef, parsed.data);
     },
   );
 }

@@ -38,6 +38,7 @@ describe('preload bridge', () => {
     expect(Object.keys(api).sort()).toEqual([
       'addBookmark',
       'cancelProcessAudioEnumeration',
+      'clearPttShortcut',
       'getClientSettings',
       'getE2EScreenshotConfig',
       'getE2ESettingsPersistenceConfig',
@@ -47,14 +48,18 @@ describe('preload bridge', () => {
       'getProcessAudioCapability',
       'getRealtimeConfig',
       'getVersionInfo',
+      'getVoicePreference',
       'listProcessAudioCandidates',
       'listScreenShareSources',
       'onProcessAudioEnded',
+      'onPttState',
       'regenerateIdentity',
       'removeBookmark',
       'selectAvatarImageFile',
       'selectScreenShareSource',
       'setNickname',
+      'setPttShortcut',
+      'setVoicePreference',
       'signIdentityChallenge',
       'startProcessAudioCapture',
       'stopProcessAudioCapture',
@@ -153,6 +158,83 @@ describe('preload bridge', () => {
 
     unsubscribe();
     expect(removeListener).toHaveBeenCalledWith(IPC_CHANNELS.processAudioEnded, wrapped);
+  });
+
+  it('setPttShortcut forwards exactly the caller-supplied binding', async () => {
+    const api = exposed.get('desktopApp') as {
+      setPttShortcut: (binding: unknown) => Promise<unknown>;
+    };
+    const binding = {
+      kind: 'keyboard',
+      keycode: 47,
+      modifiers: { ctrl: false, alt: false, shift: false, meta: false },
+    };
+
+    await api.setPttShortcut(binding);
+
+    expect(invoke).toHaveBeenCalledWith(IPC_CHANNELS.setPttShortcut, binding);
+  });
+
+  it('clearPttShortcut invokes the explicit versioned channel with no arguments', async () => {
+    const api = exposed.get('desktopApp') as { clearPttShortcut: () => Promise<unknown> };
+
+    await api.clearPttShortcut();
+
+    expect(invoke).toHaveBeenCalledWith(IPC_CHANNELS.clearPttShortcut);
+  });
+
+  it('onPttState subscribes/unsubscribes via ipcRenderer.on without exposing ipcRenderer', () => {
+    const api = exposed.get('desktopApp') as {
+      onPttState: (listener: (event: unknown) => void) => () => void;
+    };
+    const listener = vi.fn();
+
+    const unsubscribe = api.onPttState(listener);
+    expect(on).toHaveBeenCalledWith(IPC_CHANNELS.pttState, expect.any(Function));
+
+    const wrapped = on.mock.calls.find((call) => call[0] === IPC_CHANNELS.pttState)?.[1] as (
+      event: unknown,
+      data: unknown,
+    ) => void;
+    wrapped({}, { type: 'down' });
+    expect(listener).toHaveBeenCalledWith({ type: 'down' });
+
+    // A malformed payload is dropped defensively, never forwarded to the caller's listener.
+    wrapped({}, { type: 'sideways' });
+    expect(listener).toHaveBeenCalledTimes(1);
+
+    unsubscribe();
+    expect(removeListener).toHaveBeenCalledWith(IPC_CHANNELS.pttState, wrapped);
+  });
+
+  it('getVoicePreference forwards exactly the caller-supplied (serverScopeKey, identityRef) pair', async () => {
+    const api = exposed.get('desktopApp') as {
+      getVoicePreference: (serverScopeKey: string, identityRef: string) => Promise<unknown>;
+    };
+
+    await api.getVoicePreference('server:8090', 'ref-abc');
+
+    expect(invoke).toHaveBeenCalledWith(IPC_CHANNELS.getVoicePreference, 'server:8090', 'ref-abc');
+  });
+
+  it('setVoicePreference forwards exactly the caller-supplied arguments', async () => {
+    const api = exposed.get('desktopApp') as {
+      setVoicePreference: (
+        serverScopeKey: string,
+        identityRef: string,
+        entry: unknown,
+      ) => Promise<unknown>;
+    };
+    const entry = { volumePercent: 150, locallyMuted: false };
+
+    await api.setVoicePreference('server:8090', 'ref-abc', entry);
+
+    expect(invoke).toHaveBeenCalledWith(
+      IPC_CHANNELS.setVoicePreference,
+      'server:8090',
+      'ref-abc',
+      entry,
+    );
   });
 
   describe('processAudioPort relay (T12 postMessage targetOrigin security fix)', () => {

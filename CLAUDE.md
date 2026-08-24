@@ -40,3 +40,20 @@ accepted architecture changes in an ADR and update affected docs.
 Run applicable tests plus `pnpm lint`, `pnpm typecheck`, and `pnpm build`; use `pnpm check` before a
 large handoff. Report only checks actually run. A task is complete only when its acceptance criteria
 and [`docs/DEFINITION_OF_DONE.md`](docs/DEFINITION_OF_DONE.md) are satisfied.
+
+## Regression testing policy (impact-based, since T13.4)
+
+Do not run the full historical E2E matrix as a habit at the end of every task. Inspect the actual
+git diff, identify which subsystems genuinely changed (including shared dependencies), and run only
+the E2E scenarios that exercise those subsystems. Run the full historical matrix only at an explicit
+milestone/release gate or after a truly cross-cutting architecture change — never as routine
+per-task hygiene. See [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md)'s "Regression testing: impact,
+not habit" section for the full policy and worked examples.
+
+Intrusive media E2Es (`e2e:camera-smoke`, `e2e:screen-smoke`, `e2e:screen-audio-smoke`,
+`e2e:process-audio-smoke`) open the camera, capture the screen, or run native Windows audio capture
+on the operator's real machine — never run one without first stating the exact changed dependency
+that requires it. Audible tests that play real tones through real speakers require the same
+justification and, where a non-audible instrumented alternative exists (fake sinks, playback-event
+assertions, level-meter data instead of sound), prefer it — a real audible run is opt-in/manual, not
+a routine regression default.

@@ -46,6 +46,7 @@ interface IdentityProfileRow {
   readonly avatar_asset_id: string | null;
   readonly avatar_revision: number;
   readonly updated_at: number;
+  readonly identity_ref: string | null;
 }
 
 interface ServerProfileRow {
@@ -98,6 +99,8 @@ export class SqliteProfileStore implements ProfilePort {
   private readonly insertAvatarAssetStmt;
   private readonly selectAvatarAssetStmt;
   private readonly deleteAvatarAssetStmt;
+  private readonly selectIdentityRefStmt;
+  private readonly upsertIdentityRefStmt;
 
   constructor(path: string, options: ProfileStoreOptions = {}) {
     this.now = options.now ?? (() => Date.now());
@@ -147,6 +150,22 @@ export class SqliteProfileStore implements ProfilePort {
     );
     this.selectAvatarAssetStmt = this.db.prepare('SELECT * FROM avatar_assets WHERE asset_id = ?');
     this.deleteAvatarAssetStmt = this.db.prepare('DELETE FROM avatar_assets WHERE asset_id = ?');
+    this.selectIdentityRefStmt = this.db.prepare(
+      'SELECT identity_ref FROM identity_profiles WHERE identity_id = ?',
+    );
+    // `WHERE identity_profiles.identity_ref IS NULL` is defense-in-depth against a genuine race
+    // (never actually reachable given `services/realtime`'s fully synchronous handler model — see
+    // `profile-port.ts`'s own doc comment — but correct regardless): if a row already has a non-null
+    // `identity_ref` by the time this runs, this upsert must never clobber it with a second, different
+    // `randomUUID()`, since that would break the very reconnect-stability this column exists for.
+    this.upsertIdentityRefStmt = this.db.prepare(
+      `INSERT INTO identity_profiles (identity_id, identity_ref, updated_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT(identity_id) DO UPDATE SET
+         identity_ref = excluded.identity_ref,
+         updated_at = excluded.updated_at
+       WHERE identity_profiles.identity_ref IS NULL`,
+    );
   }
 
   // --- internal helpers --------------------------------------------------------------------
@@ -307,6 +326,21 @@ export class SqliteProfileStore implements ProfilePort {
     const data = toAvatarData(assetRow);
     if (!data || !row) return undefined;
     return { ...data, avatarRef: { revision: row.avatar_revision, hash: data.avatarRef.hash } };
+  }
+
+  getOrCreateIdentityRef(identityId: string): string {
+    const row = this.selectIdentityRefStmt.get(identityId) as
+      { readonly identity_ref: string | null } | undefined;
+    if (row?.identity_ref) return row.identity_ref;
+
+    const identityRef = randomUUID();
+    this.upsertIdentityRefStmt.run(identityId, identityRef, this.now());
+    // The `WHERE ... IS NULL` guard above means a genuine concurrent winner (never reachable today,
+    // see that statement's own doc comment) could leave this call's own `identityRef` unpersisted —
+    // re-reading is what makes the *return value* correct regardless, not just the row.
+    const persisted = this.selectIdentityRefStmt.get(identityId) as
+      { readonly identity_ref: string | null } | undefined;
+    return persisted?.identity_ref ?? identityRef;
   }
 
   close(): void {

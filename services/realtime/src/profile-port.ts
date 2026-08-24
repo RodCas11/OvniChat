@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import type { AvatarImageFormat, AvatarRef, PresenceStatus } from '@disco-voador/protocol';
 
 /**
@@ -80,6 +82,17 @@ export interface ProfilePort {
   /** `undefined` iff the server currently has no avatar set. */
   getServerAvatarData(): AvatarData | undefined;
 
+  /**
+   * T13.4 — this identity's durable, per-server opaque correlation token (see
+   * `@disco-voador/protocol`'s `identityRefSchema` for the full contract this must satisfy): the
+   * same value every time this method is called for the same `identityId`, generated once on first
+   * call and persisted forever after, and never derived from `identityId` in any recoverable way —
+   * a fresh `randomUUID()`. Used only to populate `VoiceParticipant.identityRef`; never itself a
+   * live-connection/session concept the way `memberRef` is (this port owns no session state — see
+   * this file's own top doc comment).
+   */
+  getOrCreateIdentityRef(identityId: string): string;
+
   /** Releases any held resources (e.g. closes the underlying database handle). */
   close(): void;
 }
@@ -104,6 +117,7 @@ const DEFAULT_SNAPSHOT: ProfileSnapshot = {
 export function createNoopProfilePort(): ProfilePort {
   const userProfiles = new Map<string, ProfileSnapshot>();
   const userAvatarData = new Map<string, AvatarData>();
+  const identityRefs = new Map<string, string>();
   let serverAvatarData: AvatarData | undefined;
   let nextRevision = 1;
 
@@ -156,6 +170,14 @@ export function createNoopProfilePort(): ProfilePort {
     },
     getUserAvatarData: (identityId) => userAvatarData.get(identityId),
     getServerAvatarData: () => serverAvatarData,
+    getOrCreateIdentityRef: (identityId) => {
+      let ref = identityRefs.get(identityId);
+      if (!ref) {
+        ref = randomUUID();
+        identityRefs.set(identityId, ref);
+      }
+      return ref;
+    },
     close: () => {},
   };
 }

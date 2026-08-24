@@ -22,6 +22,13 @@ export {
   type ScreenConstraints,
   type ScreenQualityPreset,
 } from './screen.js';
+export {
+  TransmitGate,
+  type MutableMicrophone,
+  type TransmitGateInitialState,
+  type TransmitGateState,
+  type VoiceInputMode,
+} from './transmit-gate.js';
 export { ProcessAudioTrackError, type ProcessAudioErrorReason } from './process-audio-errors.js';
 export {
   createProcessAudioTrack,

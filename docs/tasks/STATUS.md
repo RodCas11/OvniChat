@@ -20,7 +20,7 @@
 | [T13.2](T13_2_CHANNEL_ADMINISTRATION.md)    | COMPLETE    | Channels & server administration                                |
 | [T13.2.1](T13_2_1_ADMIN_UX_POLISH.md)       | COMPLETE    | Administration UX polish (permission labels, category ACL copy) |
 | [T13.3](T13_3_PROFILES_AVATARS_PRESENCE.md) | COMPLETE    | Profiles / avatars / members / presence                         |
-| T13.4                                       | NOT STARTED | Gamer voice experience                                          |
+| [T13.4](T13_4_GAMER_VOICE_EXPERIENCE.md)    | COMPLETE    | Gamer voice experience                                          |
 | T13.5                                       | NOT STARTED | Streams / camera / product integration                          |
 | T14                                         | NOT STARTED | Production self-hosting (TURN, TLS, Docker, configuration)      |
 | T15                                         | NOT STARTED | Windows client installer and dedicated-server releases          |

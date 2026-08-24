@@ -311,3 +311,42 @@ describe('ChannelModal — Edit (T13.2)', () => {
     expect(screen.getByTestId('channel-modal-password-confirm')).toHaveValue('');
   });
 });
+
+// Regression (T13.4 UX bug): `VoiceChannelView.tsx` (this modal's real owner) re-renders frequently
+// for reasons unrelated to this form — live speaking indicators, presence, participant state — and
+// always passes a brand-new inline `onClose` closure each time. `Modal`'s focus-management effect
+// used to depend on that `onClose` identity, so any such re-render (not just typing) re-ran it and
+// yanked focus to the header Close button. This reproduces that exact shape: `rerender` with a fresh
+// `onClose` after every keystroke, standing in for the parent's own independent re-renders.
+describe('ChannelModal — focus stability under a churning parent (T13.4 UX regression)', () => {
+  it('typing a full channel name keeps focus on the field even though the parent supplies a new onClose closure on every render', () => {
+    const state = createVoiceState();
+    const actions = createVoiceActions();
+    const mode: ChannelModalMode = { type: 'create', parentLocked: false };
+
+    const { rerender } = render(
+      <ToastProvider>
+        <ChannelModal open onClose={() => {}} state={state} actions={actions} mode={mode} />
+      </ToastProvider>,
+    );
+
+    const input = screen.getByTestId('channel-modal-name') as HTMLInputElement;
+    input.focus();
+    expect(input).toHaveFocus();
+
+    const name = 'Gaming Lounge';
+    for (let i = 0; i < name.length; i += 1) {
+      const value = name.slice(0, i + 1);
+      fireEvent.change(input, { target: { value } });
+      rerender(
+        <ToastProvider>
+          <ChannelModal open onClose={() => {}} state={state} actions={actions} mode={mode} />
+        </ToastProvider>,
+      );
+      expect(input).toHaveFocus();
+      expect(screen.getByRole('button', { name: 'Close' })).not.toHaveFocus();
+    }
+
+    expect(input).toHaveValue(name);
+  });
+});

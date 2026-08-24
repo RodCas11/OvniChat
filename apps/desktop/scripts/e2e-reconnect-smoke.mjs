@@ -177,15 +177,20 @@ async function main() {
     console.info(`Dedicated Server listening on ${server.host}:${String(fixedPort)}`);
 
     console.info('Launching A and B, both auto-joining "general" voice...');
+    // T13.4 — see `main/index.ts`'s `armE2EPttHoldAcrossRejoin`'s own doc comment: decouples this
+    // pre-existing test's real-peer-audio proof (both before and after the reconnect) from
+    // Voice-Activity threshold calibration, a separate concern this script has never cared about.
     const a = spawnInstance('A', realtimeUrl, {
       DISCO_VOADOR_E2E_VOICE_AUTO_JOIN_CHANNEL: 'general',
       DISCO_VOADOR_E2E_VOICE_DISPLAY_NAME: 'A',
       DISCO_VOADOR_E2E_CHAT_SEND_SERVER: SERVER_CHAT_BODY,
+      DISCO_VOADOR_E2E_VOICE_AUTO_PUSH_TO_TALK: '1',
     });
     instances.push(a);
     const b = spawnInstance('B', realtimeUrl, {
       DISCO_VOADOR_E2E_VOICE_AUTO_JOIN_CHANNEL: 'general',
       DISCO_VOADOR_E2E_VOICE_DISPLAY_NAME: 'B',
+      DISCO_VOADOR_E2E_VOICE_AUTO_PUSH_TO_TALK: '1',
     });
     instances.push(b);
 

@@ -6,6 +6,14 @@ packages:
 allowBuilds:
   electron: true
   esbuild: true
+  # T13.4 (ADR 0021): uiohook-napi's own "install" script is literally `node-gyp-build`, the same
+  # lookup its own `require()`-time code path (`dist/index.js`) already performs to find a matching
+  # prebuilt binary under its own `prebuilds/` directory (verified directly against the real published
+  # 1.5.5 tarball, including its bundled `prebuilds/win32-x64/uiohook-napi.node`) — this script never
+  # invokes a real `node-gyp rebuild`/compiler toolchain unless no matching prebuild exists for the
+  # current platform/arch, which is exactly the ADR's own "no compile step at install time on the
+  # operator's machine" selling point for choosing this dependency in the first place. Allowed to run.
+  uiohook-napi: true
 
 auditConfig:
   ignoreGhsas:

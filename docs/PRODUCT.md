@@ -79,6 +79,15 @@ Server, exactly like T9's authorization state and T10's chat history: no global 
 cross-server correlation for the same identity. See
 [`architecture/SERVER_LOCAL_PROFILES_AND_PRESENCE.md`](architecture/SERVER_LOCAL_PROFILES_AND_PRESENCE.md).
 
+T13.4 turned the working P2P voice stack into a comfortable, gamer-oriented daily-use experience:
+Voice Activity and genuine hold-to-talk Push to Talk (with a real global hotkey usable while a game
+has focus — never a toggle disguised as hold-to-talk), speaking indicators driven by real audio
+activity, per-participant local volume and "Mute for Me" (100% client-local, never sent to the
+server, never visible to anyone else), and subtle, disable-able join/leave sounds. This remains
+client-side UX only: there is still no server-authoritative "who may speak" control, for the same
+reason T13.2 already established — the P2P media transport has no choke point capable of enforcing
+one. See [`architecture/GAMER_VOICE_EXPERIENCE.md`](architecture/GAMER_VOICE_EXPERIENCE.md).
+
 ## Primary capabilities
 
 The target product will provide:
@@ -171,3 +180,10 @@ transport-neutral enough to introduce an SFU later.
     `docs/adr/0020-profile-presence-storage-and-privacy-boundary.md`). There is no DM, friend, or
     social-graph system anywhere in this product, and a member's own profile popover never implies
     one exists.
+15. Voice ergonomics (Push to Talk, Voice Activity, speaking indicators, per-participant local
+    volume, local "Mute for Me," join/leave sounds) are client-local presentation and playback
+    choices, never server-authoritative speech control: this product still has no way to
+    authoritatively enforce who may speak, given its P2P media transport, and T13.4 does not
+    introduce one — a local "Mute for Me" silences only the muting user's own playback and is never
+    communicated to the server or the muted person (T13.4; see
+    `docs/adr/0021-global-ptt-in-process-keyboard-hook.md`).

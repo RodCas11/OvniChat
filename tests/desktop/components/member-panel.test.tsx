@@ -191,4 +191,92 @@ describe('MemberPanel (T13.1, widened T13.3 to server-wide presence)', () => {
       expect(screen.getByText('Admins — 1')).toBeInTheDocument();
     });
   });
+
+  // T13.4 (UI consistency follow-up) — a real component-integration proof (Section 49): renders the
+  // actual `MemberPanel` → `MemberRow` → `UserAvatar` chain with a real `MemberPanelEntry.isSpeaking`
+  // value, rather than only exercising `MemberRow` in isolation (`member-row.test.tsx`) or the pure
+  // `isMemberCurrentlySpeaking` helper (`member-presentation.test.ts`). Proves the speaking flag
+  // actually reaches the real rendered DOM through the full `MemberPanel` render path.
+  describe('speaking-state subscription (T13.4 UI consistency follow-up, real component integration)', () => {
+    it('a speaking member shows the real speaking ring through the full MemberPanel render path', () => {
+      const alice = createMemberPanelEntry({ isSpeaking: true });
+      render(
+        <MemberPanel
+          connected
+          groups={[{ label: 'Members', members: [alice] }]}
+          hasRealGroups={false}
+          totalCount={1}
+          avatarCache={new Map()}
+          onRequestAvatar={vi.fn()}
+          onSelectMember={vi.fn()}
+        />,
+      );
+
+      expect(screen.getByTestId(`member-row-avatar-wrap-${alice.key}`)).toHaveAttribute(
+        'data-speaking',
+        'true',
+      );
+    });
+
+    it('a re-render with isSpeaking flipped to false clears the ring live, through the same real render path', () => {
+      const alice = createMemberPanelEntry({ isSpeaking: true });
+      const { rerender } = render(
+        <MemberPanel
+          connected
+          groups={[{ label: 'Members', members: [alice] }]}
+          hasRealGroups={false}
+          totalCount={1}
+          avatarCache={new Map()}
+          onRequestAvatar={vi.fn()}
+          onSelectMember={vi.fn()}
+        />,
+      );
+      expect(screen.getByTestId(`member-row-avatar-wrap-${alice.key}`)).toHaveAttribute(
+        'data-speaking',
+        'true',
+      );
+
+      const silentAlice = createMemberPanelEntry({ isSpeaking: false });
+      rerender(
+        <MemberPanel
+          connected
+          groups={[{ label: 'Members', members: [silentAlice] }]}
+          hasRealGroups={false}
+          totalCount={1}
+          avatarCache={new Map()}
+          onRequestAvatar={vi.fn()}
+          onSelectMember={vi.fn()}
+        />,
+      );
+      expect(screen.getByTestId(`member-row-avatar-wrap-${silentAlice.key}`)).toHaveAttribute(
+        'data-speaking',
+        'false',
+      );
+    });
+
+    it('two simultaneously speaking members both show the ring — no artificial single-speaker limit at the MemberPanel level either', () => {
+      const alice = createMemberPanelEntry({ key: 'a', displayName: 'Alice', isSpeaking: true });
+      const bob = createMemberPanelEntry({ key: 'b', displayName: 'Bob', isSpeaking: true });
+      render(
+        <MemberPanel
+          connected
+          groups={[{ label: 'Members', members: [alice, bob] }]}
+          hasRealGroups={false}
+          totalCount={2}
+          avatarCache={new Map()}
+          onRequestAvatar={vi.fn()}
+          onSelectMember={vi.fn()}
+        />,
+      );
+
+      expect(screen.getByTestId('member-row-avatar-wrap-a')).toHaveAttribute(
+        'data-speaking',
+        'true',
+      );
+      expect(screen.getByTestId('member-row-avatar-wrap-b')).toHaveAttribute(
+        'data-speaking',
+        'true',
+      );
+    });
+  });
 });

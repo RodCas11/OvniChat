@@ -12,5 +12,8 @@
   "types": "dist/index.d.ts",
   "files": [
     "dist"
-  ]
+  ],
+  "dependencies": {
+    "uiohook-napi": "1.5.5"
+  }
 }

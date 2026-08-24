@@ -28,6 +28,19 @@ interface ChannelRowProps {
   readonly remoteScreenParticipantIds: ReadonlySet<string>;
   readonly selfCameraEnabled: boolean;
   readonly selfSharingScreen: boolean;
+  /** T13.4 — see `ParticipantRow`'s own doc comment on `isSpeaking` for exactly what these mean and
+   * where they come from; never fabricated. */
+  readonly speakingParticipantIds: ReadonlySet<string>;
+  readonly selfSpeaking: boolean;
+  /** T13.4 (UI consistency follow-up) — the same T13.3 `VoiceChannelState.avatarCache`/
+   * `actions.requestAvatar` Member Panel already uses, threaded down so `ParticipantRow` can render
+   * each participant's real server-local avatar via the shared `UserAvatar` component — never a
+   * second, voice-specific avatar cache. */
+  readonly avatarCache: ReadonlyMap<string, string>;
+  readonly onRequestAvatar: (participant: VoiceParticipantView) => void;
+  /** T13.4 — opens the local per-participant "User Volume"/"Mute for Me" controls for a given
+   * (non-self) participant; omitted entirely when not `isJoined` (nothing to control). */
+  readonly onOpenVoiceControls?: ((participantId: string) => void) | undefined;
   readonly onSelect: () => void;
   readonly onJoin: () => void;
   readonly onLeave: () => void;
@@ -60,6 +73,11 @@ export function ChannelRow({
   remoteScreenParticipantIds,
   selfCameraEnabled,
   selfSharingScreen,
+  speakingParticipantIds,
+  selfSpeaking,
+  avatarCache,
+  onRequestAvatar,
+  onOpenVoiceControls,
   onSelect,
   onJoin,
   onLeave,
@@ -173,6 +191,22 @@ export function ChannelRow({
                 participant.participantId === selfParticipantId
                   ? selfSharingScreen
                   : remoteScreenParticipantIds.has(participant.participantId)
+              }
+              isSpeaking={
+                participant.participantId === selfParticipantId
+                  ? selfSpeaking
+                  : speakingParticipantIds.has(participant.participantId)
+              }
+              avatarCache={avatarCache}
+              onRequestAvatar={() => {
+                onRequestAvatar(participant);
+              }}
+              onOpenVoiceControls={
+                participant.participantId === selfParticipantId || !onOpenVoiceControls
+                  ? undefined
+                  : () => {
+                      onOpenVoiceControls(participant.participantId);
+                    }
               }
             />
           ))}
