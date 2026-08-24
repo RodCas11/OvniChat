@@ -6,6 +6,7 @@ import { parseServerAddress } from '../connection/parse-server-address.js';
 import { useBookmarks } from '../connection/use-bookmarks.js';
 import { IdentityPanel } from '../identity/IdentityPanel.js';
 import { Avatar } from '../ui/Avatar.js';
+import { ChantivoLogo } from '../ui/brand/ChantivoLogo.js';
 import { ContextMenu, type ContextMenuItem } from '../ui/ContextMenu.js';
 import { EmptyState } from '../ui/EmptyState.js';
 import { Modal } from '../ui/Modal.js';
@@ -102,7 +103,7 @@ export function ServerHome({
     <main className={styles.container}>
       <div className={styles.content}>
         <div className={styles.brand}>
-          <h1 className={styles.heading}>OvniChat</h1>
+          <ChantivoLogo size={52} />
           <p className={styles.subheading}>Your self-hosted servers</p>
         </div>
 
@@ -135,7 +136,7 @@ export function ServerHome({
             <EmptyState
               icon={ServerIcon}
               title="No servers yet"
-              description="Add a self-hosted OvniChat server to get started."
+              description="Add a self-hosted Chantivo server to get started."
               action={{
                 label: 'Add Server',
                 onClick: () => {
@@ -160,7 +161,7 @@ export function ServerHome({
                 }}
                 data-testid={`server-home-tile-${bookmark.bookmarkId}`}
               >
-                <Avatar name={bookmark.displayName} colorSeed={bookmark.bookmarkId} size="large" />
+                <Avatar name={bookmark.displayName} colorSeed={bookmark.bookmarkId} size="xlarge" />
                 <span className={styles.tileName}>{bookmark.displayName}</span>
               </button>
             ))}

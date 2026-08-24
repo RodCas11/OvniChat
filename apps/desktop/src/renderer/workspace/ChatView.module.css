@@ -9,20 +9,20 @@
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: var(--ovni-space-4);
+  padding: var(--chantivo-space-4);
 }
 
 .loadOlder {
   display: flex;
   justify-content: center;
-  margin-bottom: var(--ovni-space-3);
+  margin-bottom: var(--chantivo-space-3);
 }
 
 .group {
   display: flex;
   align-items: flex-start;
-  gap: var(--ovni-space-3);
-  padding: var(--ovni-space-2) 0;
+  gap: var(--chantivo-space-3);
+  padding: var(--chantivo-space-2) 0;
 }
 
 .group + .group {
@@ -40,18 +40,18 @@
 .groupHeader {
   display: flex;
   align-items: baseline;
-  gap: var(--ovni-space-2);
+  gap: var(--chantivo-space-2);
   margin-bottom: 2px;
 }
 
 .sender {
   font-weight: 600;
-  color: var(--ovni-text-primary);
+  color: var(--chantivo-text-primary);
 }
 
 .time {
-  font-size: var(--ovni-text-xs);
-  color: var(--ovni-text-tertiary);
+  font-size: var(--chantivo-text-xs);
+  color: var(--chantivo-text-tertiary);
 }
 
 .messageBody {
@@ -60,38 +60,38 @@
   overflow-wrap: anywhere;
   word-break: break-word;
   line-height: 1.5;
-  color: var(--ovni-text-primary);
+  color: var(--chantivo-text-primary);
 }
 
 .composerArea {
-  border-top: 1px solid var(--ovni-border);
-  padding: var(--ovni-space-3) var(--ovni-space-4);
+  border-top: 1px solid var(--chantivo-border);
+  padding: var(--chantivo-space-3) var(--chantivo-space-4);
 }
 
 .composer {
   display: flex;
   align-items: center;
-  gap: var(--ovni-space-2);
+  gap: var(--chantivo-space-2);
 }
 
 .composerInput {
   flex: 1;
   height: 44px;
-  padding: 0 var(--ovni-space-4);
-  border: 1px solid var(--ovni-border);
-  border-radius: var(--ovni-radius-lg);
-  background: var(--ovni-bg-surface-alt);
-  color: var(--ovni-text-primary);
-  font-size: var(--ovni-text-base);
-  transition: border-color var(--ovni-transition-fast);
+  padding: 0 var(--chantivo-space-4);
+  border: 1px solid var(--chantivo-border);
+  border-radius: var(--chantivo-radius-lg);
+  background: var(--chantivo-bg-surface-alt);
+  color: var(--chantivo-text-primary);
+  font-size: var(--chantivo-text-base);
+  transition: border-color var(--chantivo-transition-fast);
 }
 
 .composerInput::placeholder {
-  color: var(--ovni-text-tertiary);
+  color: var(--chantivo-text-tertiary);
 }
 
 .composerInput:focus-visible {
-  border-color: var(--ovni-accent);
+  border-color: var(--chantivo-accent);
 }
 
 .composerInput:disabled {
@@ -105,23 +105,23 @@
   height: 44px;
   padding: 0;
   flex-shrink: 0;
-  border-radius: var(--ovni-radius-lg);
+  border-radius: var(--chantivo-radius-lg);
 }
 
 .devHint {
-  margin: var(--ovni-space-2) 0 0;
-  color: var(--ovni-text-tertiary);
-  font-size: var(--ovni-text-xs);
+  margin: var(--chantivo-space-2) 0 0;
+  color: var(--chantivo-text-tertiary);
+  font-size: var(--chantivo-text-xs);
 }
 
 .devHint code {
-  color: var(--ovni-text-secondary);
+  color: var(--chantivo-text-secondary);
 }
 
 .noPermission {
-  padding: var(--ovni-space-3) var(--ovni-space-4);
+  padding: var(--chantivo-space-3) var(--chantivo-space-4);
   margin: 0;
-  color: var(--ovni-text-tertiary);
-  font-size: var(--ovni-text-sm);
-  border-top: 1px solid var(--ovni-border);
+  color: var(--chantivo-text-tertiary);
+  font-size: var(--chantivo-text-sm);
+  border-top: 1px solid var(--chantivo-border);
 }

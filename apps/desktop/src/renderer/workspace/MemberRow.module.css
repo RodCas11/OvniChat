@@ -1,16 +1,16 @@
 .row {
   display: flex;
   align-items: center;
-  gap: var(--ovni-space-3);
-  padding: 6px var(--ovni-space-4);
-  margin: 0 var(--ovni-space-2);
-  border-radius: var(--ovni-radius-sm);
+  gap: var(--chantivo-space-3);
+  padding: 6px var(--chantivo-space-4);
+  margin: 0 var(--chantivo-space-2);
+  border-radius: var(--chantivo-radius-sm);
   list-style: none;
-  transition: background-color var(--ovni-transition-fast);
+  transition: background-color var(--chantivo-transition-fast);
 }
 
 .row:hover {
-  background: var(--ovni-bg-hover);
+  background: var(--chantivo-bg-hover);
 }
 
 .avatarWrap {
@@ -24,20 +24,20 @@
   bottom: -1px;
   width: 10px;
   height: 10px;
-  border-radius: var(--ovni-radius-full);
-  border: 2px solid var(--ovni-bg-surface);
+  border-radius: var(--chantivo-radius-full);
+  border: 2px solid var(--chantivo-bg-surface);
 }
 
 .presenceOnline {
-  background: var(--ovni-accent);
+  background: var(--chantivo-accent);
 }
 
 .presenceAway {
-  background: var(--ovni-warning);
+  background: var(--chantivo-warning);
 }
 
 .presenceDnd {
-  background: var(--ovni-danger);
+  background: var(--chantivo-danger);
 }
 
 .textColumn {
@@ -51,39 +51,41 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: var(--ovni-text-sm);
-  color: var(--ovni-text-secondary);
+  /* T13.5.1 — see ParticipantRow.module.css's identical fix: a member's own name is primary content,
+     not a secondary label. */
+  font-size: var(--chantivo-text-base);
+  color: var(--chantivo-text-primary);
 }
 
 .you {
-  color: var(--ovni-text-tertiary);
+  color: var(--chantivo-text-tertiary);
 }
 
 .status {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: var(--ovni-text-xs);
-  color: var(--ovni-text-tertiary);
+  font-size: var(--chantivo-text-xs);
+  color: var(--chantivo-text-tertiary);
 }
 
 .roleBadge {
   flex-shrink: 0;
-  padding: 1px var(--ovni-space-2);
-  border-radius: var(--ovni-radius-sm);
-  font-size: var(--ovni-text-xs);
+  padding: 1px var(--chantivo-space-2);
+  border-radius: var(--chantivo-radius-sm);
+  font-size: var(--chantivo-text-xs);
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.02em;
-  color: var(--ovni-text-tertiary);
-  background: var(--ovni-bg-hover);
+  color: var(--chantivo-text-tertiary);
+  background: var(--chantivo-bg-hover);
 }
 
 .button {
   display: flex;
   align-items: center;
   width: 100%;
-  gap: var(--ovni-space-3);
+  gap: var(--chantivo-space-3);
   padding: 0;
   border: none;
   background: transparent;

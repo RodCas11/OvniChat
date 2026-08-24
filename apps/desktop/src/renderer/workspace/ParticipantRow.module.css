@@ -1,16 +1,19 @@
 .row {
   display: flex;
   align-items: center;
-  gap: var(--ovni-space-2);
-  /* T13.1.1 — a touch more indentation than a plain `--ovni-space-8`, plus a thin connecting guide
+  gap: var(--chantivo-space-2);
+  /* T13.1.1 — a touch more indentation than a plain `--chantivo-space-8`, plus a thin connecting guide
      (`border-left`) so participants read as clearly nested under their channel, not merely
      shifted right by padding alone. */
-  padding: 5px var(--ovni-space-2) 5px 30px;
-  margin-left: var(--ovni-space-4);
-  border-left: 2px solid var(--ovni-border);
+  padding: 5px var(--chantivo-space-2) 5px 30px;
+  margin-left: var(--chantivo-space-4);
+  border-left: 2px solid var(--chantivo-border);
   list-style: none;
-  font-size: var(--ovni-text-sm);
-  color: var(--ovni-text-secondary);
+  /* T13.5.1 — a participant's own name is the primary content of this row, not a secondary label —
+     promoted from `--chantivo-text-sm`/secondary to `--chantivo-text-base`/primary to read clearly
+     (Section 7's own hierarchy: "primary username: clear"). */
+  font-size: var(--chantivo-text-base);
+  color: var(--chantivo-text-primary);
 }
 
 .name {
@@ -22,13 +25,13 @@
 }
 
 .you {
-  color: var(--ovni-text-tertiary);
+  color: var(--chantivo-text-tertiary);
 }
 
 .mediaIcons {
   display: flex;
   align-items: center;
-  gap: var(--ovni-space-1);
-  color: var(--ovni-accent);
+  gap: var(--chantivo-space-1);
+  color: var(--chantivo-accent);
   flex-shrink: 0;
 }

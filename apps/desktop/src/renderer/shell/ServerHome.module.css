@@ -3,32 +3,32 @@
   align-items: center;
   justify-content: center;
   height: 100vh;
-  background: var(--ovni-bg-base);
-  color: var(--ovni-text-primary);
+  background: var(--chantivo-bg-base);
+  color: var(--chantivo-text-primary);
   overflow-y: auto;
 }
 
 .content {
   width: 100%;
-  max-width: 760px;
-  padding: var(--ovni-space-8);
+  /* T13.5.1 — widened from 760px: at 1920x1080 the previous width left the composition feeling
+     small/zoomed-out inside the full black canvas. Still bounded (never full-width) so line lengths
+     and the server grid stay comfortable, and `.container`'s own `overflow-y: auto` keeps this
+     usable down to 1366x768. */
+  max-width: 860px;
+  padding: var(--chantivo-space-8);
 }
 
 .brand {
-  margin-bottom: var(--ovni-space-8);
-}
-
-.heading {
-  margin: 0 0 var(--ovni-space-2);
-  font-size: var(--ovni-text-3xl);
-  font-weight: 700;
-  letter-spacing: -0.01em;
+  display: flex;
+  flex-direction: column;
+  gap: var(--chantivo-space-3);
+  margin-bottom: var(--chantivo-space-8);
 }
 
 .subheading {
   margin: 0;
-  color: var(--ovni-text-secondary);
-  font-size: var(--ovni-text-md);
+  color: var(--chantivo-text-secondary);
+  font-size: var(--chantivo-text-lg);
 }
 
 /* T13.1.1 — the Home nickname/profile affordance: avatar-fallback + nickname, an explicit path to
@@ -37,20 +37,21 @@
 .profileRow {
   display: flex;
   align-items: center;
-  gap: var(--ovni-space-3);
+  gap: var(--chantivo-space-3);
   width: 100%;
-  margin-bottom: var(--ovni-space-8);
-  padding: var(--ovni-space-3) var(--ovni-space-4);
-  border: 1px solid var(--ovni-border);
-  border-radius: var(--ovni-radius-lg);
-  background: var(--ovni-bg-surface);
-  color: var(--ovni-text-primary);
+  margin-bottom: var(--chantivo-space-8);
+  padding: var(--chantivo-space-4) var(--chantivo-space-5);
+  border: 1px solid var(--chantivo-border);
+  border-radius: var(--chantivo-radius-lg);
+  background: var(--chantivo-bg-surface);
+  color: var(--chantivo-text-primary);
+  font-size: var(--chantivo-text-md);
   text-align: left;
 }
 
 .profileRow:hover {
-  background: var(--ovni-bg-surface-alt);
-  border-color: var(--ovni-text-tertiary);
+  background: var(--chantivo-bg-surface-alt);
+  border-color: var(--chantivo-text-tertiary);
 }
 
 .profileName {
@@ -65,71 +66,71 @@
 .profileEdit {
   display: flex;
   align-items: center;
-  gap: var(--ovni-space-1);
+  gap: var(--chantivo-space-1);
   flex-shrink: 0;
-  color: var(--ovni-text-secondary);
-  font-size: var(--ovni-text-sm);
+  color: var(--chantivo-text-secondary);
+  font-size: var(--chantivo-text-base);
 }
 
 .error {
-  margin: 0 0 var(--ovni-space-4);
-  color: var(--ovni-danger);
+  margin: 0 0 var(--chantivo-space-4);
+  color: var(--chantivo-danger);
 }
 
 /* T13.1.1 — at the new, larger Home scale, the bare `EmptyState` default padding read as an
    unfinished afterthought; a real bounded surface with extra breathing room reads intentional. */
 .emptyStateWrap {
-  padding: var(--ovni-space-8) 0;
-  border: 1px dashed var(--ovni-border);
-  border-radius: var(--ovni-radius-lg);
+  padding: var(--chantivo-space-8) 0;
+  border: 1px dashed var(--chantivo-border);
+  border-radius: var(--chantivo-radius-lg);
 }
 
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(116px, 1fr));
-  gap: var(--ovni-space-5);
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  gap: var(--chantivo-space-6);
 }
 
 .tile {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: var(--ovni-space-2);
-  padding: var(--ovni-space-4) var(--ovni-space-3);
+  gap: var(--chantivo-space-2);
+  padding: var(--chantivo-space-4) var(--chantivo-space-3);
   border: 1px solid transparent;
-  border-radius: var(--ovni-radius-lg);
+  border-radius: var(--chantivo-radius-lg);
   background: transparent;
-  color: var(--ovni-text-primary);
-  transition: background-color var(--ovni-transition-fast);
+  color: var(--chantivo-text-primary);
+  transition: background-color var(--chantivo-transition-fast);
 }
 
 .tile:hover {
-  background: var(--ovni-bg-surface);
+  background: var(--chantivo-bg-surface);
 }
 
 .addTile .addIcon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 80px;
-  height: 80px;
-  border-radius: var(--ovni-radius-full);
-  border: 2px dashed var(--ovni-border);
-  color: var(--ovni-text-secondary);
+  width: 96px;
+  height: 96px;
+  border-radius: var(--chantivo-radius-full);
+  border: 2px dashed var(--chantivo-border);
+  color: var(--chantivo-text-secondary);
   transition:
-    border-color var(--ovni-transition-fast),
-    color var(--ovni-transition-fast);
+    border-color var(--chantivo-transition-fast),
+    color var(--chantivo-transition-fast);
 }
 
 .addTile:hover .addIcon {
-  border-color: var(--ovni-accent);
-  color: var(--ovni-accent);
+  border-color: var(--chantivo-accent);
+  color: var(--chantivo-accent);
 }
 
 .tileName {
-  max-width: 112px;
+  max-width: 128px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: var(--ovni-text-sm);
+  font-size: var(--chantivo-text-base);
 }

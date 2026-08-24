@@ -1,0 +1,7 @@
+/* T13.5 — the combined mark+wordmark lockup. A plain flex row; no glow/drop-shadow/animation per
+   the brand usage policy (docs/BRANDING.md). */
+.logo {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--chantivo-space-3);
+}

@@ -113,6 +113,24 @@ for opt-in, and separately on `!app.isPackaged` for an unspoofable production ki
 at every point that matters (command-line switches in `main/index.ts`, and again before the IPC
 channel that exposes the config to the Renderer in `main/window.ts`).
 
+**T13.5 — media stage and Picture-in-Picture:** the new `MediaStage.tsx`/`MediaTile.tsx` presentation
+layer (see [`architecture/MEDIA_STAGE_AND_STREAM_UX.md`](architecture/MEDIA_STAGE_AND_STREAM_UX.md))
+introduces exactly one new browser-API surface, `HTMLVideoElement.requestPictureInPicture()`, called
+directly on an already-attached `<video>` element with no IPC/Main-process involvement — a standard,
+sandboxed Chromium Web API with no elevated privilege in this Renderer's `contextIsolation: true,
+sandbox: true, nodeIntegration: false` configuration. It has no filesystem/OS access of its own and
+cannot duplicate a peer connection or resubscribe to media, since it operates on the same `<video>`
+element already attached to the existing `MediaStream` — there is no second network/media session to
+create. A `security-reviewer` pass covering this, plus hidden-channel media-leak scoping (unchanged
+from T13.4's own guarantee), reconnect/server-switch stale-media safety, and resource cleanup found
+no release-blocking findings.
+
+**T13.5 — Chantivo rebrand data compatibility:** `main/index.ts` explicitly pins `app.setPath(
+'userData', ...)` to the pre-rebrand `%APPDATA%\@disco-voador\desktop` path before anything else in
+the process can read it, so the new `productName: "Chantivo"` metadata cannot silently move where
+cryptographic identity, bookmarks, and settings are stored. Verified with a real packaged-build
+launch, not merely by code reading — see [`BRANDING.md`](BRANDING.md)'s "Data compatibility" record.
+
 ## Realtime and protocol
 
 - Runtime-validate every inbound and outbound protocol envelope at trust boundaries.

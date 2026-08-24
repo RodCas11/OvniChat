@@ -131,7 +131,7 @@ export function Modal({
         <div className={styles.header}>
           <h2 className={styles.title}>{title}</h2>
           {/* T13.1.1 — closing a dialog is a neutral, routine action, not a primary one: dimmed to
-              `--ovni-text-tertiary` by default (full-strength only on hover/focus) so it reads with
+              `--chantivo-text-tertiary` by default (full-strength only on hover/focus) so it reads with
               less visual weight than the dialog's actual primary actions (e.g. a Settings section's
               destructive controls, or a form's submit button). */}
           <div className={styles.closeButtonWrap}>

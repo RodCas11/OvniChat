@@ -8,51 +8,51 @@
 .form {
   display: flex;
   flex-direction: column;
-  gap: var(--ovni-space-4);
+  gap: var(--chantivo-space-4);
 }
 
 .field {
   display: flex;
   flex-direction: column;
-  gap: var(--ovni-space-1);
-  font-size: var(--ovni-text-sm);
-  color: var(--ovni-text-secondary);
+  gap: var(--chantivo-space-1);
+  font-size: var(--chantivo-text-sm);
+  color: var(--chantivo-text-secondary);
 }
 
 .fieldLabel {
   font-weight: 600;
-  color: var(--ovni-text-primary);
+  color: var(--chantivo-text-primary);
 }
 
 .input,
 .select {
   height: 36px;
-  padding: 0 var(--ovni-space-3);
-  border: 1px solid var(--ovni-border);
-  border-radius: var(--ovni-radius-md);
-  background: var(--ovni-bg-base);
-  color: var(--ovni-text-primary);
-  font-size: var(--ovni-text-base);
+  padding: 0 var(--chantivo-space-3);
+  border: 1px solid var(--chantivo-border);
+  border-radius: var(--chantivo-radius-md);
+  background: var(--chantivo-bg-base);
+  color: var(--chantivo-text-primary);
+  font-size: var(--chantivo-text-base);
 }
 
 .hint {
   margin: 0;
-  color: var(--ovni-text-tertiary);
-  font-size: var(--ovni-text-xs);
+  color: var(--chantivo-text-tertiary);
+  font-size: var(--chantivo-text-xs);
 }
 
 .error {
   margin: 0;
-  color: var(--ovni-danger);
-  font-size: var(--ovni-text-xs);
+  color: var(--chantivo-danger);
+  font-size: var(--chantivo-text-xs);
 }
 
 .section {
   display: flex;
   flex-direction: column;
-  gap: var(--ovni-space-3);
-  padding-top: var(--ovni-space-3);
-  border-top: 1px solid var(--ovni-border);
+  gap: var(--chantivo-space-3);
+  padding-top: var(--chantivo-space-3);
+  border-top: 1px solid var(--chantivo-border);
 }
 
 .section:first-child {
@@ -62,9 +62,9 @@
 
 .sectionTitle {
   margin: 0;
-  font-size: var(--ovni-text-sm);
+  font-size: var(--chantivo-text-sm);
   font-weight: 700;
-  color: var(--ovni-text-secondary);
+  color: var(--chantivo-text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
@@ -72,38 +72,38 @@
 .radioGroup {
   display: flex;
   flex-direction: column;
-  gap: var(--ovni-space-2);
+  gap: var(--chantivo-space-2);
 }
 
 .radioOption {
   display: flex;
   align-items: center;
-  gap: var(--ovni-space-2);
-  font-size: var(--ovni-text-sm);
-  color: var(--ovni-text-primary);
+  gap: var(--chantivo-space-2);
+  font-size: var(--chantivo-text-sm);
+  color: var(--chantivo-text-primary);
 }
 
 /* T13.2.1 — the "no parent" caveat split out of the inherit option's own label (see
    `ChannelAclEditor.tsx`'s `AclAxisOption.caveat` doc comment): muted and smaller than the primary
    label it follows, never its own separate line. */
 .radioCaveat {
-  color: var(--ovni-text-tertiary);
-  font-size: var(--ovni-text-xs);
+  color: var(--chantivo-text-tertiary);
+  font-size: var(--chantivo-text-xs);
 }
 
 .checkboxGrid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--ovni-space-2) var(--ovni-space-4);
-  padding-left: var(--ovni-space-5);
+  gap: var(--chantivo-space-2) var(--chantivo-space-4);
+  padding-left: var(--chantivo-space-5);
 }
 
 .checkboxField {
   display: flex;
   align-items: center;
-  gap: var(--ovni-space-2);
-  font-size: var(--ovni-text-sm);
-  color: var(--ovni-text-secondary);
+  gap: var(--chantivo-space-2);
+  font-size: var(--chantivo-text-sm);
+  color: var(--chantivo-text-secondary);
   /* T13.2 QA — a group name can be up to 64 characters with no spaces (`GROUP_NAME_MAX_LENGTH`);
      without this, a flex item's default `min-width: auto` lets one long unbroken word overflow its
      `minmax(0, 1fr)` grid track instead of wrapping onto a second line. */
@@ -113,21 +113,21 @@
 
 .inheritNote {
   margin: 0;
-  padding-left: var(--ovni-space-5);
-  color: var(--ovni-text-tertiary);
-  font-size: var(--ovni-text-xs);
+  padding-left: var(--chantivo-space-5);
+  color: var(--chantivo-text-tertiary);
+  font-size: var(--chantivo-text-xs);
 }
 
 .radioRow {
   display: flex;
   align-items: center;
-  gap: var(--ovni-space-3);
+  gap: var(--chantivo-space-3);
 }
 
 .footer {
   display: flex;
   justify-content: flex-end;
-  gap: var(--ovni-space-2);
+  gap: var(--chantivo-space-2);
 }
 
 .list {
@@ -143,10 +143,10 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--ovni-space-3);
-  padding: var(--ovni-space-2) 0;
-  border-bottom: 1px solid var(--ovni-border);
-  font-size: var(--ovni-text-sm);
+  gap: var(--chantivo-space-3);
+  padding: var(--chantivo-space-2) 0;
+  border-bottom: 1px solid var(--chantivo-border);
+  font-size: var(--chantivo-text-sm);
 }
 
 .listRow:last-child {
@@ -156,27 +156,27 @@
 .listRowActions {
   display: flex;
   align-items: center;
-  gap: var(--ovni-space-2);
+  gap: var(--chantivo-space-2);
   flex-shrink: 0;
 }
 
 .passwordStatus {
   display: flex;
   align-items: center;
-  gap: var(--ovni-space-2);
-  font-size: var(--ovni-text-sm);
-  color: var(--ovni-text-secondary);
+  gap: var(--chantivo-space-2);
+  font-size: var(--chantivo-text-sm);
+  color: var(--chantivo-text-secondary);
 }
 
 .passwordActions {
   display: flex;
-  gap: var(--ovni-space-2);
+  gap: var(--chantivo-space-2);
 }
 
 .confirmText {
   margin: 0;
-  color: var(--ovni-text-primary);
-  font-size: var(--ovni-text-base);
+  color: var(--chantivo-text-primary);
+  font-size: var(--chantivo-text-base);
 }
 
 .tree {
@@ -188,13 +188,13 @@
 .treeRow {
   display: flex;
   align-items: center;
-  gap: var(--ovni-space-2);
-  padding: var(--ovni-space-2);
-  border-radius: var(--ovni-radius-sm);
+  gap: var(--chantivo-space-2);
+  padding: var(--chantivo-space-2);
+  border-radius: var(--chantivo-radius-sm);
 }
 
 .treeRow:hover {
-  background: var(--ovni-bg-hover);
+  background: var(--chantivo-bg-hover);
 }
 
 .treeRowName {
@@ -208,12 +208,12 @@
 .treeRowActions {
   display: flex;
   align-items: center;
-  gap: var(--ovni-space-1);
+  gap: var(--chantivo-space-1);
   flex-shrink: 0;
 }
 
 .emptyNote {
   margin: 0;
-  color: var(--ovni-text-tertiary);
-  font-size: var(--ovni-text-sm);
+  color: var(--chantivo-text-tertiary);
+  font-size: var(--chantivo-text-sm);
 }

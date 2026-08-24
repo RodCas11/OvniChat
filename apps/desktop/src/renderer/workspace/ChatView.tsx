@@ -33,6 +33,11 @@ interface ChatViewProps {
    * click on a channel shows its chat and must never join voice). */
   readonly scope: ChatScope;
   readonly channelId: string | undefined;
+  /** T13.5.1 — the channel's real display name (already resolved by `MainContent.tsx`'s own header
+   * logic from the real `channelTree`, never fabricated here), used only to make the empty-chat
+   * copy below context-aware. `undefined` for Server Chat (`scope === 'server'`, which has no
+   * channel at all) — never required, never blocking rendering if omitted. */
+  readonly channelName?: string | undefined;
 }
 
 interface MessageGroup {
@@ -71,7 +76,13 @@ function formatTime(epochMs: number): string {
  * comment — the original derived a channel tab from `state.currentChannelId` alone, which cannot
  * express "viewing a channel's chat without having joined its voice").
  */
-export function ChatView({ state, actions, scope, channelId }: ChatViewProps): ReactElement {
+export function ChatView({
+  state,
+  actions,
+  scope,
+  channelId,
+  channelName,
+}: ChatViewProps): ReactElement {
   const [composerText, setComposerText] = useState('');
   // Dev/test-only visual-review aid — see `chat-dev-fixture.ts`'s doc comment and this file's
   // `CHAT_FIXTURE_COMMAND` for the full production-safety argument. Resets to `false` on every
@@ -133,7 +144,17 @@ export function ChatView({ state, actions, scope, channelId }: ChatViewProps): R
         )}
 
         {messages.length === 0 ? (
-          <EmptyState icon={Send} title="No messages yet" description="Say hello." />
+          <EmptyState
+            icon={Send}
+            title={scope === 'server' ? 'No messages yet' : 'This channel is quiet'}
+            description={
+              scope === 'server'
+                ? 'Start the conversation.'
+                : channelName
+                  ? `Send the first message in ${channelName}.`
+                  : 'Send the first message.'
+            }
+          />
         ) : (
           groups.map((group) => (
             <div key={group.messages[0]?.messageId} className={styles.group}>

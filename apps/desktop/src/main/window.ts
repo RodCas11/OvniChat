@@ -12,6 +12,22 @@ export function devServerUrl(): string | undefined {
   return MAIN_WINDOW_VITE_DEV_SERVER_URL;
 }
 
+/**
+ * T13.5 — resolves the Chantivo `.ico` for `BrowserWindow`'s own `icon` constructor option
+ * (dev-mode/taskbar window icon — separate from the packaged executable's own embedded icon
+ * resource, which `forge.config.ts`'s `packagerConfig.icon` sets independently). Packaged: reads
+ * from `process.resourcesPath` (`forge.config.ts`'s `extraResource` copies it there). Unpackaged:
+ * reads directly from this app's own `resources/` directory via `app.getAppPath()` (`electron
+ * <desktopDir>` sets `app.getAppPath()` to `desktopDir` itself in dev). A missing file at either
+ * path is not fatal — `buildWindowOptions` treats `undefined`/a bad path as a safe no-op, so this
+ * never throws.
+ */
+function resolveChantivoIconPath(): string {
+  return app.isPackaged
+    ? path.join(process.resourcesPath, 'chantivo.ico')
+    : path.join(app.getAppPath(), 'resources', 'chantivo.ico');
+}
+
 function installDevelopmentCsp(devServer: string): void {
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
     callback({
@@ -33,7 +49,10 @@ export function createMainWindow(
   const preloadPath = path.join(__dirname, 'preload.cjs');
 
   const window = new BrowserWindow(
-    buildWindowOptions(preloadPath, { devToolsEnabled: !app.isPackaged }),
+    buildWindowOptions(preloadPath, {
+      devToolsEnabled: !app.isPackaged,
+      iconPath: resolveChantivoIconPath(),
+    }),
   );
 
   installNavigationGuards(window.webContents, allowedOrigins);

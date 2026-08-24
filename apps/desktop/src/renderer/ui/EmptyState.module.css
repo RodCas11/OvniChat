@@ -3,26 +3,26 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: var(--ovni-space-2);
-  padding: var(--ovni-space-8);
+  gap: var(--chantivo-space-2);
+  padding: var(--chantivo-space-8);
   text-align: center;
-  color: var(--ovni-text-secondary);
+  color: var(--chantivo-text-secondary);
 }
 
 .icon {
-  color: var(--ovni-text-tertiary);
-  margin-bottom: var(--ovni-space-2);
+  color: var(--chantivo-text-tertiary);
+  margin-bottom: var(--chantivo-space-2);
 }
 
 .title {
   margin: 0;
-  font-size: var(--ovni-text-md);
+  font-size: var(--chantivo-text-md);
   font-weight: 600;
-  color: var(--ovni-text-primary);
+  color: var(--chantivo-text-primary);
 }
 
 .description {
   margin: 0;
   max-width: 320px;
-  font-size: var(--ovni-text-sm);
+  font-size: var(--chantivo-text-sm);
 }

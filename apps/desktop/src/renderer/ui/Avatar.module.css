@@ -11,11 +11,11 @@
 }
 
 .circle {
-  border-radius: var(--ovni-radius-full);
+  border-radius: var(--chantivo-radius-full);
 }
 
 .square {
-  border-radius: var(--ovni-radius-lg);
+  border-radius: var(--chantivo-radius-lg);
 }
 
 .small {
@@ -36,8 +36,16 @@
   font-size: 26px;
 }
 
+/* T13.5.1 — reserved for real identity moments at real scale (currently only Home's own server
+   tiles/"Add Server" circle) — never the default anywhere else in the app. */
+.xlarge {
+  width: 96px;
+  height: 96px;
+  font-size: 30px;
+}
+
 .selected {
-  outline: 2px solid var(--ovni-accent);
+  outline: 2px solid var(--chantivo-accent);
   outline-offset: 2px;
 }
 

@@ -31,6 +31,22 @@ function renderServerHome(props: Parameters<typeof ServerHome>[0]): ReturnType<t
 }
 
 describe('ServerHome (T13.1)', () => {
+  // T13.5 — Chantivo product-branding rename: Home shows the real, authoritative brand asset, never
+  // a redrawn/CSS-approximated logo and never leftover "OvniChat" text.
+  it('identifies the app as Chantivo via the real brand mark+wordmark, with no stale "OvniChat" text', async () => {
+    installDesktopAppMock({
+      getClientSettings: vi.fn().mockResolvedValue(createClientSettings({ bookmarks: [] })),
+    });
+
+    renderServerHome({ onConnect: vi.fn(), connectionError: undefined });
+    await screen.findByText('No servers yet');
+
+    // `ChantivoMark`/`ChantivoWordmark` both render `<img alt="Chantivo">` from the authoritative SVG
+    // files under `apps/desktop/src/assets/brand/` — two images (mark + wordmark), never text.
+    expect(screen.getAllByAltText('Chantivo')).toHaveLength(2);
+    expect(document.body).not.toHaveTextContent('OvniChat');
+  });
+
   it('shows the empty state (no fake/hardcoded servers) when there are no bookmarks', async () => {
     installDesktopAppMock({
       getClientSettings: vi.fn().mockResolvedValue(createClientSettings({ bookmarks: [] })),

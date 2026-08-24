@@ -1,35 +1,35 @@
 .viewport {
   position: fixed;
-  right: var(--ovni-space-5);
-  bottom: var(--ovni-space-5);
-  z-index: var(--ovni-z-toast);
+  right: var(--chantivo-space-5);
+  bottom: var(--chantivo-space-5);
+  z-index: var(--chantivo-z-toast);
   display: flex;
   flex-direction: column;
-  gap: var(--ovni-space-2);
+  gap: var(--chantivo-space-2);
   max-width: 320px;
 }
 
 .toast {
   display: flex;
   align-items: center;
-  gap: var(--ovni-space-2);
-  padding: var(--ovni-space-3) var(--ovni-space-3);
-  border-radius: var(--ovni-radius-md);
-  background: var(--ovni-bg-surface-alt);
-  border: 1px solid var(--ovni-border);
-  box-shadow: var(--ovni-shadow-lg);
+  gap: var(--chantivo-space-2);
+  padding: var(--chantivo-space-3) var(--chantivo-space-3);
+  border-radius: var(--chantivo-radius-md);
+  background: var(--chantivo-bg-surface-alt);
+  border: 1px solid var(--chantivo-border);
+  box-shadow: var(--chantivo-shadow-lg);
 }
 
 .message {
   flex: 1;
-  font-size: var(--ovni-text-sm);
-  color: var(--ovni-text-primary);
+  font-size: var(--chantivo-text-sm);
+  color: var(--chantivo-text-primary);
 }
 
 .success {
-  border-color: var(--ovni-accent);
+  border-color: var(--chantivo-accent);
 }
 
 .error {
-  border-color: var(--ovni-danger);
+  border-color: var(--chantivo-danger);
 }

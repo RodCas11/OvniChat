@@ -1,17 +1,18 @@
-import type { ReactElement } from 'react';
-import { MessageSquare, Settings, Shield, Volume2 } from 'lucide-react';
+import { useState, type ReactElement } from 'react';
+import { MessageSquare, MessageSquareOff, Settings, Shield, Volume2 } from 'lucide-react';
 
 import type { ChannelNodeView } from '@disco-voador/protocol';
 
 import { IconButton } from '../ui/IconButton.js';
-import { LocalCameraPreview } from '../voice/LocalCameraPreview.js';
-import { LocalScreenPreview } from '../voice/LocalScreenPreview.js';
-import { RemoteCamera } from '../voice/RemoteCamera.js';
-import { RemoteScreen } from '../voice/RemoteScreen.js';
 import { chatThreadKey } from '../voice/use-voice-channel.js';
-import type { VoiceChannelActions, VoiceChannelState } from '../voice/use-voice-channel.js';
+import type {
+  VoiceChannelActions,
+  VoiceChannelState,
+  VoiceParticipantView,
+} from '../voice/use-voice-channel.js';
 import { ChatView } from './ChatView.js';
 import type { ChatTarget } from './chat-target.js';
+import { MediaStage } from './MediaStage.js';
 import styles from './MainContent.module.css';
 
 interface MainContentProps {
@@ -19,6 +20,11 @@ interface MainContentProps {
   readonly actions: VoiceChannelActions;
   readonly channelTree: readonly ChannelNodeView[];
   readonly selectedChatTarget: ChatTarget;
+  /** T13.5 — already avatar-resolved participants (`VoiceChannelView.tsx`'s `participantsWithSelf`,
+   * the same list `ChannelSidebar` already receives) — threaded through so the media stage's tiles
+   * show the exact same avatar/nickname Member Panel and the voice-channel roster already show,
+   * never a second avatar-resolution path (Section 23). */
+  readonly participants: readonly VoiceParticipantView[];
   /** Opens the Authorization modal (token redemption +, when permitted, admin sections) — a plain
    * entry point available to every connected user, not an admin-only control itself (the admin
    * sub-sections inside stay gated by `AuthorizationPanel.tsx`'s own real `can()` checks). */
@@ -31,21 +37,29 @@ interface MainContentProps {
 }
 
 /**
- * Center workspace column (T13.1): switches between Server Chat and a selected channel's chat based
- * on local selection state (never voice-join status — see `ChatTarget`'s own doc comment), with a
- * header that always makes which one is showing unambiguous (never a bare `#`, which would falsely
- * imply a Discord-style separate text-channel hierarchy this app does not have). Camera/screen
- * tiles (T3-T5) render above the chat, unchanged from before this task's restyle — a full
- * Discord-style "stage" layout for calls is explicitly deferred to T13.5.
+ * Center workspace column (T13.1, media stage since T13.5): switches between Server Chat and a
+ * selected channel's chat based on local selection state (never voice-join status — see
+ * `ChatTarget`'s own doc comment), with a header that always makes which one is showing unambiguous
+ * (never a bare `#`, which would falsely imply a Discord-style separate text-channel hierarchy this
+ * app does not have).
+ *
+ * Chat stays the sole, full-width primary content whenever no camera/screen stream is actually
+ * active (Section 18/80, `MediaStage`'s own `hasMedia` check) — this is the deliberate default, not
+ * a fallback. Once real media is active, `MediaStage` takes the primary content area and chat
+ * becomes a narrower, user-toggleable side panel (never removed entirely — Section 44) rather than
+ * disappearing or being replaced by a second, parallel chat system.
  */
 export function MainContent({
   state,
   actions,
   channelTree,
   selectedChatTarget,
+  participants,
   onOpenAuthorization,
   onOpenServerSettings,
 }: MainContentProps): ReactElement {
+  const [chatVisible, setChatVisible] = useState(true);
+
   const channelName =
     selectedChatTarget.scope === 'channel'
       ? (channelTree.find((node) => node.nodeId === selectedChatTarget.channelId)?.name ??
@@ -55,11 +69,28 @@ export function MainContent({
     selectedChatTarget.scope === 'channel' &&
     selectedChatTarget.channelId === state.currentChannelId;
 
+  // Mirrors `MediaStage.tsx`'s own `hasMedia` check exactly (never diverges from it — this is only
+  // used to decide the layout shape, `MediaStage` itself is still the single source of truth for
+  // whether it actually renders anything).
   const hasMedia =
-    Boolean(state.localCameraStream) ||
+    Boolean(state.cameraEnabled && state.localCameraStream) ||
     state.remoteCameraStreams.size > 0 ||
-    Boolean(state.localScreenStream) ||
+    Boolean(state.screenSharingState === 'sharing' && state.localScreenStream) ||
     state.remoteScreenStreams.size > 0;
+
+  const chatThread = (
+    <ChatView
+      key={chatThreadKey(
+        selectedChatTarget.scope,
+        selectedChatTarget.scope === 'channel' ? selectedChatTarget.channelId : undefined,
+      )}
+      state={state}
+      actions={actions}
+      scope={selectedChatTarget.scope}
+      channelId={selectedChatTarget.scope === 'channel' ? selectedChatTarget.channelId : undefined}
+      channelName={selectedChatTarget.scope === 'channel' ? channelName : undefined}
+    />
+  );
 
   return (
     <div className={styles.container}>
@@ -75,6 +106,19 @@ export function MainContent({
           {selectedChatTarget.scope === 'server' ? 'Server Chat' : `${channelName} — Chat`}
         </span>
         <div className={styles.headerActions}>
+          {hasMedia && (
+            <IconButton
+              icon={chatVisible ? MessageSquareOff : MessageSquare}
+              ariaLabel={chatVisible ? 'Hide chat' : 'Show chat'}
+              tooltip={chatVisible ? 'Hide chat' : 'Show chat'}
+              size="small"
+              active={chatVisible}
+              onClick={() => {
+                setChatVisible((visible) => !visible);
+              }}
+              data-testid="main-content-toggle-chat"
+            />
+          )}
           {onOpenServerSettings && (
             <IconButton
               icon={Settings}
@@ -95,63 +139,16 @@ export function MainContent({
         </div>
       </header>
 
-      {hasMedia && (
-        <div className={styles.mediaStrip}>
-          <div className={styles.mediaRow}>
-            {state.localCameraStream && <LocalCameraPreview stream={state.localCameraStream} />}
-            {[...state.remoteCameraStreams.entries()].map(([participantId, stream]) => {
-              const participant = state.participants.find((p) => p.participantId === participantId);
-              return (
-                <RemoteCamera
-                  key={participantId}
-                  participantId={participantId}
-                  displayName={participant?.displayName ?? participantId}
-                  stream={stream}
-                />
-              );
-            })}
+      {hasMedia ? (
+        <div className={styles.mediaLayout}>
+          <div className={styles.mediaArea}>
+            <MediaStage state={state} actions={actions} participants={participants} />
           </div>
-          <div className={styles.mediaRow}>
-            {state.localScreenStream && <LocalScreenPreview stream={state.localScreenStream} />}
-            {[...state.remoteScreenStreams.entries()].map(([participantId, stream]) => {
-              const participant = state.participants.find((p) => p.participantId === participantId);
-              return (
-                <RemoteScreen
-                  key={participantId}
-                  participantId={participantId}
-                  displayName={participant?.displayName ?? participantId}
-                  stream={stream}
-                />
-              );
-            })}
-          </div>
+          {chatVisible && <div className={styles.sideChat}>{chatThread}</div>}
         </div>
+      ) : (
+        <div className={styles.chat}>{chatThread}</div>
       )}
-
-      <div className={styles.chat}>
-        {/* T13.1 fix — keyed by the actual thread identity so switching between Server Chat and a
-            channel's chat (or between two channels) always mounts a fresh `ChatView` instance:
-            without this, React reconciles the *same* `ChatView` component instance across a
-            selection change (same position in the tree, same component type), leaking its local,
-            per-thread-unaware `composerText` draft into whichever thread is now showing — the
-            exact class of stale-UI-state risk this task's `AppShell` remount-key fix targets at
-            the connection level, found here at the thread-selection level while adding this
-            task's own test coverage for the requirement. `ChatView`'s own history/pagination state
-            is unaffected: it is derived from `state.chatThreads` (owned by `use-voice-channel.ts`),
-            never local. */}
-        <ChatView
-          key={chatThreadKey(
-            selectedChatTarget.scope,
-            selectedChatTarget.scope === 'channel' ? selectedChatTarget.channelId : undefined,
-          )}
-          state={state}
-          actions={actions}
-          scope={selectedChatTarget.scope}
-          channelId={
-            selectedChatTarget.scope === 'channel' ? selectedChatTarget.channelId : undefined
-          }
-        />
-      </div>
     </div>
   );
 }

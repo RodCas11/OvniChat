@@ -2,6 +2,12 @@ import type { BrowserWindowConstructorOptions } from 'electron';
 
 export interface WindowOptionOverrides {
   readonly devToolsEnabled: boolean;
+  /** T13.5 — absolute path to the Chantivo `.ico`, resolved by the caller (dev vs packaged differ —
+   * see `window.ts`'s own `resolveChantivoIconPath`). `undefined` is a safe no-op (Electron falls
+   * back to its own default icon), never a crash — this is a cosmetic nicety, not the release-blocking
+   * mechanism (that's `forge.config.ts`'s `packagerConfig.icon`, which embeds the icon into the
+   * packaged executable resource directly, independent of this at runtime). */
+  readonly iconPath?: string | undefined;
 }
 
 /**
@@ -20,6 +26,10 @@ export function buildWindowOptions(
     show: false,
     autoHideMenuBar: true,
     backgroundColor: '#1e1f22',
+    // T13.5 — an explicit initial title avoids a flash of Electron's own default title before
+    // `index.html`'s `<title>Chantivo</title>` loads; both now agree.
+    title: 'Chantivo',
+    ...(overrides.iconPath !== undefined ? { icon: overrides.iconPath } : {}),
     webPreferences: {
       preload: preloadPath,
       nodeIntegration: false,

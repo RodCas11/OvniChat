@@ -40,7 +40,7 @@ flowchart LR
     Main --> WinMedia
   end
 
-  Renderer <-->|validated WebSocket events| Dedicated[Disco Voador Dedicated Server
+  Renderer <-->|validated WebSocket events| Dedicated[Chantivo Dedicated Server
   operator-hosted, self-contained]
   RTC <-->|WebRTC media, P2P first| Peers[Other desktop clients]
   RTC --> STUN[STUN]
@@ -49,7 +49,7 @@ flowchart LR
 ```
 
 The client connects directly to an operator-chosen Dedicated Server address (T8) — there is no
-Disco Voador–operated infrastructure between them. `services/dedicated-server` is the product/
+Chantivo–operated infrastructure between them. `services/dedicated-server` is the product/
 process the operator runs; it composes `services/realtime`'s reusable connection/session library.
 See [`architecture/DEDICATED_SERVER.md`](architecture/DEDICATED_SERVER.md).
 
@@ -117,7 +117,7 @@ service never becomes a media relay. WebRTC data channels are not the text-chat 
 | Workspace                   | Target ownership                                                                                                                                                                                                                                                           | Must not own or depend on                                                                                                                                                                      |
 | --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `apps/desktop`              | Electron Main, Preload, Renderer, window lifecycle, desktop composition                                                                                                                                                                                                    | Generic RTC algorithms or Windows capture implementation                                                                                                                                       |
-| `services/dedicated-server` | The OvniChat Dedicated Server product: config loading, composition root, CLI/process entrypoint, server identity/capabilities, server-local authorization (groups/tokens/bans, SQLite-backed, T9), persistent chat history (server-wide + per-channel, SQLite-backed, T10) | Protocol/session logic (composes `services/realtime` instead of duplicating it), Electron/Renderer                                                                                             |
+| `services/dedicated-server` | The Chantivo Dedicated Server product: config loading, composition root, CLI/process entrypoint, server identity/capabilities, server-local authorization (groups/tokens/bans, SQLite-backed, T9), persistent chat history (server-wide + per-channel, SQLite-backed, T10) | Protocol/session logic (composes `services/realtime` instead of duplicating it), Electron/Renderer                                                                                             |
 | `services/realtime`         | Reusable WebSocket connection/session library: connections, presence, voice signaling, text events                                                                                                                                                                         | Media payload relay, UI logic, product/process/authorization/chat storage concerns (owned by `services/dedicated-server`; only narrow injected `AuthorizationPort`/`ChatPort` seams live here) |
 | `packages/protocol`         | Canonical runtime schemas, derived types, message/version contracts                                                                                                                                                                                                        | Desktop/server implementations, crypto (`node:crypto`)                                                                                                                                         |
 | `packages/identity`         | Ed25519 keygen/sign/verify/identityId derivation (Node-only)                                                                                                                                                                                                               | Renderer/Preload, environment-neutral packages                                                                                                                                                 |
@@ -377,8 +377,8 @@ Electron/Chromium build, replaced with one anchored to `RTCRtpTransceiver.mid`),
 
 ## Deployment shape
 
-- Desktop clients connect directly to an operator-chosen Disco Voador Dedicated Server address
-  (T8) — no Disco Voador–operated infrastructure sits between them; a user enters the address
+- Desktop clients connect directly to an operator-chosen Chantivo Dedicated Server address
+  (T8) — no Chantivo–operated infrastructure sits between them; a user enters the address
   manually (`docs/architecture/DEDICATED_SERVER.md`).
 - Any number of independent Dedicated Server installations may exist with no relationship or
   communication between them; the same client identity (T7) may authenticate to several

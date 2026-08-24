@@ -2,30 +2,30 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--ovni-space-3);
+  gap: var(--chantivo-space-3);
   height: 60px;
-  padding: 0 var(--ovni-space-4);
+  padding: 0 var(--chantivo-space-4);
   flex-shrink: 0;
-  background: var(--ovni-bg-surface-alt);
-  border-top: 1px solid var(--ovni-border);
+  background: var(--chantivo-bg-surface-alt);
+  border-top: 1px solid var(--chantivo-border);
 }
 
 .identity {
   display: flex;
   align-items: center;
-  gap: var(--ovni-space-2);
+  gap: var(--chantivo-space-2);
   min-width: 0;
-  padding-right: var(--ovni-space-3);
+  padding-right: var(--chantivo-space-3);
   /* T13.1.1 — a real separator from the center content (previously implied only by the bar's own
      background), matching the panel-divider treatment used elsewhere in this design system. */
-  border-right: 1px solid var(--ovni-border);
+  border-right: 1px solid var(--chantivo-border);
 }
 
 /* T13.3 — the identity block is now a real button ("click to edit profile"), not a static label. */
 .identityButton {
   display: flex;
   align-items: center;
-  gap: var(--ovni-space-2);
+  gap: var(--chantivo-space-2);
   min-width: 0;
   padding: 0;
   border: none;
@@ -34,7 +34,7 @@
   font: inherit;
   text-align: left;
   cursor: pointer;
-  border-radius: var(--ovni-radius-sm);
+  border-radius: var(--chantivo-radius-sm);
 }
 
 .identityButton:hover .displayName {
@@ -52,28 +52,28 @@
   bottom: -1px;
   width: 10px;
   height: 10px;
-  border-radius: var(--ovni-radius-full);
-  border: 2px solid var(--ovni-bg-surface-alt);
+  border-radius: var(--chantivo-radius-full);
+  border: 2px solid var(--chantivo-bg-surface-alt);
 }
 
 .presenceOnline {
-  background: var(--ovni-accent);
+  background: var(--chantivo-accent);
 }
 
 .presenceAway {
-  background: var(--ovni-warning);
+  background: var(--chantivo-warning);
 }
 
 .presenceDnd {
-  background: var(--ovni-danger);
+  background: var(--chantivo-danger);
 }
 
 .customStatus {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: var(--ovni-text-xs);
-  color: var(--ovni-text-tertiary);
+  font-size: var(--chantivo-text-xs);
+  color: var(--chantivo-text-tertiary);
 }
 
 .names {
@@ -86,7 +86,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: var(--ovni-text-base);
+  font-size: var(--chantivo-text-base);
   font-weight: 600;
 }
 
@@ -94,14 +94,14 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: var(--ovni-text-xs);
-  color: var(--ovni-text-tertiary);
+  font-size: var(--chantivo-text-xs);
+  color: var(--chantivo-text-tertiary);
   text-transform: capitalize;
 }
 
 .controls {
   display: flex;
   align-items: center;
-  gap: var(--ovni-space-2);
+  gap: var(--chantivo-space-2);
   flex-shrink: 0;
 }

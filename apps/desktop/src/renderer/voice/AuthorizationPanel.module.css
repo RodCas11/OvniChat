@@ -1,72 +1,72 @@
 .container {
   display: flex;
   flex-direction: column;
-  gap: var(--ovni-space-4);
+  gap: var(--chantivo-space-4);
 }
 
 .myGroups {
   margin: 0;
-  color: var(--ovni-text-secondary);
-  font-size: var(--ovni-text-sm);
+  color: var(--chantivo-text-secondary);
+  font-size: var(--chantivo-text-sm);
 }
 
 .redeemForm {
   display: flex;
   align-items: flex-end;
-  gap: var(--ovni-space-2);
+  gap: var(--chantivo-space-2);
 }
 
 .form {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: var(--ovni-space-3);
-  margin-top: var(--ovni-space-2);
+  gap: var(--chantivo-space-3);
+  margin-top: var(--chantivo-space-2);
 }
 
 .field {
   display: flex;
   flex-direction: column;
-  gap: var(--ovni-space-1);
-  font-size: var(--ovni-text-sm);
-  color: var(--ovni-text-secondary);
+  gap: var(--chantivo-space-1);
+  font-size: var(--chantivo-text-sm);
+  color: var(--chantivo-text-secondary);
 }
 
 .fieldLabel {
   font-weight: 600;
-  color: var(--ovni-text-primary);
+  color: var(--chantivo-text-primary);
 }
 
 .input,
 .select {
   height: 34px;
-  padding: 0 var(--ovni-space-3);
-  border: 1px solid var(--ovni-border);
-  border-radius: var(--ovni-radius-md);
-  background: var(--ovni-bg-base);
-  color: var(--ovni-text-primary);
+  padding: 0 var(--chantivo-space-3);
+  border: 1px solid var(--chantivo-border);
+  border-radius: var(--chantivo-radius-md);
+  background: var(--chantivo-bg-base);
+  color: var(--chantivo-text-primary);
 }
 
 .success {
   margin: 0;
-  color: var(--ovni-accent);
-  font-size: var(--ovni-text-sm);
+  color: var(--chantivo-accent);
+  font-size: var(--chantivo-text-sm);
 }
 
 .section {
-  padding-top: var(--ovni-space-3);
-  border-top: 1px solid var(--ovni-border);
+  padding-top: var(--chantivo-space-3);
+  border-top: 1px solid var(--chantivo-border);
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: var(--ovni-space-2);
+  gap: var(--chantivo-space-2);
 }
 
 .sectionTitle {
   margin: 0;
-  font-size: var(--ovni-text-sm);
+  font-size: var(--chantivo-text-sm);
   font-weight: 700;
-  color: var(--ovni-text-secondary);
+  color: var(--chantivo-text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
@@ -84,10 +84,10 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--ovni-space-3);
-  padding: var(--ovni-space-2) 0;
-  border-bottom: 1px solid var(--ovni-border);
-  font-size: var(--ovni-text-sm);
+  gap: var(--chantivo-space-3);
+  padding: var(--chantivo-space-2) 0;
+  border-bottom: 1px solid var(--chantivo-border);
+  font-size: var(--chantivo-text-sm);
 }
 
 .listRow:last-child {
@@ -97,22 +97,22 @@
 .listRowActions {
   display: flex;
   align-items: center;
-  gap: var(--ovni-space-2);
+  gap: var(--chantivo-space-2);
   flex-shrink: 0;
 }
 
 .checkboxGrid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--ovni-space-2) var(--ovni-space-4);
+  gap: var(--chantivo-space-2) var(--chantivo-space-4);
 }
 
 .checkboxField {
   display: flex;
   align-items: center;
-  gap: var(--ovni-space-2);
-  font-size: var(--ovni-text-sm);
-  color: var(--ovni-text-secondary);
+  gap: var(--chantivo-space-2);
+  font-size: var(--chantivo-text-sm);
+  color: var(--chantivo-text-secondary);
   /* T13.2.1 — same fix `ChannelAdminForm.module.css`'s own `.checkboxField` already carries from
      T13.2's QA pass: a group name (up to 64 chars, no spaces) or a permission label must wrap rather
      than overflow its `minmax(0, 1fr)` grid track. */
@@ -129,43 +129,43 @@
 }
 
 .groupName {
-  color: var(--ovni-text-primary);
+  color: var(--chantivo-text-primary);
   font-weight: 600;
 }
 
 .groupPermissions {
-  color: var(--ovni-text-secondary);
-  font-size: var(--ovni-text-xs);
+  color: var(--chantivo-text-secondary);
+  font-size: var(--chantivo-text-xs);
 }
 
 .permissionCategories {
   display: flex;
   flex-direction: column;
-  gap: var(--ovni-space-3);
+  gap: var(--chantivo-space-3);
   width: 100%;
 }
 
 .permissionCategory {
   display: flex;
   flex-direction: column;
-  gap: var(--ovni-space-1);
+  gap: var(--chantivo-space-1);
 }
 
 .permissionCategoryTitle {
   margin: 0;
-  font-size: var(--ovni-text-xs);
+  font-size: var(--chantivo-text-xs);
   font-weight: 700;
-  color: var(--ovni-text-tertiary);
+  color: var(--chantivo-text-tertiary);
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
 
 .tokenReveal {
-  padding: var(--ovni-space-2) var(--ovni-space-3);
-  border-radius: var(--ovni-radius-sm);
-  background: var(--ovni-bg-base);
-  border: 1px solid var(--ovni-border);
-  font-size: var(--ovni-text-sm);
+  padding: var(--chantivo-space-2) var(--chantivo-space-3);
+  border-radius: var(--chantivo-radius-sm);
+  background: var(--chantivo-bg-base);
+  border: 1px solid var(--chantivo-border);
+  font-size: var(--chantivo-text-sm);
   word-break: break-all;
 }
 

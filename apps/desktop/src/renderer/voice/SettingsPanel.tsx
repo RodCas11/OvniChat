@@ -7,6 +7,7 @@ import type { DesktopIdentity, DesktopSetPttShortcutResult } from '../../shared/
 import { useBookmarks } from '../connection/use-bookmarks.js';
 import { IdentityPanel } from '../identity/IdentityPanel.js';
 import { Button } from '../ui/Button.js';
+import { ChantivoLogo } from '../ui/brand/ChantivoLogo.js';
 import { EmptyState } from '../ui/EmptyState.js';
 import type { VoiceChannelActions, VoiceChannelState } from './use-voice-channel.js';
 import { useMediaDevices, type EnumeratedDevice } from './device-enumeration.js';
@@ -63,7 +64,7 @@ interface SettingsPanelProps {
 // Stale since T4/T5/T10/T12 shipped camera, screen sharing, text chat, and Windows per-process
 // audio respectively — corrected here (found while touching this file for T11, relocated into
 // Settings > Advanced for T13.1) rather than continuing to show a real user false information
-// about what OvniChat can already do.
+// about what Chantivo can already do.
 const NOT_IMPLEMENTED = [
   'Servers (multiple guild-style groupings)',
   'Message editing and deletion',
@@ -315,9 +316,9 @@ type PttShortcutStatus =
  */
 const PTT_FAILURE_COPY: Record<'native-module-load-failed' | 'hook-start-failed', string> = {
   'native-module-load-failed':
-    'Shortcut unavailable — something went wrong starting the global hotkey listener. Try restarting OvniChat, or contact support if this keeps happening.',
+    'Shortcut unavailable — something went wrong starting the global hotkey listener. Try restarting Chantivo, or contact support if this keeps happening.',
   'hook-start-failed':
-    'Shortcut unavailable — something went wrong starting the global hotkey listener. Try restarting OvniChat, or contact support if this keeps happening.',
+    'Shortcut unavailable — something went wrong starting the global hotkey listener. Try restarting Chantivo, or contact support if this keeps happening.',
 };
 
 /**
@@ -866,6 +867,26 @@ export function SettingsPanel({
         {activeSection === 'advanced' && (
           <section className={styles.section}>
             <h3 className={styles.sectionTitle}>Advanced</h3>
+
+            {/* T13.5 — the product's About surface, deliberately first under Advanced (an identity
+                moment reads better leading, not buried after Startup/Identity) — identity + real
+                version, nothing more (no login/account/subscription/telemetry/cloud-profile
+                affordance — this is a static, purely local read of the same `getVersionInfo()` IPC
+                call `Diagnostics` below already uses). `chantivo.app` is stated as plain text, not a
+                clickable link — this app has no established external-navigation/`shell.openExternal`
+                IPC path, and one is not worth introducing for a single static domain string. */}
+            <section className={styles.subsection} data-testid="settings-about">
+              <h4 className={styles.subsectionTitle}>About</h4>
+              <div className={styles.about}>
+                <ChantivoLogo size={28} />
+                <dl className={styles.diagnostics}>
+                  <dt>Version</dt>
+                  <dd>{versionInfo?.appVersion ?? '…'}</dd>
+                  <dt>Website</dt>
+                  <dd>chantivo.app</dd>
+                </dl>
+              </div>
+            </section>
 
             <section className={styles.subsection}>
               <h4 className={styles.subsectionTitle}>Startup</h4>

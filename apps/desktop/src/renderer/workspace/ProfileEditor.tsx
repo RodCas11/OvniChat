@@ -115,7 +115,7 @@ export function ProfileEditor({
 
       <div className={styles.section}>
         <h3 className={styles.sectionTitle}>Avatar</h3>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--ovni-space-4)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--chantivo-space-4)' }}>
           <UserAvatar
             name={displayName}
             size="large"
@@ -123,7 +123,7 @@ export function ProfileEditor({
             avatarCache={state.avatarCache}
             onRequestAvatar={requestSelfAvatar}
           />
-          <div style={{ display: 'flex', gap: 'var(--ovni-space-2)' }}>
+          <div style={{ display: 'flex', gap: 'var(--chantivo-space-2)' }}>
             <Button
               variant="secondary"
               disabled={avatarBusy}

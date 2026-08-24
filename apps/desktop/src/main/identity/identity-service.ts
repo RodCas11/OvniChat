@@ -48,7 +48,7 @@ function assertEncryptionAvailable(): void {
   if (!safeStorage.isEncryptionAvailable()) {
     throw new IdentityStorageError(
       'OS-level secure storage (Windows DPAPI) is unavailable on this machine, so the local ' +
-        'identity cannot be created or unlocked. OvniChat refuses to store the private key ' +
+        'identity cannot be created or unlocked. Chantivo refuses to store the private key ' +
         'unencrypted as a fallback.',
     );
   }

@@ -380,12 +380,41 @@ across re-renders, an ordinary re-render mid-session, Tab containment and Escape
 a parent that supplies a brand-new `onClose` closure on every render, mirroring `VoiceChannelView`'s
 real shape).
 
+## T13.5 — Chantivo rebrand, media stage, and streams/camera product integration
+
+Two phases. **Phase A** renamed the public product from "OvniChat" to **Chantivo** (chantivo.app) —
+user-facing UI, window/executable branding, and current documentation now say Chantivo; the internal
+`@disco-voador/*` package namespace deliberately stays unchanged (see
+[`BRANDING.md`](../BRANDING.md) for the full asset/token/compatibility record, including the
+release-blocking proof that the existing `%APPDATA%\@disco-voador\desktop` userData directory —
+identity, bookmarks, settings — survived the rebrand with no data loss).
+
+**Phase B** built the Discord-like "media stage" `MainContent.tsx`'s own T13.1-era doc comment
+explicitly deferred to this task: a chat-primary default, an adaptive camera grid with real
+avatar-fallback tiles for camera-off participants, a screen-share-focused layout with a camera
+filmstrip, focus/return-to-grid, a toggleable side chat panel during media viewing, and
+Picture-in-Picture via the native `HTMLVideoElement` API (not a second Electron window — see that
+document's own architecture-choice reasoning). See
+[`MEDIA_STAGE_AND_STREAM_UX.md`](MEDIA_STAGE_AND_STREAM_UX.md) for the full design. Pure Renderer
+presentation only — no protocol, capture, or negotiation change.
+
+## T13.5.1 — final visual polish
+
+A small follow-up on top of the already-correct T13.5 structure: Home's scale (wider content column,
+larger `ChantivoLogo`, a new `Avatar` `xlarge` size for server tiles), typography hierarchy
+(participant/member names promoted from secondary to primary content; the two smallest type-scale
+steps nudged up 1px), a softened global focus-visible ring (a merely-focused control, most visibly
+Settings' auto-focused Close button, no longer reads as a filled primary action), and a context-aware
+chat empty state. Pure Renderer/CSS — no architecture, protocol, or media change. See
+[`../tasks/T13_5_1_FINAL_VISUAL_POLISH.md`](../tasks/T13_5_1_FINAL_VISUAL_POLISH.md).
+
 ## What T13.1 deliberately does not do
 
 Channel create/edit/delete/hierarchy and richer server admin UX (T13.2); real server/user avatar
 upload or storage, member directory/presence, online/away/DND, custom status (T13.3 — now
 implemented, see above); push-to-talk, voice-activity UX, speaking indicator, per-user volume, local
 participant mute, join/leave sounds (T13.4 — now implemented, see above); Discord-like stream
-viewing/focus, camera layout, detached stream window/PiP, final call UX integration (T13.5).
+viewing/focus, camera layout, Picture-in-Picture, product rebrand (T13.5 — now implemented, see
+above).
 `Avatar`'s fallback remains deterministic initials for any target with no avatar set —
 upload/storage/backend now exist (T13.3), scoped entirely server-local per Dedicated Server.

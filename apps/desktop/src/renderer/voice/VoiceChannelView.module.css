@@ -19,41 +19,41 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: var(--ovni-space-3);
-  color: var(--ovni-text-secondary);
+  gap: var(--chantivo-space-3);
+  color: var(--chantivo-text-secondary);
 }
 
 .alertBanner {
   position: absolute;
-  top: var(--ovni-space-2);
+  top: var(--chantivo-space-2);
   left: 50%;
   transform: translateX(-50%);
-  z-index: var(--ovni-z-toast);
+  z-index: var(--chantivo-z-toast);
   display: flex;
   flex-direction: column;
-  gap: var(--ovni-space-1);
-  padding: var(--ovni-space-2) var(--ovni-space-4);
-  background: var(--ovni-bg-surface-alt);
-  border: 1px solid var(--ovni-danger);
-  border-radius: var(--ovni-radius-md);
-  box-shadow: var(--ovni-shadow-lg);
+  gap: var(--chantivo-space-1);
+  padding: var(--chantivo-space-2) var(--chantivo-space-4);
+  background: var(--chantivo-bg-surface-alt);
+  border: 1px solid var(--chantivo-danger);
+  border-radius: var(--chantivo-radius-md);
+  box-shadow: var(--chantivo-shadow-lg);
 }
 
 .alertBanner p {
   margin: 0;
-  color: var(--ovni-danger);
-  font-size: var(--ovni-text-sm);
+  color: var(--chantivo-danger);
+  font-size: var(--chantivo-text-sm);
 }
 
 .joiningNotice {
   position: absolute;
-  bottom: var(--ovni-space-4);
+  bottom: var(--chantivo-space-4);
   left: 50%;
   transform: translateX(-50%);
-  padding: var(--ovni-space-2) var(--ovni-space-4);
-  background: var(--ovni-bg-surface-alt);
-  border-radius: var(--ovni-radius-md);
-  box-shadow: var(--ovni-shadow-lg);
-  color: var(--ovni-text-secondary);
-  font-size: var(--ovni-text-sm);
+  padding: var(--chantivo-space-2) var(--chantivo-space-4);
+  background: var(--chantivo-bg-surface-alt);
+  border-radius: var(--chantivo-radius-md);
+  box-shadow: var(--chantivo-shadow-lg);
+  color: var(--chantivo-text-secondary);
+  font-size: var(--chantivo-text-sm);
 }

@@ -550,8 +550,7 @@ Renderer/Main trust boundary.
 There is no running Coturn stack (templates exist but no TURN credential minting), installer/maker
 artifact, or SFU. Production configuration/TLS termination and Docker packaging for the Dedicated
 Server are also not yet implemented — this work is now **T14** (see the T13 redefinition below).
-Discord-like stream/camera layout is not yet implemented — this is **T13.5**. Real avatars/presence/
-status (T13.3) and the gamer voice experience (T13.4 — Push to Talk, Voice Activity, speaking
+Real avatars/presence/status (T13.3) and the gamer voice experience (T13.4 — Push to Talk, Voice Activity, speaking
 indicators, per-user volume, local mute, join/leave sounds) are now implemented — see below. Voice,
 camera, screen-video, and screen-audio
 sharing (T3–T6, P2P-mesh, small-room, self-hosted scope), local cryptographic client identity (T7),
@@ -593,18 +592,39 @@ now shows a participant's real current server-local avatar (the same `UserAvatar
 `ParticipantRow` already had, wherever the local client is actually authorized/visible to that
 member's voice channel (structurally never leaked for a hidden channel). See
 [`architecture/GAMER_VOICE_EXPERIENCE.md`](architecture/GAMER_VOICE_EXPERIENCE.md)'s "UI consistency
-follow-up" section for the full design. The product is now marketed as
-**OvniChat** (see [`PRODUCT.md`](PRODUCT.md)); the internal `@disco-voador/*` package namespace is
-unchanged.
+follow-up" section for the full design.
+
+T13.5, in two phases, then (Phase A) renamed the public product to **Chantivo** (chantivo.app) —
+official mark/wordmark assets consumed directly via new `ChantivoMark`/`ChantivoWordmark`/
+`ChantivoLogo` components, a canonical `--chantivo-brand` design token, Windows executable/icon
+branding, and — release-blocking, verified with a real packaged-app launch — the pre-existing
+`%APPDATA%\@disco-voador\desktop` userData directory (identity, bookmarks, settings) explicitly
+pinned so the rebrand causes zero data loss; the internal `@disco-voador/*` package namespace stays
+unchanged (see [`BRANDING.md`](BRANDING.md)). (Phase B) built the Discord-like media stage
+`MainContent.tsx` had deferred since T13.1: chat-primary by default, an adaptive camera grid with
+real avatar-fallback tiles for camera-off participants, a screen-share-focused layout with a camera
+filmstrip, focus/return-to-grid, a toggleable side chat panel, and Picture-in-Picture via the native
+`HTMLVideoElement` API (a secondary Electron window was evaluated and deliberately not built — see
+[`architecture/MEDIA_STAGE_AND_STREAM_UX.md`](architecture/MEDIA_STAGE_AND_STREAM_UX.md)) — pure
+Renderer presentation over already-existing camera/screen streams, no protocol/capture/negotiation
+change. The product is now marketed as **Chantivo**; the internal `@disco-voador/*` package
+namespace remains unchanged.
+
+T13.5.1, a small follow-up polish pass, then closed the final visual gap: Home's scale (a wider
+content column, a larger `ChantivoLogo`, and a new `Avatar` `xlarge` size for server tiles),
+typography hierarchy (participant/member names promoted from secondary to primary; the two smallest
+type-scale steps nudged up 1px), a softened global focus-visible ring (Settings' auto-focused Close
+button no longer reads as a filled primary action), and a context-aware chat empty state. Pure
+Renderer/CSS — no architecture, protocol, or media change. See
+[`tasks/T13_5_1_FINAL_VISUAL_POLISH.md`](tasks/T13_5_1_FINAL_VISUAL_POLISH.md).
 
 ## What should happen next?
 
 T13 was redefined, by explicit product direction, from a single "self-hosting production package"
 task into a five-part Product Experience series (T13.1-T13.5) — see
 [`tasks/STATUS.md`](tasks/STATUS.md) for the full renumbering (production self-hosting is now T14,
-installer/releases T15, private-beta polish T16, SFU T17, hardening/release-candidate T18).
-**T13.5 — Streams / Camera / Product Integration** is next, building on the voice-experience system
-T13.4 established. Do not implement it until its own task document exists.
+installer/releases T15, private-beta polish T16, SFU T17, hardening/release-candidate T18). **T14 —
+Production Self-Hosting** is next. Do not implement it until its own task document exists.
 
 Non-blocking follow-ups still open, cheap relative to the risk they guard against: (1) ~~a
 frequency-domain (e.g. dominant-frequency-near-440Hz) check for `e2e:screen-audio-smoke`'s

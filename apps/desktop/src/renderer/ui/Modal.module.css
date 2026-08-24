@@ -1,7 +1,7 @@
 .backdrop {
   position: fixed;
   inset: 0;
-  z-index: var(--ovni-z-modal);
+  z-index: var(--chantivo-z-modal);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -12,10 +12,10 @@
   display: flex;
   flex-direction: column;
   max-height: 85vh;
-  background: var(--ovni-bg-surface);
-  border: 1px solid var(--ovni-border);
-  border-radius: var(--ovni-radius-lg);
-  box-shadow: var(--ovni-shadow-lg);
+  background: var(--chantivo-bg-surface);
+  border: 1px solid var(--chantivo-border);
+  border-radius: var(--chantivo-radius-lg);
+  box-shadow: var(--chantivo-shadow-lg);
 }
 
 .small {
@@ -46,36 +46,36 @@
 }
 
 .closeButtonWrap button {
-  color: var(--ovni-text-tertiary);
+  color: var(--chantivo-text-tertiary);
 }
 
 .closeButtonWrap button:hover {
-  color: var(--ovni-text-primary);
+  color: var(--chantivo-text-primary);
 }
 
 .header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: var(--ovni-space-4) var(--ovni-space-5);
-  border-bottom: 1px solid var(--ovni-border);
+  padding: var(--chantivo-space-4) var(--chantivo-space-5);
+  border-bottom: 1px solid var(--chantivo-border);
 }
 
 .title {
   margin: 0;
-  font-size: var(--ovni-text-lg);
+  font-size: var(--chantivo-text-lg);
   font-weight: 700;
 }
 
 .body {
-  padding: var(--ovni-space-5);
+  padding: var(--chantivo-space-5);
   overflow-y: auto;
 }
 
 .footer {
   display: flex;
   justify-content: flex-end;
-  gap: var(--ovni-space-2);
-  padding: var(--ovni-space-4) var(--ovni-space-5);
-  border-top: 1px solid var(--ovni-border);
+  gap: var(--chantivo-space-2);
+  padding: var(--chantivo-space-4) var(--chantivo-space-5);
+  border-top: 1px solid var(--chantivo-border);
 }

@@ -105,6 +105,37 @@ describe('ChatView (T13.1)', () => {
 
     expect(screen.getByText('No messages yet')).toBeInTheDocument();
   });
+
+  // T13.5.1 — the channel-chat empty state uses the real channel name when given one, never a
+  // generic placeholder or a Discord-style "#" prefix (T13.1's own established rule against implying
+  // a channel-hash hierarchy this app does not have — see MainContent.tsx's own header treatment).
+  it('uses the real channel name in the empty state for a channel thread, distinct copy from Server Chat', () => {
+    const state = createVoiceState({ myPermissions: [] });
+    render(
+      <ChatView
+        state={state}
+        actions={createVoiceActions()}
+        scope="channel"
+        channelId="general"
+        channelName="General"
+      />,
+    );
+
+    expect(screen.getByText('This channel is quiet')).toBeInTheDocument();
+    expect(screen.getByText('Send the first message in General.')).toBeInTheDocument();
+    expect(screen.queryByText('No messages yet')).not.toBeInTheDocument();
+    expect(screen.queryByText('#General')).not.toBeInTheDocument();
+  });
+
+  it('falls back to generic channel copy when no channel name was resolved (never blocking render)', () => {
+    const state = createVoiceState({ myPermissions: [] });
+    render(
+      <ChatView state={state} actions={createVoiceActions()} scope="channel" channelId="general" />,
+    );
+
+    expect(screen.getByText('This channel is quiet')).toBeInTheDocument();
+    expect(screen.getByText('Send the first message.')).toBeInTheDocument();
+  });
 });
 
 // T13.1.1 — `CHAT_FIXTURE_COMMAND` ('/fixture') is gated on `import.meta.env.DEV` alone (a

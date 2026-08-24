@@ -1337,6 +1337,7 @@ export function VoiceChannelView({
               actions={actions}
               channelTree={state.channelTree}
               selectedChatTarget={selectedChatTarget}
+              participants={participantsWithSelf}
               onOpenAuthorization={() => {
                 setShowAuthorization(true);
               }}

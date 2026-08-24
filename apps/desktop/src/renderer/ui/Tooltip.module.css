@@ -6,15 +6,15 @@
 .tooltip {
   position: absolute;
   left: 50%;
-  z-index: var(--ovni-z-tooltip);
-  padding: var(--ovni-space-1) var(--ovni-space-2);
-  border-radius: var(--ovni-radius-sm);
-  background: var(--ovni-bg-selected);
-  color: var(--ovni-text-primary);
-  font-size: var(--ovni-text-xs);
+  z-index: var(--chantivo-z-tooltip);
+  padding: var(--chantivo-space-1) var(--chantivo-space-2);
+  border-radius: var(--chantivo-radius-sm);
+  background: var(--chantivo-bg-selected);
+  color: var(--chantivo-text-primary);
+  font-size: var(--chantivo-text-xs);
   font-weight: 500;
   white-space: nowrap;
-  box-shadow: var(--ovni-shadow-md);
+  box-shadow: var(--chantivo-shadow-md);
   pointer-events: none;
 }
 

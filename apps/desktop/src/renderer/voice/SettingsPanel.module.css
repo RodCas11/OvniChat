@@ -13,8 +13,8 @@
   gap: 2px;
   width: 200px;
   flex-shrink: 0;
-  padding: var(--ovni-space-4) var(--ovni-space-2);
-  border-right: 1px solid var(--ovni-border);
+  padding: var(--chantivo-space-4) var(--chantivo-space-2);
+  border-right: 1px solid var(--chantivo-border);
   overflow-y: auto;
 }
 
@@ -22,24 +22,24 @@
   display: flex;
   align-items: center;
   height: 36px;
-  padding: 0 var(--ovni-space-3);
+  padding: 0 var(--chantivo-space-3);
   border: none;
-  border-radius: var(--ovni-radius-sm);
+  border-radius: var(--chantivo-radius-sm);
   background: transparent;
-  color: var(--ovni-text-secondary);
-  font-size: var(--ovni-text-base);
+  color: var(--chantivo-text-secondary);
+  font-size: var(--chantivo-text-base);
   font-weight: 500;
   text-align: left;
 }
 
 .navItem:hover {
-  background: var(--ovni-bg-hover);
-  color: var(--ovni-text-primary);
+  background: var(--chantivo-bg-hover);
+  color: var(--chantivo-text-primary);
 }
 
 .navItemActive {
-  background: var(--ovni-bg-selected);
-  color: var(--ovni-text-primary);
+  background: var(--chantivo-bg-selected);
+  color: var(--chantivo-text-primary);
   font-weight: 600;
 }
 
@@ -47,29 +47,29 @@
   flex: 1;
   min-width: 0;
   overflow-y: auto;
-  padding: var(--ovni-space-6);
+  padding: var(--chantivo-space-6);
 }
 
 .section {
   display: flex;
   flex-direction: column;
-  gap: var(--ovni-space-4);
+  gap: var(--chantivo-space-4);
   max-width: 560px;
 }
 
 .sectionTitle {
   margin: 0;
-  padding-bottom: var(--ovni-space-3);
-  border-bottom: 1px solid var(--ovni-border);
-  font-size: var(--ovni-text-lg);
+  padding-bottom: var(--chantivo-space-3);
+  border-bottom: 1px solid var(--chantivo-border);
+  font-size: var(--chantivo-text-lg);
 }
 
 .subsection {
   display: flex;
   flex-direction: column;
-  gap: var(--ovni-space-3);
-  padding-bottom: var(--ovni-space-4);
-  border-bottom: 1px solid var(--ovni-border);
+  gap: var(--chantivo-space-3);
+  padding-bottom: var(--chantivo-space-4);
+  border-bottom: 1px solid var(--chantivo-border);
 }
 
 .subsection:last-child {
@@ -79,9 +79,9 @@
 
 .subsectionTitle {
   margin: 0;
-  font-size: var(--ovni-text-sm);
+  font-size: var(--chantivo-text-sm);
   font-weight: 700;
-  color: var(--ovni-text-secondary);
+  color: var(--chantivo-text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
@@ -91,62 +91,62 @@
 .field {
   display: flex;
   flex-direction: column;
-  gap: var(--ovni-space-1);
-  font-size: var(--ovni-text-sm);
-  color: var(--ovni-text-secondary);
+  gap: var(--chantivo-space-1);
+  font-size: var(--chantivo-text-sm);
+  color: var(--chantivo-text-secondary);
 }
 
 .fieldLabel {
   font-weight: 600;
-  color: var(--ovni-text-primary);
+  color: var(--chantivo-text-primary);
 }
 
 .select,
 .input {
   height: 38px;
-  padding: 0 var(--ovni-space-3);
-  border: 1px solid var(--ovni-border);
-  border-radius: var(--ovni-radius-md);
-  background: var(--ovni-bg-base);
-  color: var(--ovni-text-primary);
-  font-size: var(--ovni-text-base);
-  transition: border-color var(--ovni-transition-fast);
+  padding: 0 var(--chantivo-space-3);
+  border: 1px solid var(--chantivo-border);
+  border-radius: var(--chantivo-radius-md);
+  background: var(--chantivo-bg-base);
+  color: var(--chantivo-text-primary);
+  font-size: var(--chantivo-text-base);
+  transition: border-color var(--chantivo-transition-fast);
 }
 
 .select:hover,
 .input:hover {
-  border-color: var(--ovni-text-tertiary);
+  border-color: var(--chantivo-text-tertiary);
 }
 
 .checkboxField {
   display: flex;
   align-items: center;
-  gap: var(--ovni-space-2);
-  font-size: var(--ovni-text-sm);
+  gap: var(--chantivo-space-2);
+  font-size: var(--chantivo-text-sm);
 }
 
 .hint {
   margin: 0;
-  color: var(--ovni-text-tertiary);
-  font-size: var(--ovni-text-xs);
+  color: var(--chantivo-text-tertiary);
+  font-size: var(--chantivo-text-xs);
 }
 
 .status {
   margin: 0;
-  color: var(--ovni-text-secondary);
-  font-size: var(--ovni-text-xs);
+  color: var(--chantivo-text-secondary);
+  font-size: var(--chantivo-text-xs);
 }
 
 .alert {
   margin: 0;
-  color: var(--ovni-danger);
-  font-size: var(--ovni-text-xs);
+  color: var(--chantivo-danger);
+  font-size: var(--chantivo-text-xs);
 }
 
 .testRow {
   display: flex;
   align-items: center;
-  gap: var(--ovni-space-3);
+  gap: var(--chantivo-space-3);
 }
 
 /* Styled mic-level meter (real live `AnalyserNode` data from `useMicLevelMeter`, see
@@ -154,30 +154,30 @@
 .meterTrack {
   flex: 1;
   height: 8px;
-  border-radius: var(--ovni-radius-full);
-  background: var(--ovni-bg-surface-alt);
+  border-radius: var(--chantivo-radius-full);
+  background: var(--chantivo-bg-surface-alt);
   overflow: hidden;
 }
 
 .meterFill {
   height: 100%;
-  border-radius: var(--ovni-radius-full);
-  background: var(--ovni-accent);
+  border-radius: var(--chantivo-radius-full);
+  background: var(--chantivo-accent);
   transition: width 80ms linear;
 }
 
 /* T13.4 — Input Mode radio group (Voice Activity / Push to Talk) and its per-mode detail block. */
 .radioGroup {
   display: flex;
-  gap: var(--ovni-space-4);
+  gap: var(--chantivo-space-4);
 }
 
 .radioOption {
   display: flex;
   align-items: center;
-  gap: var(--ovni-space-1);
-  font-size: var(--ovni-text-sm);
-  color: var(--ovni-text-primary);
+  gap: var(--chantivo-space-1);
+  font-size: var(--chantivo-text-sm);
+  color: var(--chantivo-text-primary);
   cursor: pointer;
 }
 
@@ -185,23 +185,23 @@
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: var(--ovni-space-2);
-  padding: var(--ovni-space-3);
-  border-radius: var(--ovni-radius-md);
-  background: var(--ovni-bg-surface-alt);
+  gap: var(--chantivo-space-2);
+  padding: var(--chantivo-space-3);
+  border-radius: var(--chantivo-radius-md);
+  background: var(--chantivo-bg-surface-alt);
 }
 
 .sliderLabel {
-  font-size: var(--ovni-text-sm);
-  color: var(--ovni-text-primary);
+  font-size: var(--chantivo-text-sm);
+  color: var(--chantivo-text-primary);
 }
 
 .checkboxOption {
   display: flex;
   align-items: center;
-  gap: var(--ovni-space-1);
-  font-size: var(--ovni-text-sm);
-  color: var(--ovni-text-primary);
+  gap: var(--chantivo-space-1);
+  font-size: var(--chantivo-text-sm);
+  color: var(--chantivo-text-primary);
   cursor: pointer;
 }
 
@@ -209,9 +209,9 @@
   width: 100%;
   max-width: 360px;
   aspect-ratio: 16 / 9;
-  border-radius: var(--ovni-radius-md);
-  background: var(--ovni-bg-base);
-  border: 1px solid var(--ovni-border);
+  border-radius: var(--chantivo-radius-md);
+  background: var(--chantivo-bg-base);
+  border: 1px solid var(--chantivo-border);
   overflow: hidden;
   display: flex;
   align-items: center;
@@ -224,13 +224,21 @@
   object-fit: cover;
 }
 
+/* T13.5 — the About subsection: the brand lockup sits above its own small diagnostics grid, never
+   inline with it (the logo is an identity moment, not a table row). */
+.about {
+  display: flex;
+  flex-direction: column;
+  gap: var(--chantivo-space-3);
+}
+
 .diagnostics {
   display: grid;
   grid-template-columns: auto 1fr;
-  gap: var(--ovni-space-1) var(--ovni-space-3);
+  gap: var(--chantivo-space-1) var(--chantivo-space-3);
   margin: 0;
-  font-size: var(--ovni-text-sm);
-  color: var(--ovni-text-secondary);
+  font-size: var(--chantivo-text-sm);
+  color: var(--chantivo-text-secondary);
 }
 
 .diagnostics dt {
@@ -243,7 +251,7 @@
 
 .notImplemented {
   margin: 0;
-  padding-left: var(--ovni-space-5);
-  color: var(--ovni-text-tertiary);
-  font-size: var(--ovni-text-sm);
+  padding-left: var(--chantivo-space-5);
+  color: var(--chantivo-text-tertiary);
+  font-size: var(--chantivo-text-sm);
 }

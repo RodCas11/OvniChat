@@ -27,7 +27,7 @@ function printStartupBanner(
   bootstrapToken: string | undefined,
 ): void {
   const lines = [
-    'OvniChat Dedicated Server',
+    'Chantivo Dedicated Server',
     `Server name:   ${config.name}`,
     `Listening:     ${address.host}:${String(address.port)}`,
     `Protocol:      v${String(CURRENT_PROTOCOL_VERSION)}`,

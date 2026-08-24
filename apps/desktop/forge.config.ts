@@ -54,9 +54,19 @@ const processLoopbackHelperExePath = path.join(
 // `apps/desktop`'s own tree to begin with, not merely filtered out.
 const repoRootNodeModules = path.join(desktopDir, '..', '..', 'node_modules');
 
+// T13.5 — the authoritative Chantivo Windows icon, packaged straight from a copy under this app's
+// own `resources/` directory (never regenerated/approximated — see `docs/BRANDING.md`). Copied here
+// rather than referenced directly from `src/assets/brand/` because `packagerConfig.icon` needs a
+// stable on-disk path outside anything Vite/Rollup touches; `src/assets/brand/` remains the single
+// Renderer-facing source of truth for every other brand asset (the mark/wordmark components import
+// straight from there). Electron Packager appends the correct per-platform extension itself when
+// given an extensionless base path — `chantivo.ico` is picked up automatically on win32.
+const chantivoIconBasePath = path.join(desktopDir, 'resources', 'chantivo');
+
 const forgeConfig: ForgeConfig = {
   makers: [],
   packagerConfig: {
+    icon: chantivoIconBasePath,
     // `asar.unpack` (rather than a plain `asar: true`) is required specifically because
     // `nativeMainProcessPackages` are no longer inlined by Rollup (see `vite.main.config.ts`): their
     // real `.node` binaries get copied into the packaged app by the `packageAfterCopy` hook below,
@@ -71,8 +81,13 @@ const forgeConfig: ForgeConfig = {
     // correctly locates by path (Node cannot `dlopen` from inside `app.asar`).
     asar: { unpack: '**/*.node' },
     // Statically linked via `/MT` (per `packages/windows-media/native/process-loopback-helper/`'s
-    // own build), so no companion DLLs of its own also need copying.
-    extraResource: [processLoopbackHelperExePath],
+    // own build), so no companion DLLs of its own also need copying. The Chantivo `.ico` rides along
+    // in the same array so it is also reachable at a known, packaged-mode-only path
+    // (`process.resourcesPath`/`chantivo.ico`) for `window-options.ts`'s own dev/packaged
+    // `BrowserWindow` icon resolution — Forge's default app-directory copy is not a place to rely on
+    // for a stable runtime path (unlike the packaged executable's own embedded icon resource, which
+    // `icon` above already handles independently of this).
+    extraResource: [processLoopbackHelperExePath, chantivoIconBasePath + '.ico'],
   },
   hooks: {
     // T13.4 QA fix — runs once per packaged platform/arch, after Electron Forge's own copy of

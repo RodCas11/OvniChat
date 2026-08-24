@@ -1,10 +1,10 @@
 .section {
   display: flex;
   flex-direction: column;
-  gap: var(--ovni-space-2);
-  padding-bottom: var(--ovni-space-4);
-  margin-bottom: var(--ovni-space-4);
-  border-bottom: 1px solid var(--ovni-border);
+  gap: var(--chantivo-space-2);
+  padding-bottom: var(--chantivo-space-4);
+  margin-bottom: var(--chantivo-space-4);
+  border-bottom: 1px solid var(--chantivo-border);
 }
 
 .section:last-child {
@@ -16,13 +16,13 @@
 .volumeLabel {
   display: flex;
   align-items: center;
-  gap: var(--ovni-space-1);
-  font-size: var(--ovni-text-sm);
-  color: var(--ovni-text-primary);
+  gap: var(--chantivo-space-1);
+  font-size: var(--chantivo-text-sm);
+  color: var(--chantivo-text-primary);
 }
 
 .hint {
   margin: 0;
-  font-size: var(--ovni-text-xs);
-  color: var(--ovni-text-tertiary);
+  font-size: var(--chantivo-text-xs);
+  color: var(--chantivo-text-tertiary);
 }

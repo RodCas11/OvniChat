@@ -5,17 +5,17 @@
 .row {
   display: flex;
   align-items: center;
-  gap: var(--ovni-space-1);
-  border-radius: var(--ovni-radius-sm);
-  padding-right: var(--ovni-space-1);
+  gap: var(--chantivo-space-1);
+  border-radius: var(--chantivo-radius-sm);
+  padding-right: var(--chantivo-space-1);
 }
 
 .row:hover {
-  background: var(--ovni-bg-hover);
+  background: var(--chantivo-bg-hover);
 }
 
 .selected {
-  background: var(--ovni-bg-selected);
+  background: var(--chantivo-bg-selected);
 }
 
 /* T13.1.1 — a persistent, subtle tint for "I am in this channel's voice" that survives even when
@@ -26,20 +26,20 @@
 }
 
 .joined.selected {
-  background: var(--ovni-bg-selected);
+  background: var(--chantivo-bg-selected);
 }
 
 .selectButton {
   display: flex;
   align-items: center;
-  gap: var(--ovni-space-2);
+  gap: var(--chantivo-space-2);
   flex: 1;
   min-width: 0;
   height: 34px;
-  padding: 0 var(--ovni-space-2);
+  padding: 0 var(--chantivo-space-2);
   border: none;
   background: transparent;
-  color: var(--ovni-text-secondary);
+  color: var(--chantivo-text-secondary);
   text-align: left;
 }
 
@@ -47,9 +47,9 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: var(--ovni-text-base);
+  font-size: var(--chantivo-text-base);
   font-weight: 500;
-  color: var(--ovni-text-primary);
+  color: var(--chantivo-text-primary);
 }
 
 .selected .name {
@@ -57,12 +57,12 @@
 }
 
 .joinedIcon {
-  color: var(--ovni-accent);
+  color: var(--chantivo-accent);
   flex-shrink: 0;
 }
 
 .chatIcon {
-  color: var(--ovni-text-tertiary);
+  color: var(--chantivo-text-tertiary);
   flex-shrink: 0;
 }
 
@@ -70,21 +70,21 @@
    already carry a `<title>` for a native tooltip and a `data-testid` for assertions; a text label
    would compete with the name in the already-tight sidebar column. */
 .badgeIcon {
-  color: var(--ovni-text-tertiary);
+  color: var(--chantivo-text-tertiary);
   flex-shrink: 0;
 }
 
 .actions {
   display: flex;
   align-items: center;
-  gap: var(--ovni-space-1);
+  gap: var(--chantivo-space-1);
   flex-shrink: 0;
   /* T13.1.1 — quiet by default; brought to full prominence on hover/focus of the row, or when
      `.actionsVisible` is applied (selected-for-chat or actually joined — see `ChannelRow.tsx`).
      Opacity only, never `display:none`/`visibility:hidden` — the Join/Leave/chat controls stay in
      the tab order and reachable by keyboard regardless of hover state. */
   opacity: 0;
-  transition: opacity var(--ovni-transition-fast);
+  transition: opacity var(--chantivo-transition-fast);
 }
 
 .row:hover .actions,
@@ -97,5 +97,5 @@
   display: flex;
   flex-direction: column;
   padding: 0;
-  margin: 0 0 var(--ovni-space-1);
+  margin: 0 0 var(--chantivo-space-1);
 }

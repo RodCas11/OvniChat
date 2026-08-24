@@ -9,20 +9,20 @@
 .header {
   display: flex;
   align-items: center;
-  gap: var(--ovni-space-2);
+  gap: var(--chantivo-space-2);
   height: 48px;
-  padding: 0 var(--ovni-space-4);
-  border-bottom: 1px solid var(--ovni-border);
-  box-shadow: var(--ovni-shadow-md);
+  padding: 0 var(--chantivo-space-4);
+  border-bottom: 1px solid var(--chantivo-border);
+  box-shadow: var(--chantivo-shadow-md);
   flex-shrink: 0;
 }
 
 .headerIcon {
-  color: var(--ovni-text-tertiary);
+  color: var(--chantivo-text-tertiary);
 }
 
 .headerIconJoined {
-  color: var(--ovni-accent);
+  color: var(--chantivo-accent);
 }
 
 .headerTitle {
@@ -33,31 +33,35 @@
 .headerActions {
   display: flex;
   align-items: center;
-  gap: var(--ovni-space-1);
-}
-
-.mediaStrip {
-  display: flex;
-  flex-direction: column;
-  gap: var(--ovni-space-2);
-  padding: var(--ovni-space-3) var(--ovni-space-4);
-  border-bottom: 1px solid var(--ovni-border);
-  max-height: 45vh;
-  overflow-y: auto;
-  flex-shrink: 0;
-}
-
-.mediaRow {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--ovni-space-2);
-}
-
-.mediaRow:empty {
-  display: none;
+  gap: var(--chantivo-space-1);
 }
 
 .chat {
   flex: 1;
   min-height: 0;
+}
+
+/* T13.5 — media-active layout: the stage takes the primary area, chat becomes a narrower,
+   user-toggleable side panel (never below a sensible minimum width — Section 86). */
+.mediaLayout {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  gap: var(--chantivo-space-3);
+  padding: var(--chantivo-space-3) var(--chantivo-space-4);
+}
+
+.mediaArea {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.sideChat {
+  flex: 0 0 320px;
+  min-width: 260px;
+  min-height: 0;
+  border-left: 1px solid var(--chantivo-border);
+  padding-left: var(--chantivo-space-3);
 }

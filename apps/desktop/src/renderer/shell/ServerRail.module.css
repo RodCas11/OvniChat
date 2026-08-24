@@ -2,12 +2,12 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: var(--ovni-space-2);
-  width: var(--ovni-rail-width);
+  gap: var(--chantivo-space-2);
+  width: var(--chantivo-rail-width);
   flex-shrink: 0;
-  padding: var(--ovni-space-3) 0;
-  background: var(--ovni-bg-surface);
-  border-right: 1px solid var(--ovni-border);
+  padding: var(--chantivo-space-3) 0;
+  background: var(--chantivo-bg-surface);
+  border-right: 1px solid var(--chantivo-border);
   overflow-y: auto;
 }
 
@@ -19,28 +19,28 @@
   width: 52px;
   height: 52px;
   border: none;
-  border-radius: var(--ovni-radius-full);
-  background: var(--ovni-bg-surface-alt);
-  color: var(--ovni-text-secondary);
+  border-radius: var(--chantivo-radius-full);
+  background: var(--chantivo-bg-surface-alt);
+  color: var(--chantivo-text-secondary);
   flex-shrink: 0;
   transition:
-    background-color var(--ovni-transition-fast),
-    color var(--ovni-transition-fast),
-    border-radius var(--ovni-transition-fast);
+    background-color var(--chantivo-transition-fast),
+    color var(--chantivo-transition-fast),
+    border-radius var(--chantivo-transition-fast);
 }
 
 .homeButton:hover,
 .addButton:hover {
-  background: var(--ovni-accent);
-  color: var(--ovni-accent-fg);
-  border-radius: var(--ovni-radius-lg);
+  background: var(--chantivo-accent);
+  color: var(--chantivo-accent-fg);
+  border-radius: var(--chantivo-radius-lg);
 }
 
 .divider {
   width: 32px;
   height: 2px;
-  border-radius: var(--ovni-radius-full);
-  background: var(--ovni-border);
+  border-radius: var(--chantivo-radius-full);
+  background: var(--chantivo-border);
   flex-shrink: 0;
 }
 
@@ -48,7 +48,7 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: var(--ovni-space-2);
+  gap: var(--chantivo-space-2);
   width: 100%;
   padding: 0;
   margin: 0;
@@ -63,10 +63,10 @@
   border: none;
   background: transparent;
   padding: 6px;
-  border-radius: var(--ovni-radius-full);
+  border-radius: var(--chantivo-radius-full);
   transition:
-    background-color var(--ovni-transition-fast),
-    border-radius var(--ovni-transition-fast);
+    background-color var(--chantivo-transition-fast),
+    border-radius var(--chantivo-transition-fast);
 }
 
 /* T13.1.1 — strengthens the active-server signal beyond `activeIndicator`'s marker bar alone: a
@@ -75,8 +75,8 @@
    close inspection of a thin left bar. */
 .tile:hover,
 .tile[data-active='true'] {
-  background: var(--ovni-bg-hover);
-  border-radius: var(--ovni-radius-lg);
+  background: var(--chantivo-bg-hover);
+  border-radius: var(--chantivo-radius-lg);
 }
 
 /* A shorter, dimmer version of the active marker on hover of a *non*-active tile — mirrors
@@ -90,8 +90,8 @@
   transform: translateY(-50%);
   width: 4px;
   height: 20px;
-  border-radius: var(--ovni-radius-full);
-  background: var(--ovni-text-tertiary);
+  border-radius: var(--chantivo-radius-full);
+  background: var(--chantivo-text-tertiary);
 }
 
 .activeIndicator {
@@ -101,6 +101,6 @@
   transform: translateY(-50%);
   width: 4px;
   height: 36px;
-  border-radius: var(--ovni-radius-full);
-  background: var(--ovni-accent);
+  border-radius: var(--chantivo-radius-full);
+  background: var(--chantivo-accent);
 }

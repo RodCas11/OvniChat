@@ -17,7 +17,7 @@ for the accepted decisions this document elaborates.
 ## Scope
 
 T8 turned `services/realtime` — until then an internal service every E2E test bypassed into
-directly — into something a **client explicitly connects to**: an independently-operated OvniChat
+directly — into something a **client explicitly connects to**: an independently-operated Chantivo
 Dedicated Server. It did not add accounts, permissions, groups, invite tokens, bans, text chat,
 TURN/TLS production deployment, Docker packaging, an installer, or a public server directory.
 **T9 added server-local permissions/groups/invite-and-privilege-tokens/bans** (see

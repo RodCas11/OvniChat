@@ -11,9 +11,9 @@
   /* Reserves the ring's own width so speaking toggling on/off never shifts adjacent layout. */
   outline: 2px solid transparent;
   outline-offset: 2px;
-  transition: outline-color var(--ovni-transition-fast);
+  transition: outline-color var(--chantivo-transition-fast);
 }
 
 .speakingRing {
-  outline-color: var(--ovni-accent);
+  outline-color: var(--chantivo-accent);
 }

@@ -1,62 +1,62 @@
 .form {
   display: flex;
   flex-direction: column;
-  gap: var(--ovni-space-4);
+  gap: var(--chantivo-space-4);
 }
 
 .field {
   display: flex;
   flex-direction: column;
-  gap: var(--ovni-space-1);
-  font-size: var(--ovni-text-sm);
-  color: var(--ovni-text-secondary);
+  gap: var(--chantivo-space-1);
+  font-size: var(--chantivo-text-sm);
+  color: var(--chantivo-text-secondary);
 }
 
 .field input {
   height: 36px;
-  padding: 0 var(--ovni-space-3);
-  border: 1px solid var(--ovni-border);
-  border-radius: var(--ovni-radius-md);
-  background: var(--ovni-bg-base);
-  color: var(--ovni-text-primary);
-  font-size: var(--ovni-text-base);
+  padding: 0 var(--chantivo-space-3);
+  border: 1px solid var(--chantivo-border);
+  border-radius: var(--chantivo-radius-md);
+  background: var(--chantivo-bg-base);
+  color: var(--chantivo-text-primary);
+  font-size: var(--chantivo-text-base);
 }
 
 .hint {
-  color: var(--ovni-text-tertiary);
-  font-size: var(--ovni-text-xs);
+  color: var(--chantivo-text-tertiary);
+  font-size: var(--chantivo-text-xs);
 }
 
 .advanced {
   display: flex;
   flex-direction: column;
-  gap: var(--ovni-space-2);
+  gap: var(--chantivo-space-2);
 }
 
 .advancedToggle {
   display: inline-flex;
   align-items: center;
-  gap: var(--ovni-space-1);
+  gap: var(--chantivo-space-1);
   align-self: flex-start;
   border: none;
   background: transparent;
-  color: var(--ovni-text-secondary);
-  font-size: var(--ovni-text-sm);
+  color: var(--chantivo-text-secondary);
+  font-size: var(--chantivo-text-sm);
   font-weight: 600;
 }
 
 .advancedToggle:hover {
-  color: var(--ovni-text-primary);
+  color: var(--chantivo-text-primary);
 }
 
 .error {
   margin: 0;
-  color: var(--ovni-danger);
-  font-size: var(--ovni-text-sm);
+  color: var(--chantivo-danger);
+  font-size: var(--chantivo-text-sm);
 }
 
 .actions {
   display: flex;
   justify-content: flex-end;
-  gap: var(--ovni-space-2);
+  gap: var(--chantivo-space-2);
 }

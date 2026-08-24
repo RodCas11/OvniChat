@@ -1,0 +1,89 @@
+/* T13.5 — the one shared media tile: real video (camera cover-cropped, screen contain-fit) or a
+   real avatar fallback, never a stretched/distorted frame and never a plain black rectangle. */
+.tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  border-radius: var(--chantivo-radius-md);
+  overflow: hidden;
+  background: var(--chantivo-bg-surface-alt);
+  border: 2px solid transparent;
+  min-width: 0;
+  min-height: 0;
+}
+
+.tileFocused {
+  border-color: var(--chantivo-accent);
+}
+
+/* A subtle border, never a full-screen flash (Section 24) — layered independently of `.tileFocused`
+   (both can be true at once; the border color itself is the same accent either way, so this simply
+   ensures the ring still reads even on an unfocused grid tile). */
+.tileSpeaking {
+  border-color: var(--chantivo-accent);
+}
+
+.videoButton {
+  all: unset;
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: pointer;
+  background: #000;
+}
+
+.videoButton:disabled {
+  cursor: default;
+}
+
+.videoCover {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.videoContain {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+  background: #000;
+}
+
+.avatarFallback {
+  width: 100%;
+  height: 100%;
+  min-height: 96px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--chantivo-bg-surface-alt);
+}
+
+.caption {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--chantivo-space-2);
+  padding: var(--chantivo-space-1) var(--chantivo-space-2);
+  background: linear-gradient(to top, rgb(0 0 0 / 65%), transparent);
+  font-size: var(--chantivo-text-xs);
+  color: var(--chantivo-text-primary);
+  pointer-events: none;
+}
+
+.caption :global(button) {
+  pointer-events: auto;
+}
+
+.captionName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

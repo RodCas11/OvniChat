@@ -24,7 +24,7 @@ describe('loadDedicatedServerConfig', () => {
       DISCO_VOADOR_SERVER_CONFIG_PATH: path.join(dir, 'does-not-exist.json'),
     });
 
-    expect(config.name).toBe('OvniChat Server');
+    expect(config.name).toBe('Chantivo Server');
     expect(config.voiceChannels).toEqual(DEFAULT_VOICE_CHANNELS);
     expect(config.configFileFound).toBe(false);
     expect(config.realtime.host).toBe('127.0.0.1');

@@ -3,13 +3,16 @@
 ## Goal
 
 Build a lightweight, low-latency, self-hosted Windows desktop communication application, marketed
-as **OvniChat**. It should retain the useful communication core of Discord while remaining simpler
-to operate, inspect, and debug.
+as **Chantivo** (official domain: chantivo.app). It should retain the useful communication core of
+Discord while remaining simpler to operate, inspect, and debug.
 
-> **Naming note:** the product's user-facing name is **OvniChat** (project codename "Disco
-> Voador" internally; the `@disco-voador/*` npm package scope and repository/workspace names are
-> intentionally unchanged for now — a separate, fully verified rename task would migrate those
-> later, not this one). Product-facing UI, documentation, and titles use "OvniChat."
+> **Naming note (updated T13.5):** the product's official public name is **Chantivo**
+> (chantivo.app). It was marketed as "OvniChat" from T10 through T13.4 — historical task documents
+> and ADRs from that period legitimately still say "OvniChat," describing what was true at the time,
+> and are not rewritten. The internal `@disco-voador/*` npm package scope and repository/workspace
+> names remain intentionally unchanged (an internal technical namespace, never the public product
+> name — see [`BRANDING.md`](BRANDING.md)). Current product-facing UI, documentation, and titles use
+> "Chantivo."
 
 The primary experience is:
 
@@ -23,10 +26,10 @@ preference, not a credential. Configuration belongs primarily to the server oper
 participant should not need to understand WebRTC, signaling, TURN, audio-routing, or cryptographic
 identity details.
 
-OvniChat ships **two independent products**: the **OvniChat Client** (this desktop app) and the
-**OvniChat Dedicated Server** (`services/dedicated-server`, T8) — a self-hoster's own process, run
+Chantivo ships **two independent products**: the **Chantivo Client** (this desktop app) and the
+**Chantivo Dedicated Server** (`services/dedicated-server`, T8) — a self-hoster's own process, run
 on their own machine or network. A client connects to a server address the user enters manually;
-there is no OvniChat–operated infrastructure (no accounts service, no directory, no relay) required
+there is no Chantivo–operated infrastructure (no accounts service, no directory, no relay) required
 or assumed between them, and no relationship between two independently operated servers. See
 [`architecture/DEDICATED_SERVER.md`](architecture/DEDICATED_SERVER.md).
 
@@ -38,7 +41,7 @@ identity. See [`architecture/SERVER_AUTHORIZATION.md`](architecture/SERVER_AUTHO
 Text chat (T10) is **persistent**, not ephemeral — each Dedicated Server stores its own Server Chat
 and per-voice-channel Chat history, in its own data directory, with the same server-local ownership
 philosophy as T9's authorization state: decentralized ownership of persistent data, never absence of
-persistent data, and never a central OvniChat chat service. See
+persistent data, and never a central Chantivo chat service. See
 [`architecture/PERSISTENT_TEXT_CHAT.md`](architecture/PERSISTENT_TEXT_CHAT.md).
 
 T11 made the Client practical for daily use: local device preferences, server bookmarks, and automatic
@@ -48,7 +51,7 @@ replayed one. See
 [`architecture/CLIENT_SETTINGS_AND_RECONNECT.md`](architecture/CLIENT_SETTINGS_AND_RECONNECT.md).
 
 T13.1 gave the Client its actual visual identity: a dark, modern, Discord-familiar layout (server
-picker, server rail, channel sidebar, chat, member panel, persistent voice controls) with OvniChat
+picker, server rail, channel sidebar, chat, member panel, persistent voice controls) with Chantivo
 green used sparingly as an accent — never a pixel-for-pixel Discord clone, and never Discord's own
 assets or branding. Technical internals a normal participant never needs (identity fingerprint,
 connection protocol details) live behind an explicit Advanced/Diagnostics area, not the main flow.
@@ -73,7 +76,7 @@ bounded custom-status string, and manual presence (Online/Away/Do Not Disturb �
 automatic idle/away detection, no game/Rich-Presence detection of any kind). The Member Panel now
 shows everyone connected to the server, grouped into two safe role buckets computed from real
 permissions, never a private custom group name. A member profile popover shows this presentation but
-deliberately has **no message/DM/friend affordance of any kind** — OvniChat is not a social network
+deliberately has **no message/DM/friend affordance of any kind** — Chantivo is not a social network
 and has no such system to safely support one. All of this is entirely server-local per Dedicated
 Server, exactly like T9's authorization state and T10's chat history: no global profile, no
 cross-server correlation for the same identity. See
@@ -145,11 +148,11 @@ transport-neutral enough to introduce an SFU later.
    `docs/adr/0011-local-cryptographic-identity-without-central-accounts.md`).
 9. The Client and the Dedicated Server are separately distributed, separately operated products with
    no mandatory infrastructure between them — anyone can run a server; no server directory, central
-   account service, or Disco Voador-operated control plane is required or provided (T8; see
+   account service, or Chantivo-operated control plane is required or provided (T8; see
    `docs/adr/0012-dedicated-server-product-boundary.md`).
 10. Authorization is server-local, never a central authority: a Dedicated Server remembers which
     cryptographic identities hold which of its own groups/permissions, never "this human owns a
-    Disco Voador account" — the same identity may be Server Admin on one server and an ordinary
+    Chantivo account" — the same identity may be Server Admin on one server and an ordinary
     Guest on another, with no relationship between the two (T9; see
     `docs/adr/0013-server-authorization-storage-and-rbac.md`).
 11. Persistent product data is server-local, never centrally aggregated: chat history (T10) lives

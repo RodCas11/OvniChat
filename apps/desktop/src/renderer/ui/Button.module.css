@@ -2,18 +2,18 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: var(--ovni-space-2);
+  gap: var(--chantivo-space-2);
   height: 36px;
-  padding: 0 var(--ovni-space-4);
+  padding: 0 var(--chantivo-space-4);
   border: 1px solid transparent;
-  border-radius: var(--ovni-radius-md);
-  font-size: var(--ovni-text-base);
+  border-radius: var(--chantivo-radius-md);
+  font-size: var(--chantivo-text-base);
   font-weight: 600;
   white-space: nowrap;
   transition:
-    background-color var(--ovni-transition-fast),
-    border-color var(--ovni-transition-fast),
-    color var(--ovni-transition-fast);
+    background-color var(--chantivo-transition-fast),
+    border-color var(--chantivo-transition-fast),
+    color var(--chantivo-transition-fast);
 }
 
 .button:disabled {
@@ -25,39 +25,39 @@
 }
 
 .primary {
-  background: var(--ovni-accent);
-  color: var(--ovni-accent-fg);
+  background: var(--chantivo-accent);
+  color: var(--chantivo-accent-fg);
 }
 
 .primary:not(:disabled):hover {
-  background: var(--ovni-accent-hover);
+  background: var(--chantivo-accent-hover);
 }
 
 .secondary {
-  background: var(--ovni-bg-surface-alt);
-  color: var(--ovni-text-primary);
-  border-color: var(--ovni-border);
+  background: var(--chantivo-bg-surface-alt);
+  color: var(--chantivo-text-primary);
+  border-color: var(--chantivo-border);
 }
 
 .secondary:not(:disabled):hover {
-  background: var(--ovni-bg-hover);
+  background: var(--chantivo-bg-hover);
 }
 
 .danger {
-  background: var(--ovni-danger);
-  color: var(--ovni-text-primary);
+  background: var(--chantivo-danger);
+  color: var(--chantivo-text-primary);
 }
 
 .danger:not(:disabled):hover {
-  background: var(--ovni-danger-hover);
+  background: var(--chantivo-danger-hover);
 }
 
 .ghost {
   background: transparent;
-  color: var(--ovni-text-secondary);
+  color: var(--chantivo-text-secondary);
 }
 
 .ghost:not(:disabled):hover {
-  background: var(--ovni-bg-hover);
-  color: var(--ovni-text-primary);
+  background: var(--chantivo-bg-hover);
+  color: var(--chantivo-text-primary);
 }

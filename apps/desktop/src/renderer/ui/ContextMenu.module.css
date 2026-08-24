@@ -1,27 +1,27 @@
 .menu {
   position: fixed;
-  z-index: var(--ovni-z-dropdown);
+  z-index: var(--chantivo-z-dropdown);
   display: flex;
   flex-direction: column;
   min-width: 180px;
-  padding: var(--ovni-space-1);
-  background: var(--ovni-bg-surface-alt);
-  border: 1px solid var(--ovni-border);
-  border-radius: var(--ovni-radius-md);
-  box-shadow: var(--ovni-shadow-lg);
+  padding: var(--chantivo-space-1);
+  background: var(--chantivo-bg-surface-alt);
+  border: 1px solid var(--chantivo-border);
+  border-radius: var(--chantivo-radius-md);
+  box-shadow: var(--chantivo-shadow-lg);
 }
 
 .item {
   display: flex;
   align-items: center;
-  gap: var(--ovni-space-2);
+  gap: var(--chantivo-space-2);
   height: 32px;
-  padding: 0 var(--ovni-space-2);
+  padding: 0 var(--chantivo-space-2);
   border: none;
-  border-radius: var(--ovni-radius-sm);
+  border-radius: var(--chantivo-radius-sm);
   background: transparent;
-  color: var(--ovni-text-primary);
-  font-size: var(--ovni-text-sm);
+  color: var(--chantivo-text-primary);
+  font-size: var(--chantivo-text-sm);
   text-align: left;
 }
 
@@ -30,9 +30,9 @@
 }
 
 .active:not(:disabled) {
-  background: var(--ovni-bg-hover);
+  background: var(--chantivo-bg-hover);
 }
 
 .danger {
-  color: var(--ovni-danger);
+  color: var(--chantivo-danger);
 }

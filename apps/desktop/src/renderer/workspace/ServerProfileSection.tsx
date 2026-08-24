@@ -85,7 +85,7 @@ export function ServerProfileSection({ state, actions }: ServerProfileSectionPro
   return (
     <div className={styles.section}>
       <h3 className={styles.sectionTitle}>Server Profile</h3>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--ovni-space-4)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--chantivo-space-4)' }}>
         {localPreview === undefined ? (
           <ServerAvatar
             serverName={serverName}
@@ -103,7 +103,7 @@ export function ServerProfileSection({ state, actions }: ServerProfileSectionPro
             {...(localPreview !== null ? { imageUrl: localPreview } : {})}
           />
         )}
-        <div style={{ display: 'flex', gap: 'var(--ovni-space-2)' }}>
+        <div style={{ display: 'flex', gap: 'var(--chantivo-space-2)' }}>
           <Button
             variant="secondary"
             disabled={busy}

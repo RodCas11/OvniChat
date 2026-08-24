@@ -3,12 +3,12 @@
   align-items: center;
   justify-content: center;
   border: none;
-  border-radius: var(--ovni-radius-sm);
+  border-radius: var(--chantivo-radius-sm);
   background: transparent;
-  color: var(--ovni-text-secondary);
+  color: var(--chantivo-text-secondary);
   transition:
-    background-color var(--ovni-transition-fast),
-    color var(--ovni-transition-fast);
+    background-color var(--chantivo-transition-fast),
+    color var(--chantivo-transition-fast);
 }
 
 .medium {
@@ -26,8 +26,8 @@
 }
 
 .button:not(:disabled):hover {
-  background: var(--ovni-bg-hover);
-  color: var(--ovni-text-primary);
+  background: var(--chantivo-bg-hover);
+  color: var(--chantivo-text-primary);
 }
 
 .button:disabled {
@@ -39,22 +39,22 @@
    glance, not a subtle color shift a user could miss. */
 .active {
   background: rgba(62, 207, 110, 0.14);
-  color: var(--ovni-accent);
+  color: var(--chantivo-accent);
 }
 
 .active:not(:disabled):hover {
   background: rgba(62, 207, 110, 0.22);
-  color: var(--ovni-accent-hover);
+  color: var(--chantivo-accent-hover);
 }
 
 /* Same treatment for a toggled-on destructive/muted state (muted microphone, deafened) — always-on
    background, never hover-only, so "you are muted" is immediately obvious. */
 .danger {
   background: rgba(229, 72, 77, 0.14);
-  color: var(--ovni-danger);
+  color: var(--chantivo-danger);
 }
 
 .danger:not(:disabled):hover {
   background: rgba(229, 72, 77, 0.22);
-  color: var(--ovni-danger-hover);
+  color: var(--chantivo-danger-hover);
 }

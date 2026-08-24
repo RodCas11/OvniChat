@@ -56,6 +56,7 @@ describe('Normal-user (Guest) render shows no admin DOM at all (T13.2 item K)', 
           actions={actions}
           channelTree={channelTree}
           selectedChatTarget={{ scope: 'server' }}
+          participants={[]}
           onOpenAuthorization={vi.fn()}
           onOpenServerSettings={undefined}
         />

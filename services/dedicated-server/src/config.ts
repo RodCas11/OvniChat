@@ -25,7 +25,7 @@ import { readServerConfigFile, type ServerConfigFile } from './server-config-fil
  * {@link DEFAULT_VOICE_CHANNELS} when no file (or no `voiceChannels` key in it) is given.
  */
 
-const DEFAULT_SERVER_NAME = 'OvniChat Server';
+const DEFAULT_SERVER_NAME = 'Chantivo Server';
 export const DEFAULT_SERVER_CONFIG_PATH = 'disco-voador-server.config.json';
 /** T9 — relative to the process's working directory, matching the config file's own default-path
  * convention. Never the repository source tree by design (this is a `.gitignore`d-by-pattern

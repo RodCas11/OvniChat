@@ -33,6 +33,7 @@ describe('MainContent (T13.1 — no stale per-thread state on selection change)'
         state={state}
         actions={actions}
         channelTree={state.channelTree}
+        participants={[]}
         selectedChatTarget={{ scope: 'channel', channelId: 'general' }}
         onOpenAuthorization={vi.fn()}
       />,
@@ -47,6 +48,7 @@ describe('MainContent (T13.1 — no stale per-thread state on selection change)'
         state={state}
         actions={actions}
         channelTree={state.channelTree}
+        participants={[]}
         selectedChatTarget={{ scope: 'channel', channelId: 'games' }}
         onOpenAuthorization={vi.fn()}
       />,
@@ -68,6 +70,7 @@ describe('MainContent (T13.1 — no stale per-thread state on selection change)'
         state={state}
         actions={actions}
         channelTree={state.channelTree}
+        participants={[]}
         selectedChatTarget={{ scope: 'channel', channelId: 'general' }}
         onOpenAuthorization={vi.fn()}
       />,
@@ -82,6 +85,7 @@ describe('MainContent (T13.1 — no stale per-thread state on selection change)'
         state={state}
         actions={actions}
         channelTree={state.channelTree}
+        participants={[]}
         selectedChatTarget={{ scope: 'server' }}
         onOpenAuthorization={vi.fn()}
       />,
@@ -100,6 +104,7 @@ describe('MainContent (T13.1 — no stale per-thread state on selection change)'
         state={state}
         actions={createVoiceActions()}
         channelTree={state.channelTree}
+        participants={[]}
         selectedChatTarget={{ scope: 'server' }}
         onOpenAuthorization={vi.fn()}
       />,
@@ -111,10 +116,72 @@ describe('MainContent (T13.1 — no stale per-thread state on selection change)'
         state={state}
         actions={createVoiceActions()}
         channelTree={state.channelTree}
+        participants={[]}
         selectedChatTarget={{ scope: 'channel', channelId: 'general' }}
         onOpenAuthorization={vi.fn()}
       />,
     );
     expect(screen.getByText('General — Chat')).toBeInTheDocument();
+  });
+});
+
+// T13.5 — real component integration through `MainContent` (never `MediaStage` in isolation for
+// this part): proves the actual layout decision — chat-primary by default, media stage + toggleable
+// side chat once real media is active — happens in the real render tree, not merely that each piece
+// works alone.
+describe('MainContent (T13.5) — chat-primary default vs. media-active side-chat layout', () => {
+  it('no camera/screen stream active: chat renders full-width, with no media stage and no chat-toggle control at all', () => {
+    const state = createVoiceState({
+      myPermissions: ['chat.channel.send'],
+      channelTree: [createChannel({ nodeId: 'general', name: 'General' })],
+    });
+    render(
+      <MainContent
+        state={state}
+        actions={createVoiceActions()}
+        channelTree={state.channelTree}
+        participants={[]}
+        selectedChatTarget={{ scope: 'channel', channelId: 'general' }}
+        onOpenAuthorization={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByPlaceholderText('Message…')).toBeInTheDocument();
+    expect(screen.queryByTestId('main-content-toggle-chat')).not.toBeInTheDocument();
+    expect(document.querySelector('[data-role^="media-stage"]')).not.toBeInTheDocument();
+  });
+
+  it('a real camera stream active: renders the media stage plus a toggleable side chat panel, never a second chat system', () => {
+    const state = createVoiceState({
+      myPermissions: ['chat.channel.send'],
+      channelTree: [createChannel({ nodeId: 'general', name: 'General' })],
+      remoteCameraStreams: new Map([['p1', {} as unknown as MediaStream]]),
+    });
+    render(
+      <MainContent
+        state={state}
+        actions={createVoiceActions()}
+        channelTree={state.channelTree}
+        participants={[
+          { participantId: 'p1', displayName: 'Alice', connectionState: 'connected', groups: [] },
+        ]}
+        selectedChatTarget={{ scope: 'channel', channelId: 'general' }}
+        onOpenAuthorization={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId('media-stage-grid')).toBeInTheDocument();
+    // Still the one real `ChatView` (same "Message…" composer), now inside the side panel.
+    expect(screen.getByPlaceholderText('Message…')).toBeInTheDocument();
+
+    const toggle = screen.getByTestId('main-content-toggle-chat');
+    expect(toggle).toBeInTheDocument();
+    fireEvent.click(toggle);
+    expect(screen.queryByPlaceholderText('Message…')).not.toBeInTheDocument();
+    // The media stage itself is unaffected by hiding chat — never removed, never re-negotiated.
+    expect(screen.getByTestId('media-stage-grid')).toBeInTheDocument();
+
+    fireEvent.click(toggle);
+    expect(screen.getByPlaceholderText('Message…')).toBeInTheDocument();
   });
 });

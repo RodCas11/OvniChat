@@ -1,0 +1,83 @@
+/* T13.5 — the media stage: screen-focused layout, focused-camera layout, and the adaptive camera
+   grid. Kept intentionally simple (CSS Grid `auto-fit`, no JS-computed column counts) — see
+   `MediaStage.tsx`'s own doc comment for why layout switching here never touches WebRTC. */
+
+.stage {
+  display: flex;
+  flex-direction: column;
+  gap: var(--chantivo-space-2);
+  min-height: 0;
+  flex: 1;
+}
+
+.stageToolbar {
+  display: flex;
+  justify-content: flex-start;
+}
+
+.screenPrimary {
+  flex: 1;
+  min-height: 0;
+  border-radius: var(--chantivo-radius-md);
+  overflow: hidden;
+  display: flex;
+}
+
+.screenPrimary > * {
+  flex: 1;
+  min-height: 0;
+}
+
+.screenSwitcher {
+  display: flex;
+  gap: var(--chantivo-space-2);
+  overflow-x: auto;
+}
+
+.screenSwitcherItem {
+  flex-shrink: 0;
+  padding: var(--chantivo-space-1) var(--chantivo-space-3);
+  border-radius: var(--chantivo-radius-sm);
+  border: 1px solid var(--chantivo-border);
+  background: var(--chantivo-bg-surface);
+  color: var(--chantivo-text-secondary);
+  font-size: var(--chantivo-text-sm);
+  cursor: pointer;
+}
+
+.screenSwitcherItemActive {
+  border-color: var(--chantivo-accent);
+  color: var(--chantivo-text-primary);
+}
+
+.cameraFilmstrip {
+  display: flex;
+  gap: var(--chantivo-space-2);
+  overflow-x: auto;
+  padding-bottom: var(--chantivo-space-1);
+}
+
+.filmstripTile {
+  flex: 0 0 auto;
+  width: 160px;
+  height: 90px;
+}
+
+/* Adaptive grid: 1 participant fills the space, 2 sit side by side, 3-4 form a 2x2-ish layout, more
+   wrap into additional rows and scroll — `auto-fit`/`minmax` handles every count without a
+   per-count special case, and a fixed `aspect-ratio` keeps every tile a real 16:9 frame rather than
+   stretching to fill leftover space. */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  grid-auto-rows: 1fr;
+  gap: var(--chantivo-space-3);
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  align-content: center;
+}
+
+.grid > * {
+  aspect-ratio: 16 / 9;
+}

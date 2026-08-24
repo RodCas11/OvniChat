@@ -1,20 +1,20 @@
 .panel {
   display: flex;
   flex-direction: column;
-  width: var(--ovni-member-panel-width);
+  width: var(--chantivo-member-panel-width);
   flex-shrink: 0;
-  background: var(--ovni-bg-surface);
-  border-left: 1px solid var(--ovni-border);
+  background: var(--chantivo-bg-surface);
+  border-left: 1px solid var(--chantivo-border);
   min-height: 0;
 }
 
 .collapsedRail {
   display: flex;
   align-items: flex-start;
-  padding: var(--ovni-space-2);
+  padding: var(--chantivo-space-2);
   flex-shrink: 0;
-  background: var(--ovni-bg-surface);
-  border-left: 1px solid var(--ovni-border);
+  background: var(--chantivo-bg-surface);
+  border-left: 1px solid var(--chantivo-border);
 }
 
 .header {
@@ -22,32 +22,34 @@
   align-items: center;
   justify-content: space-between;
   height: 48px;
-  padding: 0 var(--ovni-space-3) 0 var(--ovni-space-4);
-  border-bottom: 1px solid var(--ovni-border);
-  box-shadow: var(--ovni-shadow-md);
+  padding: 0 var(--chantivo-space-3) 0 var(--chantivo-space-4);
+  border-bottom: 1px solid var(--chantivo-border);
+  box-shadow: var(--chantivo-shadow-md);
 }
 
 .title {
   font-weight: 700;
-  font-size: var(--ovni-text-sm);
-  color: var(--ovni-text-secondary);
+  /* T13.5.1 — a section heading reads as an afterthought at `text-sm`/secondary; promoted to match
+     the weight this panel's own content deserves (Section 19: "polish the Members header"). */
+  font-size: var(--chantivo-text-base);
+  color: var(--chantivo-text-primary);
 }
 
 .scroll {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: var(--ovni-space-2) 0;
+  padding: var(--chantivo-space-2) 0;
 }
 
 .group {
-  margin-bottom: var(--ovni-space-3);
+  margin-bottom: var(--chantivo-space-3);
 }
 
 .groupLabel {
-  padding: var(--ovni-space-1) var(--ovni-space-4);
-  color: var(--ovni-text-tertiary);
-  font-size: var(--ovni-text-xs);
+  padding: var(--chantivo-space-1) var(--chantivo-space-4);
+  color: var(--chantivo-text-tertiary);
+  font-size: var(--chantivo-text-xs);
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.04em;

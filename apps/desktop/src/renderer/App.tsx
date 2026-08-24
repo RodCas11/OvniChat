@@ -182,7 +182,7 @@ function AutoFirstRun({
 
   return (
     <main>
-      <h1>OvniChat</h1>
+      <h1>Chantivo</h1>
       <p>Setting up local identity for automated testing…</p>
     </main>
   );
@@ -210,7 +210,7 @@ function AutoConnect({
 
   return (
     <main>
-      <h1>OvniChat</h1>
+      <h1>Chantivo</h1>
       <p>Connecting to the test server…</p>
     </main>
   );
@@ -503,7 +503,7 @@ export function App(): ReactElement {
   if (identity.state.status === 'loading') {
     return (
       <main>
-        <h1>OvniChat</h1>
+        <h1>Chantivo</h1>
         <p>Loading local identity…</p>
       </main>
     );

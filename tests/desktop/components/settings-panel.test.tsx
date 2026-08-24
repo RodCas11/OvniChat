@@ -194,6 +194,25 @@ describe('SettingsPanel (T13.1.1 redesign) — sidebar navigation', () => {
     expect(screen.queryByLabelText('Microphone')).not.toBeInTheDocument();
     expect(screen.queryByText('Default quality')).not.toBeInTheDocument();
   });
+
+  // T13.5 — Chantivo product-branding rename.
+  it('the About subsection (under Advanced) identifies Chantivo with the real version and chantivo.app — no login/account/subscription affordance', () => {
+    renderSettingsPanel();
+    fireEvent.click(screen.getByTestId('settings-nav-advanced'));
+
+    const about = screen.getByTestId('settings-about');
+    expect(about).toHaveTextContent('chantivo.app');
+    expect(about).toHaveTextContent('Version');
+    expect(about).not.toHaveTextContent(/log in|sign in|subscription/iu);
+  });
+
+  it('renders no stale "OvniChat" text anywhere in Settings, in any section', () => {
+    renderSettingsPanel();
+    for (const sectionId of ['profile', 'voice', 'screen', 'advanced']) {
+      fireEvent.click(screen.getByTestId(`settings-nav-${sectionId}`));
+      expect(document.body).not.toHaveTextContent('OvniChat');
+    }
+  });
 });
 
 describe('SettingsPanel (T13.1.1) — controls still wire to their real production actions', () => {
@@ -414,7 +433,7 @@ describe('SettingsPanel — T13.4 Input Mode / Push to Talk', () => {
 
       await waitFor(() => {
         expect(screen.getByTestId('ptt-shortcut-status')).toHaveTextContent(
-          'Shortcut unavailable — something went wrong starting the global hotkey listener. Try restarting OvniChat, or contact support if this keeps happening.',
+          'Shortcut unavailable — something went wrong starting the global hotkey listener. Try restarting Chantivo, or contact support if this keeps happening.',
         );
       });
       expect(screen.getByTestId('ptt-shortcut-status')).not.toHaveTextContent(

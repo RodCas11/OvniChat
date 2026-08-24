@@ -36,9 +36,9 @@ export function FirstRunPrompt({ onContinue }: FirstRunPromptProps): ReactElemen
 
   return (
     <main>
-      <h1>Welcome to OvniChat</h1>
+      <h1>Welcome to Chantivo</h1>
       <p>
-        Choose a nickname to get started. There is no account, no email, and no password — OvniChat
+        Choose a nickname to get started. There is no account, no email, and no password — Chantivo
         generates a local cryptographic identity for you that stays on this device.
       </p>
       <form onSubmit={handleSubmit}>

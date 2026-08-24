@@ -29,7 +29,7 @@ const PRESENCE_LABEL: Record<MemberPanelEntry['presence'], string> = {
 /**
  * T13.3 — a read-mostly member profile view: avatar, display name, presence, custom status, and a
  * `roleBucket` badge if present. Deliberately has **no** DM/friend/message affordance of any kind —
- * OvniChat has no DM/social-graph system, a hard product boundary. A viewer holding
+ * Chantivo has no DM/social-graph system, a hard product boundary. A viewer holding
  * `moderation.profile.clear` additionally sees "Clear avatar"/"Clear status" actions for this member
  * — clear-only, matching the honest-limits doctrine (there is no way to set someone else's content).
  */
@@ -78,7 +78,7 @@ export function MemberProfilePopover({
 
   return (
     <div className={styles.form}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--ovni-space-4)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--chantivo-space-4)' }}>
         <UserAvatar
           name={member.displayName}
           colorSeed={member.key}

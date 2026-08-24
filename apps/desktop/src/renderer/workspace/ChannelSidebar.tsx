@@ -115,7 +115,7 @@ export function ChannelSidebar({
   return (
     <nav className={styles.sidebar} aria-label="Channels">
       <div className={styles.header}>
-        <span className={styles.serverName}>{serverName ?? 'OvniChat'}</span>
+        <span className={styles.serverName}>{serverName ?? 'Chantivo'}</span>
       </div>
 
       <div className={styles.scroll}>

@@ -13,6 +13,25 @@ import { getClientSettings } from './settings/settings-service.js';
 import { IPC_CHANNELS } from '../shared/ipc-contract.js';
 import { createMainWindow, devServerUrl } from './window.js';
 
+// T13.5 — Chantivo product-branding rename. Historically no explicit Electron app name/productName
+// was ever set, so `app.getName()` (and therefore `app.getPath('userData')`) defaulted to reading
+// `package.json`'s scoped `name` field verbatim (`@disco-voador/desktop`), producing
+// `%APPDATA%\@disco-voador\desktop` as this app's real, already-in-use local storage directory
+// (cryptographic identity, server bookmarks, client settings, device/voice preferences — see
+// `docs/BRANDING.md`'s "Data compatibility" section for the full audit and confirmed-on-disk proof).
+// `package.json` now sets `productName: "Chantivo"` for the packaged executable's own display name,
+// which — left alone — would silently shift `app.getName()`/`userData` to a brand-new, empty
+// `%APPDATA%\Chantivo` directory on next launch, making every existing local user's identity/
+// bookmarks/settings appear lost. Pinning the path explicitly, before anything else in this process
+// ever calls `app.getPath('userData')` (must run before `app.whenReady()`, and before `app.setName`
+// below), keeps storage exactly where it already was — deliberately Option A ("preserve the existing
+// internal storage directory") rather than a migration: there is nothing to migrate, since the real
+// path on disk never changes.
+app.setPath('userData', path.join(app.getPath('appData'), '@disco-voador', 'desktop'));
+// Cosmetic only from here on (window title default, OS notification sender name, taskbar grouping)
+// — `userData` is already pinned above, so this cannot move where local data lives.
+app.setName('Chantivo');
+
 // Must run before `app` becomes ready.
 registerAppProtocolPrivileges();
 
@@ -787,6 +806,18 @@ function armE2EScreenshotHomeCapture(window: BrowserWindow): void {
         const image = await window.webContents.capturePage();
         await fsPromises.writeFile(path.join(captureDir, '01-server-home.png'), image.toPNG());
         console.info('E2E_SCREENSHOT_SAVED:01-server-home.png');
+
+        // T13.5.1 — the same Home screen at the mandatory-priority 1366x768 laptop size, so this
+        // one evidence pass covers both required Home sizes without a second capture run.
+        window.setBounds({ width: 1366, height: 768 });
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        const image2 = await window.webContents.capturePage();
+        await fsPromises.writeFile(
+          path.join(captureDir, '01b-server-home-1366x768.png'),
+          image2.toPNG(),
+        );
+        console.info('E2E_SCREENSHOT_SAVED:01b-server-home-1366x768.png');
+
         setTimeout(() => app.exit(0), 250);
       } catch (error) {
         console.error('E2E screenshot Home capture failed', error);
@@ -904,9 +935,36 @@ function armE2EScreenshotWorkspaceCapture(window: BrowserWindow): void {
         await wait(400);
         await saveCapture('07-settings-advanced.png');
 
+        // T13.5.1 — Screen Share settings section, not previously part of this evidence set.
+        await window.webContents.executeJavaScript(
+          `document.querySelector('[data-testid="settings-nav-screen"]')?.click();`,
+        );
+        await wait(400);
+        await saveCapture('07b-settings-screen-share.png');
+
         await window.webContents.executeJavaScript(
           `document.querySelector('[aria-label="Close"]')?.click();`,
         );
+        await wait(300);
+
+        // T13.5.1 — a real channel context menu (right-click), for the polish pass's own visual
+        // evidence set — closed again immediately afterward so it never interferes with the
+        // Add Server dialog capture right after.
+        await window.webContents.executeJavaScript(`
+          (function () {
+            const row = document.querySelector('[data-testid="channel-row-general"]');
+            if (!row) return;
+            const rect = row.getBoundingClientRect();
+            row.dispatchEvent(new MouseEvent('contextmenu', {
+              bubbles: true, clientX: rect.left + 40, clientY: rect.top + 10,
+            }));
+          })();
+        `);
+        await wait(400);
+        await saveCapture('07c-context-menu.png');
+        await window.webContents.executeJavaScript(`
+          document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        `);
         await wait(300);
 
         await window.webContents.executeJavaScript(
@@ -957,6 +1015,12 @@ function armE2EScreenshotWorkspaceCapture(window: BrowserWindow): void {
         await sendRealMessage('😄🔥 boa!');
         await wait(600);
         await saveCapture('09-chat-messages-general.png');
+
+        // T13.5.1 — one reasonably narrow, non-maximized desktop size (Section 39: never a mobile
+        // layout target, just confirming the app stays structurally coherent below 1366).
+        window.setBounds({ width: 1024, height: 700 });
+        await wait(400);
+        await saveCapture('09b-narrow-window-1024x700.png');
 
         console.info('E2E_SCREENSHOT_CAPTURE_DONE');
         setTimeout(() => app.exit(0), 250);
@@ -2315,6 +2379,6 @@ app.on('before-quit', () => {
 });
 
 bootstrap().catch((error: unknown) => {
-  console.error('OvniChat desktop shell failed to start', error);
+  console.error('Chantivo desktop shell failed to start', error);
   app.exit(1);
 });

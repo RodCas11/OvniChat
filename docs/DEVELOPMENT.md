@@ -45,7 +45,7 @@ pnpm dev           launches the Electron desktop shell (apps/desktop) via `elect
 pnpm --filter @disco-voador/realtime run dev
                    launches the realtime connection/session library's own dev CLI (services/realtime)
 pnpm --filter @disco-voador/dedicated-server run dev
-                   launches the Disco Voador Dedicated Server product (services/dedicated-server) —
+                   launches the Chantivo Dedicated Server product (services/dedicated-server) —
                    the entrypoint a self-hoster actually runs; composes services/realtime
 pnpm audit         fail on known high/critical dependency advisories
 pnpm format        write Prettier formatting

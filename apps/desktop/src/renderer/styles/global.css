@@ -12,10 +12,10 @@ html {
 
 body {
   margin: 0;
-  font-family: var(--ovni-font-family);
-  font-size: var(--ovni-text-base);
-  background: var(--ovni-bg-base);
-  color: var(--ovni-text-primary);
+  font-family: var(--chantivo-font-family);
+  font-size: var(--chantivo-text-base);
+  background: var(--chantivo-bg-base);
+  color: var(--chantivo-text-primary);
   /* This app renders real-time WebRTC video/screen-share alongside the UI — keep scrolling/repaint
    * cheap; no `backdrop-filter` or heavy blur is used anywhere in this design system. */
   -webkit-font-smoothing: antialiased;
@@ -45,10 +45,13 @@ button:disabled {
 }
 
 /* Visible, consistent focus ring for keyboard navigation across every interactive element — never
- * suppressed with a blanket `outline: none`. */
+ * suppressed with a blanket `outline: none`. T13.5.1 — thinner and tighter than the original 2px/2px
+ * (now paired with the softened `--chantivo-focus-ring` token — see tokens.css), so a merely-focused
+ * control (e.g. a modal's Close button, auto-focused on open) reads as "here", not as a filled
+ * primary action — still a real, always-visible outline, never removed. */
 :focus-visible {
-  outline: 2px solid var(--ovni-focus-ring);
-  outline-offset: 2px;
+  outline: 1.5px solid var(--chantivo-focus-ring);
+  outline-offset: 1px;
 }
 
 ::-webkit-scrollbar {
@@ -61,10 +64,10 @@ button:disabled {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--ovni-bg-selected);
-  border-radius: var(--ovni-radius-full);
+  background: var(--chantivo-bg-selected);
+  border-radius: var(--chantivo-radius-full);
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--ovni-bg-hover);
+  background: var(--chantivo-bg-hover);
 }

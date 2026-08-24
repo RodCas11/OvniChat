@@ -1,7 +1,7 @@
 /**
- * T13.1 — OvniChat's design tokens. Dark, modern, gamer-oriented surfaces with green used
- * deliberately as a sparing accent (active selection, positive/connected state, primary actions) —
- * never a dominant surface color. Comfortable Discord-like density, not TeamSpeak-dense.
+ * T13.1 (renamed T13.5) — Chantivo's design tokens. Dark, modern, gamer-oriented surfaces with green
+ * used deliberately as a sparing accent (active selection, positive/connected state, primary
+ * actions) — never a dominant surface color. Comfortable Discord-like density, not TeamSpeak-dense.
  *
  * No web fonts, no CDN assets — everything here is a plain CSS custom property consumed by
  * CSS Modules throughout `apps/desktop/src/renderer/`. Values are a deliberate starting point, not
@@ -10,82 +10,99 @@
  */
 :root {
   /* Surfaces (near-black graphite base, lightening slightly for hover/selected) */
-  --ovni-bg-base: #0f1113;
-  --ovni-bg-surface: #16181c;
-  --ovni-bg-surface-alt: #1c1f24;
-  --ovni-bg-hover: #22262c;
-  --ovni-bg-selected: #262b31;
-  --ovni-border: #2a2e35;
+  --chantivo-bg-base: #0f1113;
+  --chantivo-bg-surface: #16181c;
+  --chantivo-bg-surface-alt: #1c1f24;
+  --chantivo-bg-hover: #22262c;
+  --chantivo-bg-selected: #262b31;
+  --chantivo-border: #2a2e35;
 
   /* Text */
-  --ovni-text-primary: #e9edf1;
-  --ovni-text-secondary: #9aa3ad;
-  --ovni-text-tertiary: #6b7280;
+  --chantivo-text-primary: #e9edf1;
+  --chantivo-text-secondary: #9aa3ad;
+  --chantivo-text-tertiary: #6b7280;
 
-  /* Accent — OvniChat green, used sparingly (active server, selected/positive accents, connected
-     state, primary CTA) — never as a dominant surface fill. */
-  --ovni-accent: #3ecf6e;
-  --ovni-accent-hover: #35b862;
-  --ovni-accent-fg: #06170d;
+  /* T13.5 — the exact official Chantivo brand green from the authoritative logo assets
+     (`apps/desktop/src/assets/brand/chantivo-mark.svg`'s own fill, #3F7353) — the canonical brand
+     identity color, used for logo-adjacent identity touches (e.g. a subtle Home accent wash) where
+     matching the mark exactly matters more than on-dark UI-control contrast. */
+  --chantivo-brand: #3f7353;
+  --chantivo-brand-subtle: rgb(63 115 83 / 16%);
+
+  /* Functional accent — the same brand hue, brightened for real on-dark legibility as an interactive
+     surface (buttons, focus rings, selected/positive state, the T13.4 speaking ring). Used sparingly
+     (active server, selected/positive accents, connected state, primary CTA) — never as a dominant
+     surface fill. Intentionally brighter than `--chantivo-brand` itself: the flat mark color reads
+     fine as a small logo but is too dark to serve as legible button/focus-ring contrast against these
+     near-black surfaces. */
+  --chantivo-accent: #3ecf6e;
+  --chantivo-accent-hover: #35b862;
+  --chantivo-accent-fg: #06170d;
 
   /* Semantic */
-  --ovni-danger: #e5484d;
-  --ovni-danger-hover: #cf4247;
-  --ovni-warning: #e8b339;
-  --ovni-focus-ring: #3ecf6e;
+  --chantivo-danger: #e5484d;
+  --chantivo-danger-hover: #cf4247;
+  --chantivo-warning: #e8b339;
+  /* T13.5.1 — deliberately a softened, semi-transparent variant of the accent, not the same
+     full-strength value `--chantivo-accent` uses for filled buttons/active states. A focus ring is a
+     "you are here" indicator, not a call to action — using the identical full-saturation color for
+     both made an merely-focused element (e.g. a modal's Close button, auto-focused on open) read as
+     a primary CTA. Still comfortably above WCAG's 3:1 non-text contrast minimum against every surface
+     color above. */
+  --chantivo-focus-ring: rgb(62 207 110 / 70%);
 
   /* Spacing (4px base scale) */
-  --ovni-space-1: 4px;
-  --ovni-space-2: 8px;
-  --ovni-space-3: 12px;
-  --ovni-space-4: 16px;
-  --ovni-space-5: 20px;
-  --ovni-space-6: 24px;
-  --ovni-space-8: 32px;
-  --ovni-space-10: 40px;
+  --chantivo-space-1: 4px;
+  --chantivo-space-2: 8px;
+  --chantivo-space-3: 12px;
+  --chantivo-space-4: 16px;
+  --chantivo-space-5: 20px;
+  --chantivo-space-6: 24px;
+  --chantivo-space-8: 32px;
+  --chantivo-space-10: 40px;
 
   /* Radius */
-  --ovni-radius-sm: 6px;
-  --ovni-radius-md: 10px;
-  --ovni-radius-lg: 14px;
-  --ovni-radius-full: 9999px;
+  --chantivo-radius-sm: 6px;
+  --chantivo-radius-md: 10px;
+  --chantivo-radius-lg: 14px;
+  --chantivo-radius-full: 9999px;
 
   /* Typography — system-ui stack, matches this app's pre-existing choice in index.html; no webfonts,
      no runtime network dependency. */
-  --ovni-font-family:
+  --chantivo-font-family:
     -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-  --ovni-text-xs: 11px;
-  --ovni-text-sm: 12px;
-  --ovni-text-base: 14px;
-  --ovni-text-md: 15px;
-  --ovni-text-lg: 17px;
-  --ovni-text-xl: 22px;
-  --ovni-text-2xl: 26px;
-  /* T13.1.1 — a dedicated brand/hero size, used only by `ServerHome`'s "OvniChat" heading: the
-     workspace's own headers (channel/chat/member-panel titles) intentionally stay at `--ovni-text-lg`
-     and below, so this never leaks into ordinary UI chrome. */
-  --ovni-text-3xl: 34px;
+  /* T13.5.1 — the two smallest steps nudged up 1px (11->12, 12->13): the previous values read as
+     slightly too small/thin for sustained reading (helper copy, secondary labels, badges) at normal
+     desktop viewing distance. `base` and above were already correctly sized (confirmed against real
+     screenshots) and are unchanged. */
+  --chantivo-text-xs: 12px;
+  --chantivo-text-sm: 13px;
+  --chantivo-text-base: 14px;
+  --chantivo-text-md: 15px;
+  --chantivo-text-lg: 17px;
+  --chantivo-text-xl: 22px;
+  --chantivo-text-2xl: 26px;
 
   /* Elevation — subtle only. This app does real-time WebRTC media; heavy blur/backdrop-filter
      anywhere in the UI would compete with video/screen-share/audio for GPU budget, so shadows stay
      simple box-shadows, never `backdrop-filter`. */
-  --ovni-shadow-md: 0 4px 12px rgba(0, 0, 0, 0.35);
-  --ovni-shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.45);
+  --chantivo-shadow-md: 0 4px 12px rgba(0, 0, 0, 0.35);
+  --chantivo-shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.45);
 
   /* Z-index layers */
-  --ovni-z-dropdown: 100;
-  --ovni-z-modal: 200;
-  --ovni-z-toast: 300;
-  --ovni-z-tooltip: 400;
+  --chantivo-z-dropdown: 100;
+  --chantivo-z-modal: 200;
+  --chantivo-z-toast: 300;
+  --chantivo-z-tooltip: 400;
 
   /* Transitions — subtle, never gratuitous */
-  --ovni-transition-fast: 100ms ease;
-  --ovni-transition-base: 150ms ease;
+  --chantivo-transition-fast: 100ms ease;
+  --chantivo-transition-base: 150ms ease;
 
   /* Panel sizing */
-  --ovni-rail-width: 76px;
-  --ovni-sidebar-width: 272px;
-  --ovni-member-panel-width: 256px;
+  --chantivo-rail-width: 76px;
+  --chantivo-sidebar-width: 272px;
+  --chantivo-member-panel-width: 256px;
 }
 
 @media (prefers-reduced-motion: reduce) {

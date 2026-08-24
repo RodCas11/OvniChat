@@ -2,9 +2,9 @@ import type { ReactElement } from 'react';
 
 import styles from './Avatar.module.css';
 
-export type AvatarSize = 'small' | 'medium' | 'large';
+export type AvatarSize = 'small' | 'medium' | 'large' | 'xlarge';
 
-/** A small, fixed palette of muted hues — deliberately not dominated by the OvniChat green accent
+/** A small, fixed palette of muted hues — deliberately not dominated by the Chantivo green accent
  * (that is reserved for active/selected/positive state, never a generic avatar fill; see
  * `tokens.css`'s own doc comment). Picking one deterministically from a name/id string below never
  * uses `Math.random()` or any other per-render-unstable source. */

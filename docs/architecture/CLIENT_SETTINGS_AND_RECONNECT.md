@@ -14,7 +14,7 @@ settings store deliberately parallels but does not merge with.
 
 ## Core product rule
 
-T11 makes OvniChat practical for daily use without changing anything about _what_ it is: local
+T11 makes Chantivo practical for daily use without changing anything about _what_ it is: local
 identity, no central account, server-local authorization, and persistent server-owned chat all remain
 exactly as T7–T10 established. What T11 adds is entirely **client-local**: device preferences,
 bookmarks, and a reconnect policy. None of it is sent to any Dedicated Server, and none of it changes
@@ -92,7 +92,7 @@ A bookmark is exactly `{ bookmarkId, displayName, serverAddress }` — never a b
 invite/privilege/bootstrap token presented at `ConnectionScreen` remains exactly as ephemeral as it was
 before T11 (cleared immediately after one connect attempt, per T9 Section 72); no bookmark flow ever
 threads a token into persistent storage. Bookmarks, `lastServerAddress`, and `connectOnStartup` are
-pure client-local convenience — no Dedicated Server, and no other OvniChat Client, ever learns what
+pure client-local convenience — no Dedicated Server, and no other Chantivo Client, ever learns what
 servers a user has bookmarked (see [Privacy](#privacy) below).
 
 `connectOnStartup` is explicit opt-in, off by default — enabling it still goes through the full T7
@@ -333,11 +333,11 @@ neither leaked. **Passed.**
 
 ## Privacy
 
-**Client-local, never sent to any Dedicated Server or any other OvniChat Client:** identity, nickname,
+**Client-local, never sent to any Dedicated Server or any other Chantivo Client:** identity, nickname,
 bookmarks, selected device ids, screen-quality/mute/deafen preferences, `connectOnStartup`,
 `lastServerAddress`. **Server-local (unchanged by T11):** authorization state (T9), persistent chat
-(T10), server configuration. **Not centralized by anything OvniChat operates:** none of the above —
-there is no OvniChat-operated service that could receive it even if it wanted to; see
+(T10), server configuration. **Not centralized by anything Chantivo operates:** none of the above —
+there is no Chantivo-operated service that could receive it even if it wanted to; see
 `docs/PRODUCT.md`'s product principles and `docs/adr/0010-no-mandatory-central-control-plane.md`.
 
 ## Automated end-to-end verification

@@ -15,7 +15,7 @@ for the storage-topology decision this document elaborates.
 ## Core product rule
 
 Chat history is **persistent**, and persistent does not mean centralized. Each independently
-operated OvniChat Dedicated Server owns its own chat data, in its own data directory, with no
+operated Chantivo Dedicated Server owns its own chat data, in its own data directory, with no
 relationship to any other server's data:
 
 ```text
@@ -23,7 +23,7 @@ Server A (voice.rodrigo.com)  ->  stores only Server A's messages
 Server B (voice.guild-b.example)  ->  stores only Server B's messages
 ```
 
-No OvniChat-operated service receives or stores messages from either. The Client renders and
+No Chantivo-operated service receives or stores messages from either. The Client renders and
 requests history; it never becomes the authoritative store — after a client restart (or a
 completely different client with a different local identity), history is retrieved again from
 whichever Dedicated Server the user connects to, not from anything cached locally.
