@@ -30,6 +30,7 @@ import {
   type ServerPresenceUpdatedMessage,
   type ServerProfileAvatarDataMessage,
   type ServerProfileSelfUpdatedMessage,
+  type ServerTurnCredentialsMessage,
   type ServerVoiceCatalogMessage,
   type ServerVoiceJoinedMessage,
   type ServerVoiceLeftMessage,
@@ -133,6 +134,16 @@ interface RealtimeClientEvents {
   presenceUpdated: (message: ServerPresenceUpdatedMessage) => void;
   /** T13.3 — a member's last live connection closed. */
   presenceRemoved: (message: ServerPresenceRemovedMessage) => void;
+  /** T14 — pushed once, right after a successful identity handshake, only when the Dedicated
+   * Server has TURN configured (see `packages/protocol/src/messages/turn.ts`'s own doc comment) —
+   * never fired at all for a STUN/P2P-only deployment. Carries the raw wire message as-is (`urls`/
+   * `username`/`credential` already mirror `RTCIceServer`'s own shape, near-identically to
+   * `packages/rtc-core`'s own `RtcIceServerConfig` — see `use-voice-channel.ts`'s
+   * `toRtcIceServerConfig` for the small `exactOptionalPropertyTypes`-driven translation a listener
+   * still needs before calling `P2PMeshTransport.setIceServers`) after merging in whatever STUN
+   * servers it was already configured with — that transport's own `setIceServers` is REPLACE, not
+   * merge, semantics, so the merge is the listener's responsibility, not this class's. */
+  turnCredentials: (message: ServerTurnCredentialsMessage) => void;
 }
 
 /** T13.2 — a leave-unchanged/set/clear-shaped patch for `client:channel-update`, mirroring that
@@ -208,6 +219,7 @@ export class RealtimeClient implements SignalingPort {
       presenceSnapshot: new Set(),
       presenceUpdated: new Set(),
       presenceRemoved: new Set(),
+      turnCredentials: new Set(),
     };
 
   constructor(
@@ -816,6 +828,9 @@ export class RealtimeClient implements SignalingPort {
         return;
       case 'server:presence-removed':
         this.emit('presenceRemoved', message);
+        return;
+      case 'server:turn-credentials':
+        this.emit('turnCredentials', message);
         return;
     }
   }

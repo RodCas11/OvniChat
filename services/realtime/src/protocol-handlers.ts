@@ -66,6 +66,7 @@ import { deriveMemberRoleBucket } from './presence/role-bucket.js';
 import type { PresenceRegistry } from './presence/registry.js';
 import type { ProfilePort } from './profile-port.js';
 import type { RateLimiter } from './rate-limiter.js';
+import type { TurnCredentialPort } from './turn-credential-port.js';
 import {
   maybeDestroyEmptyTemporaryChannel,
   type TemporaryChannelRegistry,
@@ -121,6 +122,8 @@ export interface HandlerContext {
   readonly profile: ProfilePort;
   /** T13.3 — in-memory, non-persistent online-presence registry (see `presence/registry.ts`). */
   readonly presenceRegistry: PresenceRegistry;
+  /** T14 — TURN credential minting (see `turn-credential-port.ts`). */
+  readonly turnCredentials: TurnCredentialPort;
   /** T9 — this connection's own server-verified identity, once known. `undefined` before the
    * identity proof succeeds; always defined for every message reachable only from `ready`
    * (enforced structurally by `routeClientMessage`'s own dispatch below, not re-checked in every
@@ -761,6 +764,8 @@ function handleIdentityProof(
     challenge.nickname,
   );
 
+  const turnCredentials = ctx.turnCredentials.mint();
+
   const actions: OutgoingAction[] = [
     reply(buildServerHello(message.id, identityId, ctx)),
     reply(buildAuthorizationStateMessage(admission)),
@@ -774,6 +779,19 @@ function handleIdentityProof(
     // and `onProfileSelfUpdated` already tolerates an unmatched id (it only *optionally* resolves a
     // pending request by id, and unconditionally applies the state update either way).
     reply(buildProfileSelfUpdatedMessage(randomUUID(), identityId, ctx)),
+    // T14 — only when this Dedicated Server actually has TURN configured (see
+    // `turn-credential-port.ts`'s own doc comment); never sent at all otherwise, and never with an
+    // empty `iceServers` array either way.
+    ...(turnCredentials
+      ? [
+          reply({
+            type: 'server:turn-credentials' as const,
+            id: randomUUID(),
+            iceServers: turnCredentials.iceServers.map((iceServer) => ({ ...iceServer })),
+            expiresAt: turnCredentials.expiresAt,
+          }),
+        ]
+      : []),
   ];
   // Only a genuine 0->1 transition for this identity is announced to everyone else — if this
   // identity already had another live connection, it was already visible as online, so no

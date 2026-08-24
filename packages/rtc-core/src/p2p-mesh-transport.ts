@@ -4,6 +4,7 @@ import type {
   MediaTransport,
   MediaTransportEvents,
   ParticipantId,
+  RtcIceServerConfig,
   RtcTransportConfig,
   SignalingPort,
 } from './types.js';
@@ -29,7 +30,16 @@ export interface P2PMeshTransportOptions {
  * transitioning to `'failed'`, which is the WebRTC-idiomatic signal for that.
  */
 export class P2PMeshTransport implements MediaTransport {
-  private readonly config: RtcTransportConfig;
+  /**
+   * Mutable — unlike every other field below — specifically so {@link setIceServers} can apply
+   * late-arriving TURN credentials (T14's `server:turn-credentials` protocol message, which cannot
+   * arrive before this transport is constructed: it is only pushed after a successful identity
+   * handshake) without forcing a caller to discard and recreate this transport just to pick up a
+   * new ICE server list. `addParticipant` always reads this field lazily at the moment it creates a
+   * new `RTCPeerConnection`, so a `setIceServers` call made any time before a given
+   * `addParticipant` call is fully honored by that call.
+   */
+  private config: RtcTransportConfig;
   private readonly signalingPort: SignalingPort;
   private readonly createPeerConnection: (config: RtcTransportConfig) => RtcPeerConnectionLike;
 
@@ -51,6 +61,43 @@ export class P2PMeshTransport implements MediaTransport {
     this.config = config;
     this.signalingPort = signalingPort;
     this.createPeerConnection = options.createPeerConnection ?? createRtcPeerConnection;
+  }
+
+  /**
+   * T14 — replaces the ICE server list used to construct every `RTCPeerConnection` created by a
+   * subsequent {@link addParticipant} call. This exists so a caller can apply TURN credentials that
+   * only become available *after* this transport is already constructed (they arrive over the
+   * realtime service's `server:turn-credentials` message, sent once after a successful identity
+   * handshake — see `packages/protocol/src/messages/turn.ts`) without discarding and recreating the
+   * transport, which would also drop every already-connected peer.
+   *
+   * This is deliberately declared on `P2PMeshTransport` itself, not on the shared `MediaTransport`
+   * interface (`types.ts`): dynamically updating a live ICE server list is a P2P-mesh-specific
+   * accommodation for TURN credentials that expire and get reminted (ADR 0006's SFU-ready seam only
+   * commits a future SFU-backed transport to the same *participant/media* contract, not to this
+   * exact mechanism — an SFU transport's relay path is typically the SFU server itself, not a
+   * per-peer TURN server applied this way).
+   *
+   * REPLACE semantics, not merge: this call takes over the *entire* `iceServers` array, discarding
+   * whatever was supplied to the constructor or a previous `setIceServers` call — it does not retain
+   * a separate "original STUN servers" list to merge new servers into. A caller that wants to keep
+   * its original STUN servers *and* add newly-received TURN servers must pass the already-merged
+   * list itself, e.g. `transport.setIceServers([...stunServers, ...turnServers])`. This mirrors the
+   * platform's own `RTCConfiguration.iceServers`, which is always a full replacement, never a merge,
+   * and keeps this method's behavior unsurprising: passing `[]` (TURN not configured — a fully
+   * supported self-hosted deployment per `docs/PRODUCT.md`) is an entirely ordinary case with no
+   * special-cased behavior, producing the same STUN/host-only connectivity as if no ICE servers had
+   * ever been configured.
+   *
+   * Only affects `RTCPeerConnection`s created *after* this call. Every already-connected peer keeps
+   * using whatever ICE servers its own connection was originally created with — this method never
+   * touches an existing `RTCPeerConnection`'s configuration, never triggers an ICE restart, and never
+   * forces renegotiation. (The platform does not support changing a live `RTCPeerConnection`'s ICE
+   * servers in place at all; an ICE restart for already-connected peers is a distinct, deliberately
+   * out-of-scope future concern.)
+   */
+  setIceServers(iceServers: readonly RtcIceServerConfig[]): void {
+    this.config = { ...this.config, iceServers };
   }
 
   addParticipant(participantId: ParticipantId, role: 'initiator' | 'responder'): void {

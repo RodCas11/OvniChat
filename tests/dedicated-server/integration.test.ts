@@ -52,6 +52,8 @@ function testConfig(overrides: Partial<DedicatedServerConfig> = {}): DedicatedSe
     dataDir: ':memory:',
     configFilePath: '(test)',
     configFileFound: false,
+    publicHost: undefined,
+    turn: undefined,
     ...overrides,
   };
 }
@@ -364,6 +366,98 @@ async function handshakeWithAuthState(
   }
   return [serverHello, authState, catalog];
 }
+
+describe('Dedicated Server — T14 TURN credential minting (real network)', () => {
+  const servers: DedicatedServerHandle[] = [];
+  const sockets: WebSocket[] = [];
+
+  afterEach(async () => {
+    for (const ws of sockets.splice(0)) {
+      if (ws.readyState === ws.OPEN || ws.readyState === ws.CONNECTING) ws.terminate();
+    }
+    for (const server of servers.splice(0)) {
+      await server.stop();
+    }
+  });
+
+  function track<T extends DedicatedServerHandle | WebSocket>(value: T): T {
+    if (value instanceof WebSocket) sockets.push(value);
+    else servers.push(value);
+    return value;
+  }
+
+  it('sends server:turn-credentials as the 6th ready-transition message when config.turn is set', async () => {
+    const server = track(
+      createDedicatedServer(
+        testConfig({
+          turn: {
+            sharedSecret: 'integration-test-shared-secret',
+            credentialTtlSeconds: 3600,
+            urls: ['turn:turn.example.com:3478'],
+          },
+        }),
+      ),
+    );
+    const address = await server.start();
+    const url = `ws://${address.host}:${String(address.port)}`;
+
+    const ws = track(await connect(url));
+    const keyPair = generateIdentityKeyPair();
+    const challengeReceived = nextMessage(ws);
+    ws.send(
+      JSON.stringify({
+        type: 'client:hello',
+        id: 'hello-1',
+        protocolVersion: CURRENT_PROTOCOL_VERSION,
+        client: { name: 'integration-test', version: '0.0.0' },
+        nickname: 'Tester',
+        publicKey: keyPair.publicKey,
+      }),
+    );
+    const challenge = await challengeReceived;
+
+    const payload = buildIdentityAuthPayload({
+      protocolVersion: CURRENT_PROTOCOL_VERSION,
+      connectionId: challenge.connectionId as string,
+      nonce: challenge.nonce as string,
+      expiresAt: challenge.expiresAt as number,
+      publicKey: keyPair.publicKey,
+      nickname: 'Tester',
+    });
+    const signature = signWithIdentityKey(keyPair.privateKey, keyPair.publicKey, payload);
+
+    // server:hello, server:authorization-state, voice:catalog, server:presence-snapshot,
+    // server:profile-self-updated, server:turn-credentials — six messages when TURN is configured
+    // (one more than every other handshake in this file, which never configures `turn`).
+    const replies = nextMessages(ws, 6);
+    ws.send(JSON.stringify({ type: 'client:identity-proof', id: 'proof-1', signature }));
+    const messages = await replies;
+
+    const turnMessage = messages.find((m) => m['type'] === 'server:turn-credentials');
+    expect(turnMessage).toMatchObject({
+      type: 'server:turn-credentials',
+      iceServers: [{ urls: 'turn:turn.example.com:3478' }],
+    });
+    const iceServers = turnMessage?.['iceServers'] as { username: string; credential: string }[];
+    expect(iceServers[0]?.username).toMatch(/^\d+$/);
+    expect(typeof iceServers[0]?.credential).toBe('string');
+    expect(iceServers[0]?.credential.length ?? 0).toBeGreaterThan(0);
+  });
+
+  it('never sends server:turn-credentials when config.turn is undefined (the default)', async () => {
+    const server = track(createDedicatedServer(testConfig()));
+    const address = await server.start();
+    const url = `ws://${address.host}:${String(address.port)}`;
+    const ws = track(await connect(url));
+
+    const [serverHello] = await handshake(ws);
+    expect(serverHello['type']).toBe('server:hello');
+    // No sixth message ever arrives — a short additional wait would only slow the suite down for no
+    // benefit, since `handshake()` above already drained exactly the five expected messages; any
+    // stray sixth message would instead surface as an unexpected-message assertion failure in a
+    // later test sharing this same connection, which none do.
+  });
+});
 
 describe('Dedicated Server — T9 authorization (real network)', () => {
   const servers: DedicatedServerHandle[] = [];

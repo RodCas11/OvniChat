@@ -14,6 +14,7 @@ import { ChannelStore } from './channels/store.js';
 import { ChatStore } from './chat/store.js';
 import type { DedicatedServerConfig } from './config.js';
 import { SqliteProfileStore } from './profile/store.js';
+import { mintTurnCredentials } from './turn/mint-turn-credentials.js';
 
 /**
  * The product-facing capability set this Dedicated Server offers — matches the media sources
@@ -119,6 +120,10 @@ export function createDedicatedServer(
     chat,
     channels,
     profile,
+    // T14 — mints a fresh credential set on every call rather than caching one, so a returning
+    // identity's handshake never risks handing out an already-(near-)expired credential (see
+    // `mintTurnCredentials`'s own doc comment). `undefined` when TURN is not configured at all.
+    turnCredentials: { mint: () => (config.turn ? mintTurnCredentials(config.turn) : undefined) },
   });
 
   // Guards against a second `stop()` call re-closing already-closed store handles (`node:sqlite`'s

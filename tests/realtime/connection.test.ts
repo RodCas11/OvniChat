@@ -12,6 +12,7 @@ import { Connection } from '../../services/realtime/src/connection.js';
 import { createNoopLogger } from '../../services/realtime/src/logging.js';
 import { PresenceRegistry } from '../../services/realtime/src/presence/registry.js';
 import { createNoopProfilePort } from '../../services/realtime/src/profile-port.js';
+import { createNoopTurnCredentialPort } from '../../services/realtime/src/turn-credential-port.js';
 import { TemporaryChannelRegistry } from '../../services/realtime/src/voice/temporary-channels.js';
 import { VoiceRegistry } from '../../services/realtime/src/voice/registry.js';
 
@@ -89,6 +90,7 @@ describe('Connection — unexpected handler failure containment', () => {
       new TemporaryChannelRegistry(),
       createNoopProfilePort(),
       new PresenceRegistry(),
+      createNoopTurnCredentialPort(),
       () => {},
       () => {},
       () => {},

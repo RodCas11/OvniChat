@@ -242,8 +242,10 @@ exposure — T7 only establishes _who_ a connection is, never _what it's allowed
 parse-server-address.ts`) is parsed with the platform's own `URL` parser rather than hand-rolled
   string splitting (which breaks on IPv6), bounds input length, and rejects any address carrying a
   path/query/fragment/credentials component — a pasted invite URL or malformed string can never
-  silently connect somewhere the user did not intend. It only ever produces a `ws://` URL; `wss://`
-  production addressing is deferred to T13.
+  silently connect somewhere the user did not intend. A bare `host[:port]` input still defaults to
+  `ws://`; T14 added support for an explicit `ws://`/`wss://` scheme prefix, with `wss://` defaulting
+  its port to `443` for a TLS-terminating reverse proxy (see
+  [`adr/0024-tls-and-reverse-proxy-responsibility.md`](adr/0024-tls-and-reverse-proxy-responsibility.md)).
 - Connecting to a second, different server reuses the same effect-teardown lifecycle T3-T7 already
   established (`use-voice-channel.ts`'s cleanup on `realtimeConfig` change/unmount) — no new
   teardown logic was added, and no server-specific session state (WebSocket, peer connections,
@@ -749,6 +751,35 @@ browser prompt. Protected media may be unavailable and must not be bypassed.
   multicast peers.
 - Validate real allocations and forced relay; a running process is not a sufficient health check.
 - Terminate TLS with real certificates. An ordinary HTTP reverse proxy cannot proxy TURN.
+
+**Implemented (T14 — Production self-hosting):** see
+[`architecture/PRODUCTION_SELF_HOSTING.md`](architecture/PRODUCTION_SELF_HOSTING.md) and
+[`adr/0023-turn-rest-credential-minting-architecture.md`](adr/0023-turn-rest-credential-minting-architecture.md)
+for the full design. Key points relevant to this document:
+
+- Coturn's `use-auth-secret` REST convention is used exactly as documented in
+  `docs/references/COTURN.md`: `services/dedicated-server/src/turn/mint-turn-credentials.ts` derives
+  an expiring `username`/`credential` pair via HMAC-SHA1 from `DISCO_VOADOR_TURN_SHARED_SECRET`,
+  which is environment-variable-only, never written to the hand-edited config file (matching the
+  existing "never contains credentials... only display/network/channel configuration" rule for that
+  file, see the T8 entry above), never logged, and never baked into the Docker image.
+- Credentials are minted and pushed only to an already-identity-proofed connection (as part of
+  `handleIdentityProof`'s existing post-auth actions array) — never to an unauthenticated socket.
+  Only the derived, expiring `username`/`credential` pair reaches the client; the shared secret
+  itself never does.
+- The production Coturn template's relay port range was narrowed from the full ephemeral range
+  (`49152-65535`) to a bounded, documented default (`49152-49351`, ~200 ports) sized for a small
+  self-hosted deployment, with advanced override documented (`infrastructure/coturn/README.md`).
+  Anonymous relay, CLI/web administration, and loopback peers remain rejected by default, matching
+  this section's existing rules — T14 did not relax any of them.
+- TLS: `services/realtime` does not terminate TLS in-process; the documented production path is a
+  reverse proxy (Caddy, `infrastructure/reverse-proxy/`) in front of the plain-`ws://` listener. TURN
+  is never routed through that proxy — Coturn is exposed directly, per the rule above. See
+  [`adr/0024-tls-and-reverse-proxy-responsibility.md`](adr/0024-tls-and-reverse-proxy-responsibility.md).
+- Real-allocation/forced-relay validation status: see
+  [`architecture/PRODUCTION_SELF_HOSTING.md`](architecture/PRODUCTION_SELF_HOSTING.md)'s verification
+  record for exactly what has and has not been proven against a live Coturn instance from this
+  development environment.
 
 ## Dependencies and upstream source
 

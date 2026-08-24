@@ -23,7 +23,7 @@
 | [T13.4](T13_4_GAMER_VOICE_EXPERIENCE.md)             | COMPLETE    | Gamer voice experience                                          |
 | [T13.5](T13_5_STREAMS_CAMERA_PRODUCT_INTEGRATION.md) | COMPLETE    | Chantivo rebrand + streams / camera / media stage               |
 | [T13.5.1](T13_5_1_FINAL_VISUAL_POLISH.md)            | COMPLETE    | Final visual polish (scale, typography, focus styling)          |
-| T14                                                  | NOT STARTED | Production self-hosting (TURN, TLS, Docker, configuration)      |
+| [T14](T14_PRODUCTION_SELF_HOSTING.md)                | COMPLETE    | Production self-hosting (TURN, TLS, Docker, configuration)      |
 | T15                                                  | NOT STARTED | Windows client installer and dedicated-server releases          |
 | T16                                                  | NOT STARTED | Private beta / usage polish                                     |
 | T17                                                  | NOT STARTED | SFU evaluation/migration, only if measured scale requires it    |
@@ -98,4 +98,28 @@ now **T15**, private beta/UX polish is now **T16**, SFU evaluation is now **T17*
 (hardening/release candidate) was added to close out the roadmap. `docs/ROADMAP.md` predates this
 renumbering (and, independently, predates the real T7-T12 history) — this file (`STATUS.md`) is the
 authoritative source per `CLAUDE.md`; treat `ROADMAP.md` as superseded until it is rewritten to match.
-Do not treat T13.2+ or T14+ as started until their own task documents and STATUS.md rows say so.
+Do not treat T15+ as started until their own task documents and STATUS.md rows say so.
+
+T14 turned the Dedicated Server from "runs on a developer's machine" into something a technically
+capable operator can self-host safely: a production multi-stage Docker image
+(`services/dedicated-server/Dockerfile`, non-root, no desktop/Electron dependencies pulled in via
+`pnpm deploy --prod`), a `GET /healthz`/`GET /readyz` HTTP endpoint sharing the existing WebSocket
+port, an `O_CREAT|O_EXCL` data-directory instance lock, a real TURN REST credential-minting mechanism
+(`services/dedicated-server/src/turn/mint-turn-credentials.ts`, Coturn's standard `use-auth-secret`
+convention, delivered to clients over an additive `server:turn-credentials` protocol message that
+required no version bump — see
+[`../adr/0023-turn-rest-credential-minting-architecture.md`](../adr/0023-turn-rest-credential-minting-architecture.md)),
+a bounded/documented Coturn relay port range, a first-class Caddy reverse-proxy example for automatic
+`wss://` TLS (the desktop client now accepts explicit `wss://` addresses — see
+[`../adr/0024-tls-and-reverse-proxy-responsibility.md`](../adr/0024-tls-and-reverse-proxy-responsibility.md)),
+and a Docker Compose stack combining the server with the pre-existing Coturn templates. No new central
+Chantivo-operated service was introduced anywhere; the 4-SQLite-file storage model and the P2P mesh
+transport (ADR 0006, ADR 0009) were both extended, not redesigned. Every deployment path was then
+validated with real evidence on a real Ubuntu 24.04 VPS: native systemd (including a real external
+`SIGTERM` — something the Windows implementation environment's sandbox could not deliver), native
+Coturn + Caddy, Docker/Compose, and — the decisive proof — a real forced-relay WebRTC connection
+(`iceTransportPolicy: 'relay'`) using a Chantivo-minted TURN credential, with both peers' selected
+candidate pairs confirmed `candidateType: "relay"`. See
+[`T14_PRODUCTION_SELF_HOSTING.md`](T14_PRODUCTION_SELF_HOSTING.md) and
+[`../architecture/PRODUCTION_SELF_HOSTING.md`](../architecture/PRODUCTION_SELF_HOSTING.md) for the
+full design and verification record.

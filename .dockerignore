@@ -1,0 +1,39 @@
+# Keeps the Docker build context (repo root, used by services/dedicated-server/Dockerfile) small
+# and free of local/dev-only artifacts and anything secret-shaped. Mirrors .gitignore's own
+# categories; does not replace it.
+
+.git
+.pnpm-store/
+
+node_modules/
+**/.vite/
+**/coverage/
+**/dist/
+**/out/
+*.tsbuildinfo
+
+packages/windows-media/native/**/build/
+*.obj
+*.pdb
+*.ilk
+*.exp
+
+disco-voador-server-data/
+**/disco-voador-server-data/
+
+.env
+.env.*
+!.env.example
+**/*.key
+**/*.pem
+infrastructure/coturn/turnserver.conf
+infrastructure/coturn/turnserver.dev.conf
+
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+*.log
+npm-debug.log*
+pnpm-debug.log*

@@ -151,4 +151,101 @@ describe('loadDedicatedServerConfig', () => {
       loadDedicatedServerConfig({ DISCO_VOADOR_SERVER_CONFIG_PATH: filePath }),
     ).rejects.toThrow();
   });
+
+  describe('T14: publicHost', () => {
+    it('is undefined when neither the config file nor the environment set it', async () => {
+      const config = await loadDedicatedServerConfig({
+        DISCO_VOADOR_SERVER_CONFIG_PATH: path.join(dir, 'does-not-exist.json'),
+      });
+      expect(config.publicHost).toBeUndefined();
+    });
+
+    it('follows env > file > undefined precedence, like other fields', async () => {
+      const filePath = path.join(dir, 'server.config.json');
+      writeFileSync(filePath, JSON.stringify({ publicHost: 'file.example.com' }));
+
+      const fileOnly = await loadDedicatedServerConfig({
+        DISCO_VOADOR_SERVER_CONFIG_PATH: filePath,
+      });
+      expect(fileOnly.publicHost).toBe('file.example.com');
+
+      const withEnvOverride = await loadDedicatedServerConfig({
+        DISCO_VOADOR_SERVER_CONFIG_PATH: filePath,
+        DISCO_VOADOR_SERVER_PUBLIC_HOST: 'env.example.com',
+      });
+      expect(withEnvOverride.publicHost).toBe('env.example.com');
+    });
+  });
+
+  describe('T14: turn', () => {
+    it('is undefined when neither TURN environment variable is set (no error)', async () => {
+      const config = await loadDedicatedServerConfig({
+        DISCO_VOADOR_SERVER_CONFIG_PATH: path.join(dir, 'does-not-exist.json'),
+      });
+      expect(config.turn).toBeUndefined();
+    });
+
+    it('is present with the correct shape when both are set, defaulting the TTL to 21600s', async () => {
+      const config = await loadDedicatedServerConfig({
+        DISCO_VOADOR_SERVER_CONFIG_PATH: path.join(dir, 'does-not-exist.json'),
+        DISCO_VOADOR_TURN_SHARED_SECRET: 'super-secret-value',
+        DISCO_VOADOR_TURN_URLS: 'turn:turn.example.com:3478,turns:turn.example.com:5349',
+      });
+      expect(config.turn).toEqual({
+        sharedSecret: 'super-secret-value',
+        credentialTtlSeconds: 21_600,
+        urls: ['turn:turn.example.com:3478', 'turns:turn.example.com:5349'],
+      });
+    });
+
+    it('honors an explicit DISCO_VOADOR_TURN_CREDENTIAL_TTL_SECONDS override', async () => {
+      const config = await loadDedicatedServerConfig({
+        DISCO_VOADOR_SERVER_CONFIG_PATH: path.join(dir, 'does-not-exist.json'),
+        DISCO_VOADOR_TURN_SHARED_SECRET: 'super-secret-value',
+        DISCO_VOADOR_TURN_URLS: 'turn:turn.example.com:3478',
+        DISCO_VOADOR_TURN_CREDENTIAL_TTL_SECONDS: '3600',
+      });
+      expect(config.turn?.credentialTtlSeconds).toBe(3600);
+    });
+
+    it('fails startup with a clear message when only DISCO_VOADOR_TURN_URLS is set', async () => {
+      await expect(
+        loadDedicatedServerConfig({
+          DISCO_VOADOR_SERVER_CONFIG_PATH: path.join(dir, 'does-not-exist.json'),
+          DISCO_VOADOR_TURN_URLS: 'turn:turn.example.com:3478',
+        }),
+      ).rejects.toThrow(/DISCO_VOADOR_TURN_SHARED_SECRET is missing/);
+    });
+
+    it('fails startup with a clear message when only DISCO_VOADOR_TURN_SHARED_SECRET is set', async () => {
+      await expect(
+        loadDedicatedServerConfig({
+          DISCO_VOADOR_SERVER_CONFIG_PATH: path.join(dir, 'does-not-exist.json'),
+          DISCO_VOADOR_TURN_SHARED_SECRET: 'super-secret-value',
+        }),
+      ).rejects.toThrow(/DISCO_VOADOR_TURN_URLS is missing/);
+    });
+
+    it('rejects a DISCO_VOADOR_TURN_URLS entry with an unsupported scheme', async () => {
+      await expect(
+        loadDedicatedServerConfig({
+          DISCO_VOADOR_SERVER_CONFIG_PATH: path.join(dir, 'does-not-exist.json'),
+          DISCO_VOADOR_TURN_SHARED_SECRET: 'super-secret-value',
+          DISCO_VOADOR_TURN_URLS: 'https://not-a-turn-url.example.com',
+        }),
+      ).rejects.toThrow();
+    });
+
+    it('never accepts a turn field in the hand-edited config file (env-only secret)', async () => {
+      const filePath = path.join(dir, 'server.config.json');
+      writeFileSync(
+        filePath,
+        JSON.stringify({ turn: { sharedSecret: 'nope', urls: ['turn:example.com'] } }),
+      );
+
+      await expect(
+        loadDedicatedServerConfig({ DISCO_VOADOR_SERVER_CONFIG_PATH: filePath }),
+      ).rejects.toThrow();
+    });
+  });
 });

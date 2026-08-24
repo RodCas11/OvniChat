@@ -208,12 +208,20 @@ T8 design and the CSP trade-off this required.
 
 ## ICE servers
 
-`DISCO_VOADOR_STUN_URLS` (optional, comma-separated `stun:`/`stuns:` URLs) is the only ICE-server
-configuration T3 supports. STUN is best-effort NAT-traversal help, not required core communication —
+`DISCO_VOADOR_STUN_URLS` (optional, comma-separated `stun:`/`stuns:` URLs) remains the desktop's own
+static STUN configuration. STUN is best-effort NAT-traversal help, not required core communication —
 two peers on the same LAN (T3's verification scenario) connect via host candidates with an empty
-`iceServers` array. TURN/coturn relay support needs short-lived credential minting that does not
-exist yet (`infrastructure/coturn/` has reviewed templates but no runtime credential-issuing
-endpoint) — that remains a later self-hosting-hardening task (see `docs/references/COTURN.md`).
+`iceServers` array. **T14 added real TURN/Coturn relay support**: when an operator configures `turn`
+on their Dedicated Server, it mints short-lived Coturn `use-auth-secret` REST credentials
+(`services/dedicated-server/src/turn/mint-turn-credentials.ts`) and pushes them to the client once,
+right after identity-proof succeeds, via a new additive `server:turn-credentials` protocol message —
+no protocol version bump. `packages/rtc-core`'s `P2PMeshTransport.setIceServers()` applies them to
+every peer connection created after they arrive (REPLACE semantics — the caller merges STUN and TURN
+itself; already-established peer connections are unaffected, no ICE restart). See
+[`../adr/0023-turn-rest-credential-minting-architecture.md`](../adr/0023-turn-rest-credential-minting-architecture.md)
+and [`../references/COTURN.md`](../references/COTURN.md) for the full design, including the accepted
+limitation that a credential is not proactively refreshed mid-session before its default 6-hour TTL
+expires.
 
 ## Automated end-to-end verification
 
@@ -272,7 +280,11 @@ note).
   does nothing for a peer connection that alone goes `'disconnected'` while the WebSocket is still
   open. A future task could add real ICE-restart for that narrower case.
 - No SFU — see ADR 0006; the mesh does not scale past a small room.
-- No TURN credential minting — see [ICE servers](#ice-servers) above.
+- TURN credential minting is implemented (T14) — see [ICE servers](#ice-servers) above. It is not
+  proactively refreshed before its TTL expires mid-session, and `P2PMeshTransport.setIceServers`
+  isn't part of the shared `MediaTransport` interface, so a future SFU-backed transport will need its
+  own equivalent wiring at `use-voice-channel.ts`'s one call site rather than inheriting this for
+  free — see ADR 0023.
 - Speaking indicators and per-participant local volume were explicitly out of T3's scope; both are
   now implemented (T13.4), entirely as Renderer-side Web Audio processing over the same
   `MediaTransport`/`RemoteAudio`-supplied streams — no change to this document's own transport

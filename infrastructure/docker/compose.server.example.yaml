@@ -1,0 +1,34 @@
+name: chantivo-server
+
+# The Chantivo Dedicated Server alone, with no Coturn/TURN service. A self-hosted deployment that
+# only needs voice/text signaling and STUN-reachable P2P (no forced TURN relay) can run this file by
+# itself. See compose.self-hosted.example.yaml for the combined server + Coturn stack, and
+# infrastructure/docker/README.md for setup steps.
+#
+# Copy this file to compose.server.yaml (ignored) and infrastructure/docker/.env.example to
+# infrastructure/docker/.env (ignored) before use — see infrastructure/docker/README.md.
+services:
+  chantivo-server:
+    build:
+      context: ../..
+      dockerfile: services/dedicated-server/Dockerfile
+    environment:
+      # REALTIME_HOST defaults to 127.0.0.1 (docs/SECURITY.md: "never listens beyond localhost
+      # without an explicit operator choice"). Inside a container that default binds only the
+      # container's own loopback, which the `ports:` mapping below cannot reach through Docker's
+      # NAT — this line IS that explicit operator choice, required for this specific containerized
+      # deployment shape, not a relaxation of the underlying security default. Do not remove it and
+      # do not override it from .env.
+      - REALTIME_HOST=0.0.0.0
+    env_file:
+      - .env
+    ports:
+      # The only port this service needs: the WebSocket server and GET /healthz/GET /readyz share
+      # one bound host/port (services/realtime/src/server.ts). No other port is published.
+      - '8090:8090'
+    volumes:
+      - chantivo-server-data:/data
+    restart: unless-stopped
+
+volumes:
+  chantivo-server-data:

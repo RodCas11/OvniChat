@@ -22,6 +22,10 @@ import { createNoopChatPort, type ChatPort } from '../../services/realtime/src/c
 import { PresenceRegistry } from '../../services/realtime/src/presence/registry.js';
 import { createNoopProfilePort } from '../../services/realtime/src/profile-port.js';
 import {
+  createNoopTurnCredentialPort,
+  type TurnCredentialPort,
+} from '../../services/realtime/src/turn-credential-port.js';
+import {
   handleClientPing,
   routeClientMessage,
   type HandlerContext,
@@ -65,6 +69,7 @@ function makeContext(overrides: Partial<HandlerContext> = {}): HandlerContext {
     channelPasswordRateLimiter: new RateLimiter({ maxMessages: 1000, windowMs: 60_000 }),
     profile: createNoopProfilePort(),
     presenceRegistry: new PresenceRegistry(),
+    turnCredentials: createNoopTurnCredentialPort(),
     // Every ready-state test in this file exercises a handler reachable only after a real identity
     // proof would already have set this (see `requireIdentityId` in protocol-handlers.ts) — default
     // it here so tests that don't care about T9 authorization specifically don't each need to set
@@ -211,6 +216,61 @@ describe('routeClientMessage — handshake', () => {
     expect(messages[2]).toMatchObject({
       type: 'voice:catalog',
       nodes: EXPECTED_NOOP_CATALOG_NODES,
+    });
+  });
+
+  it('T14: does not send server:turn-credentials when ctx.turnCredentials is the default noop port', () => {
+    const ctx = makeContext();
+    const helloResult = routeClientMessage(validHello, 'awaiting_hello', ctx);
+    expect(helloResult.ok).toBe(true);
+    if (!helloResult.ok) return;
+    const challenge = replies(helloResult.actions)[0] as ServerIdentityChallengeMessage;
+
+    const proofCtx = makeContext({ pendingChallenge: helloResult.pendingChallenge });
+    const proof = signProof(challenge, 'conn-1', keyPair, {
+      protocolVersion: CURRENT_PROTOCOL_VERSION,
+      nickname: 'Alice',
+    });
+    const proofResult = routeClientMessage(proof, 'awaiting_identity_proof', proofCtx);
+
+    expect(proofResult.ok).toBe(true);
+    if (!proofResult.ok) return;
+    const messages = replies(proofResult.actions);
+    expect(messages.some((m) => m.type === 'server:turn-credentials')).toBe(false);
+  });
+
+  it('T14: sends server:turn-credentials with the minted payload when ctx.turnCredentials.mint() returns a value', () => {
+    const mintedIceServers = [
+      { urls: 'turn:turn.example.com:3478', username: '1700000000', credential: 'abc123==' },
+    ];
+    const turnCredentials: TurnCredentialPort = {
+      mint: () => ({ iceServers: mintedIceServers, expiresAt: '2026-08-18T06:00:00.000Z' }),
+    };
+
+    const ctx = makeContext({ turnCredentials });
+    const helloResult = routeClientMessage(validHello, 'awaiting_hello', ctx);
+    expect(helloResult.ok).toBe(true);
+    if (!helloResult.ok) return;
+    const challenge = replies(helloResult.actions)[0] as ServerIdentityChallengeMessage;
+
+    const proofCtx = makeContext({
+      pendingChallenge: helloResult.pendingChallenge,
+      turnCredentials,
+    });
+    const proof = signProof(challenge, 'conn-1', keyPair, {
+      protocolVersion: CURRENT_PROTOCOL_VERSION,
+      nickname: 'Alice',
+    });
+    const proofResult = routeClientMessage(proof, 'awaiting_identity_proof', proofCtx);
+
+    expect(proofResult.ok).toBe(true);
+    if (!proofResult.ok) return;
+    const messages = replies(proofResult.actions);
+    const turnMessage = messages.find((m) => m.type === 'server:turn-credentials');
+    expect(turnMessage).toMatchObject({
+      type: 'server:turn-credentials',
+      iceServers: mintedIceServers,
+      expiresAt: '2026-08-18T06:00:00.000Z',
     });
   });
 

@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 
 import {
   CLOSE_CODES,
@@ -17,6 +18,7 @@ import type { RealtimeConfig } from './config.js';
 import { createNoopLogger, type Logger } from './logging.js';
 import { PresenceRegistry } from './presence/registry.js';
 import { createNoopProfilePort, type ProfilePort } from './profile-port.js';
+import { createNoopTurnCredentialPort, type TurnCredentialPort } from './turn-credential-port.js';
 import { TemporaryChannelRegistry } from './voice/temporary-channels.js';
 import { VoiceRegistry } from './voice/registry.js';
 
@@ -30,6 +32,45 @@ export interface RealtimeServerHandle {
   readonly connectionCount: number;
   start(): Promise<RealtimeServerAddress>;
   stop(): Promise<void>;
+}
+
+/**
+ * T14 — a minimal liveness/readiness surface for an operator's process supervisor/reverse
+ * proxy/orchestrator, sharing the same bound host/port as the WebSocket server (`ws@8.21.3`
+ * attaches to an externally-owned `http.Server` via its `server` option, so this needs no second
+ * listening port). Deliberately not an admin surface: both routes return only a boolean-shaped
+ * status plus a connection count — never version strings, config values, paths, or secrets.
+ *
+ * `GET /healthz` is liveness only (the process is up and answering HTTP at all) — no dependency
+ * checks, since this service has no external dependency of its own to check (SQLite/authorization
+ * live entirely in `services/dedicated-server`, outside this module's knowledge).
+ * `GET /readyz` additionally reports whether this instance is currently accepting new WebSocket
+ * connections (`connections.size < maxConnections`), so a load balancer/orchestrator can stop
+ * routing new traffic to an instance already at capacity without treating it as unhealthy.
+ * Everything else is a bare 404.
+ */
+function createHealthRequestHandler(
+  connectionCount: () => number,
+  maxConnections: number,
+): (req: IncomingMessage, res: ServerResponse) => void {
+  return (req, res) => {
+    if (req.method === 'GET' && req.url === '/healthz') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ status: 'ok' }));
+      return;
+    }
+
+    if (req.method === 'GET' && req.url === '/readyz') {
+      const connections = connectionCount();
+      const ready = connections < maxConnections;
+      res.writeHead(ready ? 200 : 503, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ status: ready ? 'ready' : 'not-ready', connections }));
+      return;
+    }
+
+    res.writeHead(404);
+    res.end();
+  };
 }
 
 /** Default display metadata for a `createRealtimeServer` caller that doesn't compose its own —
@@ -66,6 +107,11 @@ export interface RealtimeServerDependencies {
    * don't compose their own — `services/dedicated-server` always supplies `SqliteProfileStore`
    * instead. */
   readonly profile?: ProfilePort;
+  /** T14 — TURN credential minting (see `turn-credential-port.ts`). Defaults to a permissive no-op
+   * port ("TURN is not configured") for direct `@disco-voador/realtime` consumers that don't
+   * compose their own — `services/dedicated-server` supplies one backed by `mintTurnCredentials`
+   * whenever its own `config.turn` is set. */
+  readonly turnCredentials?: TurnCredentialPort;
 }
 
 /**
@@ -87,6 +133,7 @@ export function createRealtimeServer(
   const chat = deps.chat ?? createNoopChatPort();
   const channels = deps.channels ?? createNoopChannelPort();
   const profile = deps.profile ?? createNoopProfilePort();
+  const turnCredentials = deps.turnCredentials ?? createNoopTurnCredentialPort();
   const connections = new Map<string, Connection>();
   const voiceRegistry = new VoiceRegistry();
   const temporaryChannels = new TemporaryChannelRegistry();
@@ -94,6 +141,7 @@ export function createRealtimeServer(
   // (never a `*Port`, never injected — see `presence/registry.ts`'s own doc comment).
   const presenceRegistry = new PresenceRegistry();
   let wss: WebSocketServer | undefined;
+  let httpServer: Server | undefined;
 
   function deliverToConnection(connectionId: string, message: ServerMessage): void {
     connections.get(connectionId)?.deliver(message);
@@ -171,6 +219,7 @@ export function createRealtimeServer(
       temporaryChannels,
       profile,
       presenceRegistry,
+      turnCredentials,
       deliverToConnection,
       closeOtherConnection,
       broadcastToReady,
@@ -194,15 +243,21 @@ export function createRealtimeServer(
         throw new Error('Realtime server is already started');
       }
 
+      const server = createServer(
+        createHealthRequestHandler(() => connections.size, config.maxConnections),
+      );
+      httpServer = server;
+      server.on('error', (error: Error) => logger.error('server_error', { error: error.message }));
+
       wss = new WebSocketServer({
-        host: config.host,
-        port: config.port,
+        server,
         maxPayload: config.maxMessageBytes,
       });
 
       wss.on('error', (error: Error) => logger.error('server_error', { error: error.message }));
 
-      await once(wss, 'listening');
+      server.listen(config.port, config.host);
+      await once(server, 'listening');
       wss.on('connection', handleConnection);
 
       const address = wss.address();
@@ -215,7 +270,7 @@ export function createRealtimeServer(
     },
 
     async stop(): Promise<void> {
-      if (!wss) return;
+      if (!wss || !httpServer) return;
       logger.info('server_stopping', { connectionCount: connections.size });
 
       const pendingCloses = [...connections.values()].map((connection) => {
@@ -224,15 +279,20 @@ export function createRealtimeServer(
       });
 
       const server = wss;
+      const http = httpServer;
       await Promise.all([
         new Promise<void>((resolve, reject) => {
           server.close((error) => (error ? reject(error) : resolve()));
+        }),
+        new Promise<void>((resolve, reject) => {
+          http.close((error) => (error ? reject(error) : resolve()));
         }),
         ...pendingCloses,
       ]);
 
       connections.clear();
       wss = undefined;
+      httpServer = undefined;
       logger.info('server_stopped', {});
     },
   };

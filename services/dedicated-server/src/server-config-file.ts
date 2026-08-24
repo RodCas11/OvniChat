@@ -31,6 +31,10 @@ const serverConfigFileSchema = z
     // `parseServerMessage` validation on `server:hello`, hanging the connection with no visible
     // error anywhere (found by QA review, reproduced end-to-end with a real server + real client).
     name: serverNameSchema.optional(),
+    // T14 — display-only: the address this server tells operators/docs it's reachable at. Never
+    // used for binding (`host`/`REALTIME_HOST` above remain the sole bind authority) — see
+    // `config.ts`'s own doc comment on `publicHost`.
+    publicHost: z.string().min(1).optional(),
     host: z.string().min(1).optional(),
     port: z.number().int().min(0).max(65535).optional(),
     maxConnections: z.number().int().positive().optional(),

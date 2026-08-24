@@ -15,6 +15,7 @@ import { serverChannelMessageSchema } from './channels.js';
 import { serverChatMessageSchema } from './chat.js';
 import { serverMediaTrackSourceMessageSchema } from './media.js';
 import { serverProfileMessageSchema } from './profile.js';
+import { serverTurnCredentialsMessageSchema } from './turn.js';
 import {
   serverWebrtcAnswerMessageSchema,
   serverWebrtcIceCandidateMessageSchema,
@@ -123,6 +124,7 @@ export const serverMessageSchema = z.discriminatedUnion('type', [
   ...serverChatMessageSchema.options,
   ...serverChannelMessageSchema.options,
   ...serverProfileMessageSchema.options,
+  serverTurnCredentialsMessageSchema,
 ]);
 
 export type ServerMessage = z.infer<typeof serverMessageSchema>;

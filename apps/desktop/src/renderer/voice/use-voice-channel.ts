@@ -32,6 +32,7 @@ import type {
   ServerPresenceUpdatedMessage,
   ServerProfileAvatarDataMessage,
   ServerProfileSelfUpdatedMessage,
+  ServerTurnCredentialsMessage,
   ServerVoiceCatalogMessage,
   ServerVoiceJoinedMessage,
   ServerVoiceParticipantJoinedMessage,
@@ -64,6 +65,7 @@ import {
   type LocalTrackMidEvent,
   type PeerConnectionStateEvent,
   type RemoteTrackEvent,
+  type RtcIceServerConfig,
 } from '@disco-voador/rtc-core';
 
 import type {
@@ -723,6 +725,26 @@ function toRtcIceCandidateInit(payload: IceCandidatePayload | null): RTCIceCandi
   if (payload.sdpMLineIndex !== undefined) init.sdpMLineIndex = payload.sdpMLineIndex;
   if (payload.usernameFragment !== undefined) init.usernameFragment = payload.usernameFragment;
   return init;
+}
+
+/**
+ * T14 — translates one `ServerTurnCredentialsMessage.iceServers` element (the wire shape) into
+ * `packages/rtc-core`'s own `RtcIceServerConfig` — the two are structurally near-identical
+ * (`urls`/`username`/`credential`, per that message's own doc comment: "mirrors the shape
+ * `RTCPeerConnection`'s own `iceServers` constructor option expects"), but a plain cast/spread does
+ * not compile under this project's `exactOptionalPropertyTypes: true`: the zod-inferred wire type's
+ * optional fields are `string | undefined`, while `RtcIceServerConfig`'s are bare `string` (only
+ * omittable, never assignable `undefined`) — mirrors `toRtcIceCandidateInit`'s own "only set the key
+ * when the source value is not `undefined`" pattern immediately above for the identical reason.
+ */
+function toRtcIceServerConfig(
+  server: ServerTurnCredentialsMessage['iceServers'][number],
+): RtcIceServerConfig {
+  return {
+    urls: server.urls,
+    ...(server.username !== undefined ? { username: server.username } : {}),
+    ...(server.credential !== undefined ? { credential: server.credential } : {}),
+  };
 }
 
 const INITIAL_STATE: VoiceChannelState = {
@@ -1519,6 +1541,24 @@ export function useVoiceChannel(
       console.info(`disco-voador:server-name:${info.serverName}`);
     };
 
+    /** T14 — merges the STUN servers this connection was configured with (the `iceServers` const
+     * captured once above, from `realtimeConfig`) with the Dedicated Server's just-issued
+     * short-lived TURN credentials, then applies the combined list to whichever `P2PMeshTransport`
+     * is *currently* live. Reads the mutable `transport` binding (not a snapshot) specifically so
+     * this keeps working correctly regardless of whether `turnCredentials` arrives before or after
+     * a given `recreateTransport()` call — a closure over a `let` binding always observes its
+     * latest value, exactly like every other closure in this effect that references `transport`
+     * (see `recreateTransport`'s own doc comment). `P2PMeshTransport.setIceServers` is REPLACE, not
+     * merge, semantics (see that method's own doc comment in `packages/rtc-core`) — STUN must be
+     * re-supplied here every time rather than relying on the transport to remember its own
+     * constructor value. Only ever fires when the Dedicated Server actually has TURN configured
+     * (`server:turn-credentials` is never sent otherwise); if it never arrives, this handler simply
+     * never runs and every peer connection keeps using `iceServers` (STUN only) exactly as before
+     * this feature existed — a fully supported, no-op-safe degradation. */
+    const onTurnCredentials = (message: ServerTurnCredentialsMessage) => {
+      transport.setIceServers([...iceServers, ...message.iceServers.map(toRtcIceServerConfig)]);
+    };
+
     // T13.2 — every `voice:catalog` replaces the tree wholesale (never merges/patches — see
     // `ServerVoiceCatalogMessage`'s own doc comment), and now arrives far more often than the old
     // fixed catalog did (every admin mutation, every group-membership/ban change that can alter
@@ -2143,6 +2183,7 @@ export function useVoiceChannel(
     client.on('presenceSnapshot', onPresenceSnapshot);
     client.on('presenceUpdated', onPresenceUpdated);
     client.on('presenceRemoved', onPresenceRemoved);
+    client.on('turnCredentials', onTurnCredentials);
     transport.on('remoteTrack', onRemoteTrack);
     transport.on('localTrackMid', onLocalTrackMid);
     transport.on('peerStateChanged', onPeerStateChanged);
@@ -2194,6 +2235,7 @@ export function useVoiceChannel(
       client.off('presenceSnapshot', onPresenceSnapshot);
       client.off('presenceUpdated', onPresenceUpdated);
       client.off('presenceRemoved', onPresenceRemoved);
+      client.off('turnCredentials', onTurnCredentials);
       transport.off('remoteTrack', onRemoteTrack);
       transport.off('localTrackMid', onLocalTrackMid);
       transport.off('peerStateChanged', onPeerStateChanged);

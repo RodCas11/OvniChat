@@ -2,7 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { P2PMeshTransport } from '../../packages/rtc-core/src/p2p-mesh-transport.js';
 import { Peer } from '../../packages/rtc-core/src/peer.js';
-import type { SignalingPort } from '../../packages/rtc-core/src/types.js';
+import type {
+  RtcIceServerConfig,
+  RtcTransportConfig,
+  SignalingPort,
+} from '../../packages/rtc-core/src/types.js';
 import { FakePeerConnection, fakeAudioTrack } from './fake-peer-connection.js';
 
 type FakeSignalingPort = SignalingPort & {
@@ -740,6 +744,90 @@ describe('P2PMeshTransport — getStats delegates to the underlying connection',
     if (pc) pc.getStatsImpl = () => Promise.resolve(statsReport);
 
     await expect(transport.getStats('peer-1')).resolves.toBe(statsReport);
+  });
+});
+
+describe('P2PMeshTransport — setIceServers (T14: late-arriving TURN credentials)', () => {
+  it('a subsequent addParticipant call creates its RTCPeerConnection with the newly-set ICE servers', () => {
+    const signalingPort = createFakeSignalingPort();
+    const configsSeenByFactory: RtcTransportConfig[] = [];
+    const transport = new P2PMeshTransport({ iceServers: [] }, signalingPort, {
+      createPeerConnection: (config) => {
+        configsSeenByFactory.push(config);
+        return new FakePeerConnection();
+      },
+    });
+    const turnServers: RtcIceServerConfig[] = [
+      { urls: 'turn:turn.example.com:3478', username: 'u', credential: 'c' },
+    ];
+
+    transport.setIceServers(turnServers);
+    transport.addParticipant('peer-1', 'responder');
+
+    expect(configsSeenByFactory).toEqual([{ iceServers: turnServers }]);
+  });
+
+  it('replaces (not merges) the ICE server list — a caller must pass the already-merged STUN+TURN list itself', () => {
+    const signalingPort = createFakeSignalingPort();
+    const configsSeenByFactory: RtcTransportConfig[] = [];
+    const stunServers: RtcIceServerConfig[] = [{ urls: 'stun:stun.example.com:3478' }];
+    const transport = new P2PMeshTransport({ iceServers: stunServers }, signalingPort, {
+      createPeerConnection: (config) => {
+        configsSeenByFactory.push(config);
+        return new FakePeerConnection();
+      },
+    });
+    const turnServers: RtcIceServerConfig[] = [
+      { urls: 'turn:turn.example.com:3478', username: 'u', credential: 'c' },
+    ];
+
+    // Calling with only the TURN servers, as a caller that forgot to merge might do, replaces the
+    // original STUN server entirely — proving REPLACE, not MERGE, semantics.
+    transport.setIceServers(turnServers);
+    transport.addParticipant('peer-1', 'responder');
+
+    expect(configsSeenByFactory).toEqual([{ iceServers: turnServers }]);
+    expect(configsSeenByFactory[0]?.iceServers).not.toEqual(
+      expect.arrayContaining([stunServers[0]]),
+    );
+  });
+
+  it('a participant already added before setIceServers keeps its existing RTCPeerConnection untouched — no forced renegotiation or ICE restart', () => {
+    const { transport, connections, signalingPort } = createTransport();
+    transport.addParticipant('peer-existing', 'responder');
+    const existingPc = [...connections.values()][0];
+
+    transport.setIceServers([
+      { urls: 'turn:turn.example.com:3478', username: 'u', credential: 'c' },
+    ]);
+
+    // The existing connection is the exact same object — never closed, replaced, or reconstructed —
+    // and setIceServers triggered no signaling activity (no offer, no renegotiation) on it.
+    expect(connections.size).toBe(1);
+    expect([...connections.values()][0]).toBe(existingPc);
+    expect(existingPc?.closeCallCount).toBe(0);
+    expect(existingPc?.setLocalDescriptionCalls).toEqual([]);
+    expect(signalingPort.offers).toEqual([]);
+  });
+
+  it('calling setIceServers with an empty array is valid and the next peer connection gets an empty iceServers array (TURN disabled)', () => {
+    const signalingPort = createFakeSignalingPort();
+    const configsSeenByFactory: RtcTransportConfig[] = [];
+    const transport = new P2PMeshTransport(
+      { iceServers: [{ urls: 'stun:stun.example.com:3478' }] },
+      signalingPort,
+      {
+        createPeerConnection: (config) => {
+          configsSeenByFactory.push(config);
+          return new FakePeerConnection();
+        },
+      },
+    );
+
+    expect(() => transport.setIceServers([])).not.toThrow();
+    transport.addParticipant('peer-1', 'responder');
+
+    expect(configsSeenByFactory).toEqual([{ iceServers: [] }]);
   });
 });
 

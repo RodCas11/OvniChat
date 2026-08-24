@@ -251,10 +251,12 @@ export function App(): ReactElement {
       });
       // T11 Section 13 — every connection attempt (manual entry or a bookmark) funnels through this
       // one place, so this is the single spot that remembers the last address for next launch's
-      // pre-fill/auto-connect. `parse-server-address.ts` only ever produces a `ws://` URL (never
-      // `wss://`), so stripping the scheme back off losslessly recovers the plain "host:port" the
-      // user actually typed/saved — the exact same regex this file already uses below to compute
-      // `ServerHome`'s pre-filled default address from the deployment default.
+      // pre-fill/auto-connect. `parse-server-address.ts` produces either a `ws://` or a `wss://`
+      // URL (T14 — explicit `wss://` is now accepted for TLS-terminated production deployments), so
+      // stripping either scheme back off (the `wss?` alternation below matches both) losslessly
+      // recovers the plain "host:port" the user actually typed/saved — the exact same regex this
+      // file already uses below to compute `ServerHome`'s pre-filled default address from the
+      // deployment default.
       window.desktopApp
         .updateClientSettings({ lastServerAddress: url.replace(/^wss?:\/\//u, '') })
         .catch((error: unknown) => {

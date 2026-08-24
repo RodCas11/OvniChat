@@ -36,3 +36,10 @@ hypothesis. An accepted target decision may precede implementation; say so expli
 15. Local client settings and bookmarks
 16. Automatic reconnect and media restoration policy
 17. Windows process-loopback native boundary
+18. Renderer UI foundation: CSS Modules, design tokens, and component layering
+19. Dynamic server-owned channel hierarchy storage and ACL model
+20. Server-local profile/avatar/presence storage and its privacy boundary
+21. Global Push-to-Talk via an in-process native keyboard hook
+22. Durable per-server identity correlation token for local voice preferences
+23. TURN REST credential-minting architecture
+24. TLS and reverse-proxy responsibility

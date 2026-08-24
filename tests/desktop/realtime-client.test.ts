@@ -619,4 +619,32 @@ describe('RealtimeClient', () => {
     expect(editableNodes).toHaveLength(1);
     expect(removedByPolicy).toHaveLength(1);
   });
+
+  it('emits turnCredentials with the raw iceServers/expiresAt payload when server:turn-credentials arrives (T14)', async () => {
+    const client = await connectAndHandshake();
+    const events: unknown[] = [];
+    client.on('turnCredentials', (message) => events.push(message));
+
+    const turnMessage = {
+      type: 'server:turn-credentials',
+      id: 't1',
+      iceServers: [
+        { urls: 'turn:turn.example.com:3478', username: 'user-1', credential: 'secret-1' },
+      ],
+      expiresAt: '2026-01-01T00:00:00.000Z',
+    };
+    socket.simulateMessage(JSON.stringify(turnMessage));
+
+    expect(events).toEqual([turnMessage]);
+  });
+
+  it('never emits turnCredentials when no server:turn-credentials message ever arrives (TURN not configured)', async () => {
+    const client = await connectAndHandshake();
+    const events: unknown[] = [];
+    client.on('turnCredentials', (message) => events.push(message));
+
+    socket.simulateMessage(JSON.stringify({ type: 'voice:catalog', id: 'c1', nodes: [] }));
+
+    expect(events).toEqual([]);
+  });
 });

@@ -1,0 +1,24 @@
+name: chantivo-self-hosted
+
+# The combined "an operator actually runs this" stack: the Chantivo Dedicated Server plus an
+# optional Coturn TURN relay. Composed entirely from `include:` (Docker Compose's own file-
+# composition mechanism — https://docs.docker.com/reference/compose-file/include/) over the two
+# already-reviewed, independently maintained files below, so neither service definition is
+# duplicated here or anywhere else:
+#
+#   - compose.server.example.yaml — the chantivo-server service (Slice 8)
+#   - compose.turn.example.yaml   — the coturn service (Linux host networking, profiles: ['turn'])
+#
+# `include:` copies each included file's services/volumes into this combined model and resolves
+# each included file's own relative paths (e.g. compose.turn.example.yaml's
+# `../coturn/turnserver.conf` volume mount) against that file's own directory — both included files
+# live in this same infrastructure/docker/ directory, so no path adjustment was needed.
+#
+# Coturn stays behind the `turn` Compose profile exactly as compose.turn.example.yaml already
+# defines it: `docker compose -f compose.self-hosted.example.yaml up -d` starts chantivo-server
+# alone (a fully supported STUN/P2P-only deployment); add `--profile turn` to also start coturn.
+# See infrastructure/docker/README.md for the full setup sequence (env file, Coturn config, secret
+# injection) before running either form.
+include:
+  - compose.server.example.yaml
+  - compose.turn.example.yaml

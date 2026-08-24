@@ -318,6 +318,10 @@ export {
   type ServerProfileMessage,
   type ServerProfileSelfUpdatedMessage,
 } from './messages/profile.js';
+export {
+  serverTurnCredentialsMessageSchema,
+  type ServerTurnCredentialsMessage,
+} from './messages/turn.js';
 export { parseClientMessage, parseServerMessage, type ParseResult } from './parse.js';
 export {
   CURRENT_PROTOCOL_VERSION,

@@ -6,7 +6,8 @@
 > identity (T7), the Dedicated Server product boundary (T8), server-local authorization (T9),
 > persistent server-side text chat (T10), local device management/bookmarks/automatic reconnect
 > (T11), Windows per-application audio capture (T12), and the Renderer's visual/interaction
-> foundation (T13.1) are implemented and live-verified — see
+> foundation (T13.1), and production self-hosting — TURN credential minting, TLS/reverse-proxy
+> support, Docker packaging (T14) — are implemented and live-verified — see
 > [`tasks/T3_VOICE_WEBRTC.md`](tasks/T3_VOICE_WEBRTC.md),
 > [`tasks/T4_CAMERA_STREAMING.md`](tasks/T4_CAMERA_STREAMING.md),
 > [`tasks/T5_SCREEN_SHARE.md`](tasks/T5_SCREEN_SHARE.md),
@@ -17,7 +18,8 @@
 > [`tasks/T10_PERSISTENT_TEXT_CHAT.md`](tasks/T10_PERSISTENT_TEXT_CHAT.md),
 > [`tasks/T11_DAILY_USE_UX.md`](tasks/T11_DAILY_USE_UX.md),
 > [`tasks/T12_WINDOWS_PROCESS_AUDIO.md`](tasks/T12_WINDOWS_PROCESS_AUDIO.md), and
-> [`tasks/T13_1_VISUAL_FOUNDATION.md`](tasks/T13_1_VISUAL_FOUNDATION.md). See
+> [`tasks/T13_1_VISUAL_FOUNDATION.md`](tasks/T13_1_VISUAL_FOUNDATION.md), and
+> [`tasks/T14_PRODUCTION_SELF_HOSTING.md`](tasks/T14_PRODUCTION_SELF_HOSTING.md). See
 > [`tasks/STATUS.md`](tasks/STATUS.md) for what remains a marker or is not yet started. Treat any
 > capability this document describes as unimplemented unless STATUS.md says otherwise.
 

@@ -547,10 +547,13 @@ Renderer/Main trust boundary.
 
 ## What does not exist?
 
-There is no running Coturn stack (templates exist but no TURN credential minting), installer/maker
-artifact, or SFU. Production configuration/TLS termination and Docker packaging for the Dedicated
-Server are also not yet implemented — this work is now **T14** (see the T13 redefinition below).
-Real avatars/presence/status (T13.3) and the gamer voice experience (T13.4 — Push to Talk, Voice Activity, speaking
+There is no installer/maker artifact or SFU — those remain T15/T17. TURN credential minting, Docker
+packaging, and reverse-proxy TLS support are implemented and fully verified with real evidence (T14 —
+see below) — Docker wasn't available on the Windows workstation, so verification moved to a real
+Ubuntu 24.04 VPS over SSH (the workstation itself was never modified), where every deployment path
+(native systemd, native Coturn+Caddy, Docker/Compose) and the decisive forced-relay WebRTC proof all
+passed (see [`tasks/T14_PRODUCTION_SELF_HOSTING.md`](tasks/T14_PRODUCTION_SELF_HOSTING.md) for the
+full record). Real avatars/presence/status (T13.3) and the gamer voice experience (T13.4 — Push to Talk, Voice Activity, speaking
 indicators, per-user volume, local mute, join/leave sounds) are now implemented — see below. Voice,
 camera, screen-video, and screen-audio
 sharing (T3–T6, P2P-mesh, small-room, self-hosted scope), local cryptographic client identity (T7),
@@ -618,13 +621,36 @@ button no longer reads as a filled primary action), and a context-aware chat emp
 Renderer/CSS — no architecture, protocol, or media change. See
 [`tasks/T13_5_1_FINAL_VISUAL_POLISH.md`](tasks/T13_5_1_FINAL_VISUAL_POLISH.md).
 
+T14 then turned that Dedicated Server into something a technically capable operator can self-host
+safely, without needing to understand Chantivo's internal architecture: a production multi-stage
+Docker image (`services/dedicated-server/Dockerfile`, non-root, `pnpm deploy --prod`-pruned so no
+Electron/desktop dependency ever enters the image), a `GET /healthz`/`GET /readyz` HTTP endpoint
+sharing the existing WebSocket port, an `O_CREAT|O_EXCL` data-directory instance lock so two server
+processes can never silently corrupt the same `dataDir`, a real TURN REST credential-minting
+mechanism (Coturn's standard `use-auth-secret` convention, delivered over a new, additive
+`server:turn-credentials` protocol message that required no version bump — protocol stays v5; see
+[`../adr/0023-turn-rest-credential-minting-architecture.md`](adr/0023-turn-rest-credential-minting-architecture.md)),
+a bounded (not full-ephemeral-range) Coturn relay port default with documented sizing guidance, a
+first-class Caddy reverse-proxy example for automatic-HTTPS `wss://` (the desktop client's
+`parseServerAddress` now accepts an explicit `wss://` scheme, defaulting to port 443 — see
+[`../adr/0024-tls-and-reverse-proxy-responsibility.md`](adr/0024-tls-and-reverse-proxy-responsibility.md)),
+and a Docker Compose stack combining the server with the pre-existing Coturn templates. Config was
+deliberately extended (`publicHost`, an env-var-only `turn` block), not restructured — the existing
+flat, `.strict()`-validated, `defaults < file < env` precedence model stayed exactly as it was. No
+new central Chantivo-operated service was introduced anywhere (ADR 0004/ADR 0010 unchanged); the
+4-SQLite-file storage model (ADR 0009) and the P2P mesh transport (ADR 0006) were both extended, not
+redesigned — see [`architecture/PRODUCTION_SELF_HOSTING.md`](architecture/PRODUCTION_SELF_HOSTING.md)
+and [`SELF_HOSTING.md`](SELF_HOSTING.md) for the full design and the real deployment/verification
+record.
+
 ## What should happen next?
 
 T13 was redefined, by explicit product direction, from a single "self-hosting production package"
 task into a five-part Product Experience series (T13.1-T13.5) — see
-[`tasks/STATUS.md`](tasks/STATUS.md) for the full renumbering (production self-hosting is now T14,
+[`tasks/STATUS.md`](tasks/STATUS.md) for the full renumbering (production self-hosting was T14,
 installer/releases T15, private-beta polish T16, SFU T17, hardening/release-candidate T18). **T14 —
-Production Self-Hosting** is next. Do not implement it until its own task document exists.
+Production Self-Hosting** is now implemented (see above); **T15 — Windows client installer and
+dedicated-server releases** is next. Do not implement it until its own task document exists.
 
 Non-blocking follow-ups still open, cheap relative to the risk they guard against: (1) ~~a
 frequency-domain (e.g. dominant-frequency-near-440Hz) check for `e2e:screen-audio-smoke`'s

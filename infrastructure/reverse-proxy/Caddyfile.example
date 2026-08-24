@@ -1,0 +1,8 @@
+# Chantivo Dedicated Server reverse-proxy example: TLS termination + WebSocket passthrough only.
+# Copy to an ignored runtime Caddyfile, set CHANTIVO_PUBLIC_HOSTNAME (real public DNS name), and
+# run Caddy on the same host as (or with network access to) the Chantivo Dedicated Server. See
+# README.md in this directory for what this does and does not cover, and its real preconditions.
+
+{$CHANTIVO_PUBLIC_HOSTNAME} {
+    reverse_proxy 127.0.0.1:8090
+}

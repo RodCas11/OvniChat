@@ -18,6 +18,7 @@ import type { Logger } from './logging.js';
 import { HeartbeatMonitor } from './heartbeat.js';
 import type { PresenceRegistry } from './presence/registry.js';
 import type { ProfilePort } from './profile-port.js';
+import type { TurnCredentialPort } from './turn-credential-port.js';
 import {
   buildFilteredVoiceCatalogMessage,
   routeClientMessage,
@@ -140,6 +141,9 @@ export class Connection {
      * `presence/registry.ts`). Shared across every connection this server accepts (a single
      * process-wide registry, exactly like `voiceRegistry`). */
     private readonly presenceRegistry: PresenceRegistry,
+    /** T14 — TURN credential minting (see `turn-credential-port.ts`). Composition config, shared
+     * across every connection this server accepts. */
+    private readonly turnCredentials: TurnCredentialPort,
     /** Sends a message to a *different* connection, looked up by id, if it still exists. */
     private readonly deliverToConnection: (connectionId: string, message: ServerMessage) => void,
     /** T9 — forcibly closes a *different* connection, looked up by id, with a `server:error` +
@@ -355,6 +359,7 @@ export class Connection {
         channelPasswordRateLimiter: this.channelPasswordRateLimiter,
         profile: this.profile,
         presenceRegistry: this.presenceRegistry,
+        turnCredentials: this.turnCredentials,
         identityId: this._identityId,
         nickname: this._nickname,
       });

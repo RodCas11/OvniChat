@@ -19,7 +19,9 @@ for the accepted decisions this document elaborates.
 T8 turned `services/realtime` — until then an internal service every E2E test bypassed into
 directly — into something a **client explicitly connects to**: an independently-operated Chantivo
 Dedicated Server. It did not add accounts, permissions, groups, invite tokens, bans, text chat,
-TURN/TLS production deployment, Docker packaging, an installer, or a public server directory.
+production TURN/TLS deployment, Docker packaging, an installer, or a public server directory — those
+were each added by their own later task (T9, T10, and T14 respectively; installer/directory remain
+deferred to T15+).
 **T9 added server-local permissions/groups/invite-and-privilege-tokens/bans** (see
 [`SERVER_AUTHORIZATION.md`](SERVER_AUTHORIZATION.md)) — still no accounts, still no central
 control plane, and connecting to a Dedicated Server means completing both T7's identity proof
@@ -27,9 +29,10 @@ _and_ T9's admission check before `ready` (see [`REALTIME_PROTOCOL.md`](REALTIME
 **T10 added persistent text chat** (server-wide and per-voice-channel — see
 [`PERSISTENT_TEXT_CHAT.md`](PERSISTENT_TEXT_CHAT.md)), correcting an earlier roadmap assumption
 that chat would be ephemeral: chat history now survives client disconnect, client restart, and
-server restart, stored entirely on the Dedicated Server that received it. Production TURN/TLS
-deployment, Docker packaging, an installer, and a public server directory remain deferred to later
-tasks (T13, T14). See [`docs/tasks/T8_DEDICATED_SERVER.md`](../tasks/T8_DEDICATED_SERVER.md),
+server restart, stored entirely on the Dedicated Server that received it. **T14 added production
+TURN/TLS deployment and Docker packaging** — see
+[`PRODUCTION_SELF_HOSTING.md`](PRODUCTION_SELF_HOSTING.md). An installer and a public server
+directory remain deferred to later tasks (T15+). See [`docs/tasks/T8_DEDICATED_SERVER.md`](../tasks/T8_DEDICATED_SERVER.md),
 [`docs/tasks/T9_SERVER_AUTHORIZATION.md`](../tasks/T9_SERVER_AUTHORIZATION.md), and
 [`docs/tasks/T10_PERSISTENT_TEXT_CHAT.md`](../tasks/T10_PERSISTENT_TEXT_CHAT.md) for the full task
 scopes.
@@ -205,10 +208,12 @@ socket — never a silent fallback to defaults.
 `REALTIME_HOST` defaults to `127.0.0.1` — a fresh Dedicated Server never listens beyond localhost by
 accident. Exposing it to a LAN or the internet is an explicit operator choice (`host: "0.0.0.0"` or
 a specific interface address in the config file, or `REALTIME_HOST` in the environment), not a
-hidden default. `REALTIME_PORT` defaults to `8090`. Production TLS (`wss://`) is explicitly out of
-scope for T8 — see [`REALTIME_PROTOCOL.md`](REALTIME_PROTOCOL.md#transport); a plain `ws://
-127.0.0.1:8090` is an accepted, documented development/self-hosted-LAN posture, not a production
-claim.
+hidden default. `REALTIME_PORT` defaults to `8090`. `services/realtime` itself still does not
+terminate TLS in-process — a plain `ws://127.0.0.1:8090` remains the accepted development/
+self-hosted-LAN posture. For a public production deployment, T14 added a first-class Caddy
+reverse-proxy example that terminates `wss://` in front of this same plain-`ws://` listener — see
+[`PRODUCTION_SELF_HOSTING.md`](PRODUCTION_SELF_HOSTING.md) and
+[`../adr/0024-tls-and-reverse-proxy-responsibility.md`](../adr/0024-tls-and-reverse-proxy-responsibility.md).
 
 ## Server-owned channels
 
@@ -282,8 +287,11 @@ connected --(user connects to a different address)--> disconnected --> connected
   hand-rolled string splitting specifically because naive splitting breaks on IPv6 literals, which
   contain colons throughout the address, not only before a port. Bounds the raw input length (300
   chars) and rejects any extra URL component (path, query, fragment, credentials) so a pasted invite
-  URL or malformed string can never silently connect somewhere the user didn't intend. Always
-  produces `ws://`, never `wss://` — TLS addressing is T13's concern.
+  URL or malformed string can never silently connect somewhere the user didn't intend. A bare
+  `host[:port]` input still defaults to `ws://` (unchanged); T14 added support for an explicit
+  `ws://`/`wss://` scheme prefix, with `wss://` defaulting its port to `443` (matching a TLS
+  reverse proxy) rather than `8090` — see
+  [`../adr/0024-tls-and-reverse-proxy-responsibility.md`](../adr/0024-tls-and-reverse-proxy-responsibility.md).
 - **Disconnect**: an explicit button, visible once connected. Clicking it sets `App.tsx`'s
   connection state back to `disconnected`, which unmounts `VoiceChannelView` — the pre-existing
   `useVoiceChannel(realtimeConfig)` hook's own `useEffect` (keyed on `[realtimeConfig]`, present
@@ -460,11 +468,13 @@ environment values beyond the display fields above. Signal handling: `SIGINT` (C
 graceful-shutdown path (`server.stop()` — stop accepting new connections, close existing sessions,
 release resources, then `process.exit(0)`); a shutdown failure exits non-zero. This is the same
 pattern `services/realtime`'s own CLI already used since T2, reused rather than reinvented.
-`services/dedicated-server` does not attempt full Windows Service/systemd integration — that is
-T14's concern. An HTTP health endpoint was evaluated and deliberately not added in T8, per the
-task's own explicit guidance to defer it (to a later task) if it would substantially complicate the
-server; process-level health (the server process is running, or it isn't) plus the startup log is
-sufficient for T8's scope.
+`services/dedicated-server` does not attempt full Windows Service/systemd integration — a documented
+systemd example for advanced direct-runtime operators remains a possible future addition, not
+blocking Docker-first self-hosting. An HTTP health endpoint was evaluated and deliberately not added
+in T8, per the task's own explicit guidance to defer it if it would substantially complicate the
+server; **T14 added it** — `GET /healthz`/`GET /readyz`, sharing the same port as the WebSocket
+listener (see [`PRODUCTION_SELF_HOSTING.md`](PRODUCTION_SELF_HOSTING.md)) — so process-level health
+is no longer the only liveness signal available to an operator or a container orchestrator.
 
 **Known Windows testing limitation** (already documented for T2, reapplies unchanged here):
 `child.kill('SIGTERM')` from a _different_ Node process does not deliver a catchable POSIX signal on
@@ -526,10 +536,11 @@ real-network testing philosophy `REALTIME_PROTOCOL.md` already established for T
   connection-smoke E2Es already establish, since the App.tsx state-machine change that makes
   server-switching possible reuses T3–T7's already-proven effect-teardown lifecycle with zero new
   teardown code (see [Client connection UX](#client-connection-ux) above).
-- No production TLS, TURN deployment, Docker packaging, or installer — all explicitly out of scope
-  for T8 (T13/T14).
-- No HTTP health endpoint or admin API — deferred per the task's own guidance (see
-  [Startup and shutdown](#startup-and-shutdown)).
+- No installer — that remains T15.
+- No admin API (a normal web dashboard/remote management plane) — deliberately out of scope for
+  self-hosting per T14's own brief; the existing desktop server-admin UX remains the only admin
+  surface. Production TLS (via reverse proxy), TURN deployment, Docker packaging, and an HTTP health
+  endpoint were all added by T14 — see [`PRODUCTION_SELF_HOSTING.md`](PRODUCTION_SELF_HOSTING.md).
 - Server-local instance identifier — evaluated and deliberately deferred, not implemented (see
   above).
 - `ConnectionScreen`'s `connectionError` prop is still always `undefined` as of T9 — there is no

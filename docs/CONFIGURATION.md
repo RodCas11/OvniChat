@@ -11,18 +11,23 @@ listing every violation, plus small coercion factories (`envPort`, `envPositiveI
 concrete schema from these primitives — see `services/realtime/src/config.ts` for the first real
 example — rather than `packages/config` prescribing one global shape.
 
-## Expected client-visible values
+## Client-visible values
 
-| Variable        | Purpose                                       | Secret?   | Notes                                                      |
-| --------------- | --------------------------------------------- | --------- | ---------------------------------------------------------- |
-| `SIGNALING_URL` | HTTPS/WSS endpoint used by the desktop client | No        | Require an allowed secure scheme outside local development |
-| `STUN_URL`      | STUN URI used for ICE                         | No        | May contain multiple values after T3 defines parsing       |
-| `TURN_URL`      | TURN/TURNS URI used for relay fallback        | No        | Must point to the operator's service by default            |
-| `TURN_USERNAME` | Short-lived TURN REST username                | Sensitive | Obtain at session time; do not bake into a desktop bundle  |
-| `TURN_PASSWORD` | Short-lived TURN REST credential              | Secret    | Keep in memory only as long as necessary; never log        |
+The desktop client is configured via `DISCO_VOADOR_*` variables read by
+`apps/desktop/src/main/desktop-config.ts` — `DISCO_VOADOR_REALTIME_URL` (the server address, normally
+entered per-connection via the Add Server dialog rather than baked in) and `DISCO_VOADOR_STUN_URLS`
+(comma-separated static STUN URIs). There is no client-visible TURN environment variable of any kind,
+by design: TURN credentials are never a static client-side value — they are short-lived, minted
+server-side, and pushed dynamically over the already-authenticated realtime connection
+(`server:turn-credentials`, see "Dedicated Server values" below and
+[`adr/0023-turn-rest-credential-minting-architecture.md`](adr/0023-turn-rest-credential-minting-architecture.md)).
+An earlier draft of this document anticipated a static `TURN_URL`/`TURN_USERNAME`/`TURN_PASSWORD`
+env-var model before that mechanism was designed; it did not match what was actually built and has
+been removed here rather than left standing as a second, conflicting source of truth.
 
-The root [`.env.example`](../.env.example) contains blank placeholders for discoverability. A real
-`.env` is ignored and must not be committed.
+The root [`.env.example`](../.env.example) and
+[`infrastructure/docker/.env.example`](../infrastructure/docker/.env.example) contain placeholders
+for discoverability. A real `.env` is ignored and must not be committed.
 
 ## Realtime service values (implemented, T2)
 
@@ -43,20 +48,41 @@ used. None of these are secrets.
 | `REALTIME_RATE_LIMIT_WINDOW_MS`    |     10000 | Rate-limit window length                     |
 | `LOG_LEVEL`                        |    `info` | `debug`\|`info`\|`warn`\|`error`             |
 
-## Future server-only values
+## Dedicated Server values (implemented, T14)
 
-Names are provisional until their owning task defines schemas:
+Defined and validated in `services/dedicated-server/src/config.ts`, layered on top of the realtime
+values above per the same `defaults < config file < environment variables` precedence (T8 Section
+9). None of these belong in the hand-edited config file except `publicHost` — see that file's own
+doc comment on why secrets never do.
 
-```text
-DATABASE_PATH
-TURN_SHARED_SECRET
-TURN_CREDENTIAL_TTL_SECONDS
-TRUSTED_ORIGINS
-```
+| Variable                                   | Secret? | Notes                                                                                      |
+| ------------------------------------------ | ------- | ------------------------------------------------------------------------------------------ |
+| `DISCO_VOADOR_SERVER_PUBLIC_HOST`          | No      | Display-only; never used for binding                                                       |
+| `DISCO_VOADOR_TURN_SHARED_SECRET`          | Secret  | Coturn `use-auth-secret` REST shared secret; must be set with the URLs below or not at all |
+| `DISCO_VOADOR_TURN_URLS`                   | No      | Comma-separated `turn:`/`turns:` URIs                                                      |
+| `DISCO_VOADOR_TURN_CREDENTIAL_TTL_SECONDS` | No      | Default `21600` (6 hours); only meaningful when TURN is configured                         |
 
-`TURN_SHARED_SECRET` is never client-visible. The realtime service should use it to mint expiring
-credentials. Production deployments should mount secrets from the operator's secret mechanism or
-restricted files rather than placing them in Compose YAML, command lines, images, or source.
+`DISCO_VOADOR_TURN_SHARED_SECRET` is never client-visible and never persisted — the realtime
+service (`services/realtime/src/turn-credential-port.ts`, backed by
+`services/dedicated-server/src/turn/mint-turn-credentials.ts`) uses it only to mint short-lived,
+per-connection TURN credentials (`server:turn-credentials`) at the moment a connection reaches
+`ready`. Production deployments should mount this secret from the operator's own secret mechanism
+or a restricted file rather than placing it in Compose YAML, command lines, images, or source.
+
+## Health endpoint (implemented, T14)
+
+`services/realtime` exposes `GET /healthz` (liveness) and `GET /readyz` (readiness — 503 once
+`connections.size >= REALTIME_MAX_CONNECTIONS`) on the same bound host/port as the WebSocket
+server. Both return only a boolean-shaped status plus a connection count — never version strings,
+config values, paths, or secrets; this is deliberately not an admin surface.
+
+## Data-directory instance lock (implemented, T14)
+
+`services/dedicated-server` acquires an exclusive `<dataDir>/.lock` file (via `data-dir-lock.ts`)
+before opening any SQLite store, so two server processes accidentally pointed at the same data
+directory fail fast with an actionable error instead of corrupting shared state. `:memory:` is a
+documented no-op. The lock is released on graceful shutdown (`SIGINT`/`SIGTERM`) and on a failed
+startup.
 
 ## Rules
 
@@ -71,14 +97,18 @@ restricted files rather than placing them in Compose YAML, command lines, images
 
 ## Precedence
 
-`services/realtime` (T2) reads configuration from `process.env` only — no command-line arguments
-or operator config files yet; that need can be added later if a real deployment requires it.
-Desktop user preferences such as device choice are application state, not environment
-configuration.
+`services/realtime` (T2) reads configuration from `process.env` only. `services/dedicated-server`
+(T8, extended T14) layers an operator-authored config file underneath that:
+`defaults < config file < environment variables` — see "Dedicated Server values" above and
+[`architecture/DEDICATED_SERVER.md`](architecture/DEDICATED_SERVER.md). Neither service accepts
+command-line arguments; that need can be added later if a real deployment requires it. Desktop user
+preferences such as device choice are application state, not environment configuration.
 
 ## Coturn templates
 
 [`infrastructure/coturn/`](../infrastructure/coturn/) contains reviewed starting templates. Copy an
 example to its ignored filename and replace placeholders outside source control. The production
-template uses the full relay range and Linux host networking; the bridge template deliberately uses
-a small range for local validation only. See [`references/COTURN.md`](references/COTURN.md).
+template uses Linux host networking and a bounded relay range sized for a small self-hosted
+deployment (`49152-49351`, ~200 ports — see `infrastructure/coturn/README.md`'s "Sizing the relay
+port range" section for the reasoning and how to enlarge it); the bridge template deliberately uses
+an even smaller range for local validation only. See [`references/COTURN.md`](references/COTURN.md).

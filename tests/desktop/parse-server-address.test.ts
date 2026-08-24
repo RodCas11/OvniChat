@@ -101,9 +101,49 @@ describe('parseServerAddress', () => {
     expect(parseServerAddress('example.com:99999').ok).toBe(false);
   });
 
-  it('never produces a wss:// URL — TLS addressing is out of scope', () => {
-    const result = parseServerAddress('example.com:8090');
+  it('defaults a bare host (no scheme) to ws:// on port 8090 — unchanged behavior', () => {
+    const result = parseServerAddress('example.com');
+    expect(result).toEqual({
+      ok: true,
+      address: { host: 'example.com', port: 8090, url: 'ws://example.com:8090' },
+    });
+  });
+
+  it('treats an explicit ws:// scheme identically to a bare host', () => {
+    const result = parseServerAddress('ws://example.com');
+    expect(result).toEqual({
+      ok: true,
+      address: { host: 'example.com', port: 8090, url: 'ws://example.com:8090' },
+    });
+  });
+
+  it('accepts an explicit wss:// scheme, defaulting to port 443', () => {
+    const result = parseServerAddress('wss://example.com');
+    expect(result).toEqual({
+      ok: true,
+      address: { host: 'example.com', port: 443, url: 'wss://example.com:443' },
+    });
+  });
+
+  it('an explicit port on a wss:// address always wins over the 443 default', () => {
+    const result = parseServerAddress('wss://example.com:9000');
+    expect(result).toEqual({
+      ok: true,
+      address: { host: 'example.com', port: 9000, url: 'wss://example.com:9000' },
+    });
+  });
+
+  it('accepts a bracketed IPv6 address with an explicit wss:// scheme', () => {
+    const result = parseServerAddress('wss://[::1]:9000');
     expect(result.ok).toBe(true);
-    if (result.ok) expect(result.address.url.startsWith('ws://')).toBe(true);
+    if (!result.ok) return;
+    expect(result.address.host).toBe('::1');
+    expect(result.address.port).toBe(9000);
+    expect(result.address.url).toBe('wss://[::1]:9000');
+  });
+
+  it('rejects a non-ws/wss explicit scheme such as https://', () => {
+    const result = parseServerAddress('https://example.com');
+    expect(result).toEqual({ ok: false, reason: 'Server address must use ws:// or wss://' });
   });
 });

@@ -67,3 +67,9 @@ export {
   type RegisterConnectionResult,
 } from './presence/registry.js';
 export { deriveMemberRoleBucket } from './presence/role-bucket.js';
+export {
+  createNoopTurnCredentialPort,
+  type MintedTurnCredentials,
+  type TurnCredentialIceServer,
+  type TurnCredentialPort,
+} from './turn-credential-port.js';

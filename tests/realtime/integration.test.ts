@@ -668,6 +668,58 @@ describe('realtime server integration (real sockets)', () => {
     });
   });
 
+  describe('health endpoint (T14 — real HTTP fetch)', () => {
+    // `url` is the ws:// URL from the outer beforeEach; the health server shares the exact same
+    // host/port (see server.ts's doc comment on why: `ws` attaches to one externally-owned
+    // `http.Server` rather than a second listening port).
+    function httpBaseUrl(): string {
+      return `http://${url.slice('ws://'.length)}`;
+    }
+
+    it('GET /healthz returns 200 {"status":"ok"} with no dependency checks', async () => {
+      const response = await fetch(`${httpBaseUrl()}/healthz`);
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ status: 'ok' });
+    });
+
+    it('GET /readyz returns 200 ready with the current connection count while under capacity', async () => {
+      const response = await fetch(`${httpBaseUrl()}/readyz`);
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ status: 'ready', connections: 0 });
+    });
+
+    it('GET /readyz returns 503 not-ready once at REALTIME_MAX_CONNECTIONS', async () => {
+      const capped = createRealtimeServer(testConfig({ maxConnections: 1 }));
+      const address = await capped.start();
+      const cappedHttpUrl = `http://${address.host}:${String(address.port)}`;
+      const cappedWsUrl = `ws://${address.host}:${String(address.port)}`;
+
+      const first = track(await connect(cappedWsUrl));
+      await handshake(first);
+      expect(capped.connectionCount).toBe(1);
+
+      const response = await fetch(`${cappedHttpUrl}/readyz`);
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual({ status: 'not-ready', connections: 1 });
+
+      await capped.stop();
+    });
+
+    it('an unknown path returns a bare 404 with no body, never version/config/secret data', async () => {
+      const response = await fetch(`${httpBaseUrl()}/anything-else`);
+      expect(response.status).toBe(404);
+      expect(await response.text()).toBe('');
+    });
+
+    it('never serves the WebSocket upgrade path as a plain HTTP GET body', async () => {
+      // Confirms /healthz and /readyz are the *only* two GET routes handled before the WebSocket
+      // upgrade machinery — a plain GET to "/" (no Upgrade header) must fall through to the same
+      // bare-404 handler, not somehow reach `wss`'s own connection logic.
+      const response = await fetch(httpBaseUrl());
+      expect(response.status).toBe(404);
+    });
+  });
+
   describe('voice channels and WebRTC signaling (real sockets)', () => {
     it('A and B join the same channel, learn about each other, and negotiate a full offer/answer/ICE exchange', async () => {
       const a = track((await connectAndHandshake(url)).ws);

@@ -50,6 +50,8 @@ function testConfig(overrides: Partial<DedicatedServerConfig> = {}): DedicatedSe
     dataDir: ':memory:',
     configFilePath: '(test)',
     configFileFound: false,
+    publicHost: undefined,
+    turn: undefined,
     ...overrides,
   };
 }

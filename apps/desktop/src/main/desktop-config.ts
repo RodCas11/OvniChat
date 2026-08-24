@@ -24,9 +24,12 @@ const DEFAULT_REALTIME_URL = 'ws://127.0.0.1:8090';
 
 /**
  * STUN is optional, best-effort NAT-traversal help, not required core communication — two peers on
- * the same LAN (T3's verification scenario) connect via host candidates without one. TURN/coturn
- * relay support needs short-lived credential minting that does not exist yet (see
- * `docs/references/COTURN.md`, `infrastructure/coturn/`) and is out of scope here.
+ * the same LAN (T3's verification scenario) connect via host candidates without one. This schema
+ * intentionally has no `turn:`/`turns:` equivalent: TURN credentials are never a static desktop
+ * config value at all (T14) — they are short-lived, minted server-side, and pushed dynamically over
+ * the already-authenticated realtime connection (`server:turn-credentials`; see
+ * `docs/adr/0023-turn-rest-credential-minting-architecture.md`, `docs/references/COTURN.md`,
+ * `infrastructure/coturn/`).
  */
 function isStunUrl(value: string): boolean {
   try {

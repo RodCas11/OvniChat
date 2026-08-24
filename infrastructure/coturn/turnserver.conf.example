@@ -6,8 +6,11 @@ realm=turn.example.invalid
 stale-nonce=600
 unauthorized-ratelimit
 unauthorized-ratelimit-rps=10
+# Bounded relay range for a small self-hosted deployment (~200 UDP ports), not the full ephemeral
+# range. See infrastructure/coturn/README.md's "Sizing the relay port range" section for the exact
+# per-allocation reasoning and how to enlarge this for more concurrent users.
 min-port=49152
-max-port=65535
+max-port=49351
 no-cli
 no-multicast-peers
 user-quota=12
