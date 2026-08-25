@@ -13,6 +13,7 @@
   "scripts": {
     "audit": "corepack pnpm audit --audit-level high",
     "build": "tsc -b --pretty false",
+    "build:desktop-runtime": "tsc -b apps/desktop --pretty false",
     "build:server-runtime": "tsc -b services/dedicated-server --pretty false",
     "check": "prettier --check . && eslint . && tsc --noEmit -p tsconfig.typecheck.json --pretty false && pnpm run build:server-runtime && vitest run && tsc -b --pretty false && node scripts/verify-repository.mjs && corepack pnpm audit --audit-level high",
     "clean": "node scripts/clean.mjs",

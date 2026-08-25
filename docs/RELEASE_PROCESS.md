@@ -53,9 +53,12 @@ before any build runs.
    version, dispatch input matches the package version, and — when publishing — the workflow's own ref
    is the matching tag. Runs with no dependencies installed, so mistakes cost seconds, not a
    30-minute Electron build.
-3. **`windows-build`** — `scripts/release/build-windows-artifact.mjs`: the real Forge/Squirrel make,
-   then a deterministic search for the genuine `Setup.exe` (never a hardcoded filename), validated and
-   copied to `dist-release/<version>/ChantivoSetup-<version>.exe`.
+3. **`windows-build`** — `scripts/release/build-windows-artifact.mjs`: builds the desktop runtime
+   dependency graph itself (`tsc -b apps/desktop`, the root `build:desktop-runtime` script — every
+   `@disco-voador/*` package resolves through its compiled `dist/`, and a GitHub Actions job never
+   inherits another job's filesystem), then the real Forge/Squirrel make, then a deterministic search
+   for the genuine `Setup.exe` (never a hardcoded filename), validated and copied to
+   `dist-release/<version>/ChantivoSetup-<version>.exe`.
 4. **`linux-build`** — `scripts/release/build-dedicated-server-artifact.mjs`, then
    `scripts/release/verify-linux-server-artifact.mjs`: archive readable via `tar -tzf`, single
    `chantivo-dedicated-server/` top level, `dist/cli.js` present, the `package.json` inside the archive

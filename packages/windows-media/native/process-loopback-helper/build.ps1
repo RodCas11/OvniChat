@@ -1,15 +1,35 @@
-# T12 - reproducible build for the process-loopback native helper.
+# T12/T15.1 - reproducible build for the process-loopback native helper.
 #
-# There is no CMake on this machine, only raw MSVC (Visual Studio 2022 Build Tools, C++ workload).
-# This script locates the toolchain via vswhere (falling back to this machine's known-good fixed
-# install path, since `vswhere -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64` returns
-# nothing for this particular Build Tools SKU even though the compiler genuinely works - a probable
-# component-ID quirk, not worth chasing), then drives cl.exe/link.exe directly through vcvars64.bat.
+# There is no CMake anywhere this has been built, only raw MSVC (Visual Studio 2022, C++ workload).
+# This script locates the toolchain via `vswhere -all -products '*'` (deliberately no `-requires
+# <component id>` filter - an earlier attempt at this task used one, e.g.
+# `-requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64`, and it returned nothing at all on
+# this machine's Build Tools SKU even though the compiler and Windows SDK were genuinely present and
+# working - a real, reproduced component-ID quirk with `-requires` on at least one real Build Tools
+# install, not a hypothetical worry). `-all -products '*'` instead enumerates every VS/Build Tools
+# installation regardless of edition, completeness, or component-ID metadata (Community, Professional,
+# Enterprise, and Build-Tools-only SKUs alike), and this function then does its own real filesystem
+# check for `VC\Auxiliary\Build\vcvars64.bat` under each candidate - the one fact that actually matters
+# for this script, checked directly rather than inferred from a component ID vswhere may or may not
+# report correctly for a given SKU. This is expected to work unmodified on a fresh GitHub Actions
+# `windows-latest` runner: per `actions/runner-images`, those runners ship `vswhere.exe` at the same
+# well-known path used below and a preinstalled VS2022 (Enterprise, at the time of writing) with the
+# C++ workload and a Windows SDK - genuinely NOT yet verified end-to-end on that specific runner image
+# by a real CI run (see the T15.1 handoff notes), but relying on `vswhere`'s own generic
+# installation-discovery contract rather than any fixed path is exactly what makes that verification
+# plausible instead of accidental. The one hardcoded path below exists solely as a last-resort fallback
+# for a `vswhere`-less or otherwise-undiscoverable environment (e.g. this specific development
+# machine's own install, kept working); it is deliberately tried only after every `vswhere`-discovered
+# candidate has already failed, and this script must never come to depend on it being correct anywhere
+# other than the one machine it names.
 #
 # Usage:  powershell -File build.ps1              (Release, the default)
 #         powershell -File build.ps1 -Configuration Debug
 #
-# Output: build/process-loopback-helper.exe (plus .obj/.pdb) - gitignored, never committed.
+# Output: build/process-loopback-helper.exe (plus .obj/.pdb) - gitignored, never committed. Called
+# non-interactively and deterministically by `packages/windows-media`'s own
+# `build:native-helper` script and, in turn, by `scripts/release/build-windows-artifact.mjs` - see
+# both for the single canonical way this script is actually invoked outside manual local use.
 
 param(
   [ValidateSet('Release', 'Debug')]
@@ -34,9 +54,10 @@ function Find-VcVars64 {
     }
   }
 
-  # Known-good fallback for this exact machine, confirmed working (see the T12 task brief): vswhere's
-  # own `-requires` component filter returns nothing for this Build Tools SKU, but the compiler is
-  # genuinely present at this fixed path.
+  # Last-resort fallback ONLY - tried after every real `vswhere`-discovered candidate above has already
+  # been checked and failed. This is this development machine's own real, confirmed-working install
+  # path; it is not, and must never become, a substitute for the generic `vswhere` discovery above on
+  # any other machine (including `windows-latest`), where this exact path is not expected to exist.
   $candidateRoots += 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools'
 
   foreach ($root in $candidateRoots) {

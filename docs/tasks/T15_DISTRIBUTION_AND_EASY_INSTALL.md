@@ -128,7 +128,10 @@ install-chantivo.sh --mode native|docker --hostname <host> --tls-only --yes
 ```
 
 Windows client: `apps/desktop/out/make/squirrel.windows/x64/Chantivo-<version> Setup.exe`, built via
-`pnpm --filter @disco-voador/desktop run make`.
+`pnpm build:desktop-runtime` followed by `pnpm --filter @disco-voador/desktop run make` (the first
+step compiles the `@disco-voador/*` `dist/` output Forge's Vite build resolves against; on a clean
+checkout `make` alone fails with `Failed to resolve entry for package "@disco-voador/config"`).
+`scripts/release/build-windows-artifact.mjs` runs both steps itself.
 
 ## What's deliberately not in T15
 

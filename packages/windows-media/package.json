@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc -b --pretty false",
+    "build:native-helper": "powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File native/process-loopback-helper/build.ps1",
     "typecheck": "tsc --noEmit -p tsconfig.json --pretty false"
   },
   "main": "dist/index.js",
