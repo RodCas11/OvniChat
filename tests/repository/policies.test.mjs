@@ -1,3 +1,7 @@
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { describe, expect, it } from 'vitest';
 
 import { architectureViolationsForSource } from '../../scripts/verify-architecture.mjs';
@@ -300,5 +304,49 @@ describe('TURN URL default policy behavior', () => {
         "DISCO_VOADOR_TURN_URLS: 'turn:127.0.0.1:3478',\n",
       ),
     ).toHaveLength(0);
+  });
+});
+
+// T15.1 CI-blocker follow-up: on a genuinely fresh checkout, workspace packages' `main`/`types`
+// fields (e.g. @disco-voador/config's `dist/index.js`) do not exist until a build step runs.
+// `vitest run` was ordered before the full `tsc -b` in `check`, which is fine for tests that stay
+// inside vitest's own resolution — but a test that spawns a REAL child process (via `tsx`) to run
+// `services/dedicated-server/src/cli.ts` as a genuine, unmodified product entrypoint hits Node's
+// own module resolution for every workspace package it imports, which requires `dist/` to already
+// exist. This regressed exactly once, silently, on a real GitHub Actions clean runner (never
+// locally, since a local checkout accumulates `dist/` output from every prior successful build).
+// This test guards the ordering directly against the real root `package.json`, not a copy of it,
+// so a future edit that reintroduces the wrong order fails here immediately instead of only ever
+// being caught by a real clean-runner CI failure again.
+describe('repository check pipeline ordering', () => {
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+  const rootPackageJson = JSON.parse(readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
+  const checkScript = rootPackageJson.scripts?.check ?? '';
+
+  it('builds the Dedicated Server runtime workspace dependencies before running vitest', () => {
+    const buildIndex = checkScript.indexOf('build:server-runtime');
+    const vitestIndex = checkScript.indexOf('vitest run');
+    expect(buildIndex, '"check" must reference the build:server-runtime script').toBeGreaterThan(
+      -1,
+    );
+    expect(vitestIndex, '"check" must run vitest').toBeGreaterThan(-1);
+    expect(
+      buildIndex,
+      '"build:server-runtime" must run BEFORE "vitest run" — real-process integration tests ' +
+        '(e.g. tests/dedicated-server/token-leak-regression.test.ts) spawn workspace-package ' +
+        'entrypoints that resolve through their real, built `dist/` output, which does not exist ' +
+        'yet on a genuinely fresh checkout until this build step runs',
+    ).toBeLessThan(vitestIndex);
+  });
+
+  it('"build:server-runtime" targets only the Dedicated Server\'s own composite project, not the full monorepo build', () => {
+    const buildServerRuntimeScript = rootPackageJson.scripts?.['build:server-runtime'] ?? '';
+    expect(buildServerRuntimeScript).toContain('tsc -b services/dedicated-server');
+    // Deliberately narrower than the full `tsc -b` (which also builds apps/desktop and
+    // packages/windows-media) — TypeScript's own project-reference graph already cascades this
+    // one target to also build every real runtime dependency it needs (config/protocol/shared/
+    // realtime/identity), without paying for an Electron/native-addon build just to run tests.
+    expect(buildServerRuntimeScript).not.toContain('apps/desktop');
+    expect(buildServerRuntimeScript).not.toContain('windows-media');
   });
 });

@@ -13,7 +13,8 @@
   "scripts": {
     "audit": "corepack pnpm audit --audit-level high",
     "build": "tsc -b --pretty false",
-    "check": "prettier --check . && eslint . && tsc --noEmit -p tsconfig.typecheck.json --pretty false && vitest run && tsc -b --pretty false && node scripts/verify-repository.mjs && corepack pnpm audit --audit-level high",
+    "build:server-runtime": "tsc -b services/dedicated-server --pretty false",
+    "check": "prettier --check . && eslint . && tsc --noEmit -p tsconfig.typecheck.json --pretty false && pnpm run build:server-runtime && vitest run && tsc -b --pretty false && node scripts/verify-repository.mjs && corepack pnpm audit --audit-level high",
     "clean": "node scripts/clean.mjs",
     "dev": "corepack pnpm --filter @disco-voador/desktop run start",
     "format": "prettier --write .",

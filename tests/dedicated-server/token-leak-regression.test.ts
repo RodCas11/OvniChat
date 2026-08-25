@@ -238,8 +238,27 @@ function describeProcessForDiagnostics(server: CapturedProcess): string {
   ].join('\n');
 }
 
+/** Resolves the moment the given child process exits, for racing against a readiness poll — a
+ * child that has already exited (e.g. a real module-resolution failure on a clean checkout with no
+ * built workspace-package `dist/` output yet) can never start answering `/readyz`, so there is no
+ * value in waiting out the rest of a multi-second readiness timeout once that's already known. */
+function exitSignal(
+  child: ChildProcessByStdio<null, Readable, Readable>,
+): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
+  return new Promise((resolve) => {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      resolve({ code: child.exitCode, signal: child.signalCode });
+      return;
+    }
+    child.once('exit', (code, signal) => resolve({ code, signal }));
+  });
+}
+
 /** Reserves a port, spawns the real Dedicated Server against it, and waits for genuine readiness
- * via a real `/readyz` poll — replacing the previous stdout-text-matching wait entirely. On
+ * via a real `/readyz` poll — replacing the previous stdout-text-matching wait entirely. Races that
+ * poll against the child process itself exiting, so a process that dies immediately (e.g. a
+ * `Cannot find package` module-resolution failure) fails this helper immediately with the real
+ * exit code/signal, instead of only being discovered after the full readiness timeout elapses. On
  * failure, throws with the safe diagnostic context this file's own leak-detection purpose requires
  * (never the raw un-redacted output, which could theoretically contain a leaked token during
  * exactly the failure this file exists to catch). */
@@ -252,17 +271,35 @@ async function spawnServerAndWaitUntilReady(
     dedicatedServerCliEntry,
     baseEnv(dataDir, { REALTIME_PORT: String(port) }),
   );
-  try {
-    await pollReadyz('127.0.0.1', port, readyTimeoutMs);
-  } catch (err) {
-    const reason = err instanceof Error ? err.message : String(err);
-    throw new Error(
-      `Dedicated Server never became ready on 127.0.0.1:${String(port)}: ${reason}\n` +
-        describeProcessForDiagnostics(server),
-      { cause: err },
-    );
+  // The readyz poll keeps retrying in the background for up to `readyTimeoutMs` even after the
+  // exit-signal side of the race below has already settled it — attaching a no-op rejection
+  // handler directly to this specific promise (not just to the `Promise.race` result) prevents an
+  // "unhandled promise rejection" warning/crash when that abandoned poll eventually times out on
+  // its own, well after this function has already returned or thrown via the exit path.
+  const readyPromise = pollReadyz('127.0.0.1', port, readyTimeoutMs);
+  readyPromise.catch(() => undefined);
+
+  const outcome = await Promise.race([
+    readyPromise.then(() => ({ kind: 'ready' as const })),
+    exitSignal(server.child).then((exit) => ({ kind: 'exited' as const, exit })),
+  ]).catch((err: unknown) => ({ kind: 'error' as const, err }));
+
+  if (outcome.kind === 'ready') {
+    return { server, port, url: `ws://127.0.0.1:${String(port)}` };
   }
-  return { server, port, url: `ws://127.0.0.1:${String(port)}` };
+
+  const reason =
+    outcome.kind === 'exited'
+      ? `the process exited (code: ${String(outcome.exit.code)}, signal: ${String(outcome.exit.signal)}) ` +
+        'before /readyz ever responded — it never had a chance to become ready'
+      : outcome.err instanceof Error
+        ? outcome.err.message
+        : String(outcome.err);
+  throw new Error(
+    `Dedicated Server never became ready on 127.0.0.1:${String(port)}: ${reason}\n` +
+      describeProcessForDiagnostics(server),
+    { cause: outcome.kind === 'error' ? outcome.err : undefined },
+  );
 }
 
 function baseEnv(dataDir: string, overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
