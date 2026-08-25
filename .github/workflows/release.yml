@@ -1,0 +1,329 @@
+# BUILD is automatic; PUBLISH never is.
+#
+# Pushing a `v*` tag builds a verified release candidate and uploads it as a GitHub Actions artifact.
+# That is ALL a tag push does — no job reachable from a `push` event has access to the R2 credentials,
+# and none can write a single byte to the release bucket. Publishing is a second, deliberate human
+# action: re-run this workflow via workflow_dispatch with ref = the tag itself, version = the same
+# version, and publish = true.
+#
+# Moving the `stable` pointer is a THIRD action, in a different workflow entirely
+# (promote-release.yml), which rebuilds nothing. See docs/RELEASE_PROCESS.md.
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version to build/publish (bare SemVer, e.g. 0.1.1 — no leading v).'
+        required: true
+        type: string
+      publish:
+        description: 'Publish the immutable release to Cloudflare R2. Requires running from refs/tags/v<version>.'
+        required: false
+        default: false
+        type: boolean
+
+# Least privilege: this workflow reads the repository and writes nothing back to GitHub. It creates no
+# GitHub Release, moves no tag, and pushes no commit, so `contents: write` would be an unused,
+# unjustified escalation. Release artifacts live in R2, reached with bucket-scoped R2 credentials that
+# only the `publish` job below can see.
+permissions:
+  contents: read
+
+env:
+  PNPM_VERSION: '11.22.0'
+
+jobs:
+  quality-gate:
+    name: Quality gate
+    # windows-latest deliberately: this product targets Windows 10/11 x64, and `pnpm check` is the
+    # same full gate (prettier, eslint, typecheck, vitest, builds, verify-repository.mjs, dependency
+    # audit) that .github/workflows/quality.yml already runs there. A release must never be built from
+    # a commit that would not pass the ordinary gate on the platform it ships for.
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+
+      - name: Enable pinned pnpm
+        shell: pwsh
+        run: |
+          corepack enable
+          corepack prepare pnpm@${{ env.PNPM_VERSION }} --activate
+
+      - name: Install dependencies
+        run: corepack pnpm install --frozen-lockfile
+
+      - name: Run quality gate
+        run: corepack pnpm check
+
+  resolve-metadata:
+    name: Resolve release metadata
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      release_dir: ${{ steps.resolve.outputs.release_dir }}
+      artifact_bundle: ${{ steps.resolve.outputs.artifact_bundle }}
+      windows_filename: ${{ steps.resolve.outputs.windows_filename }}
+      linux_filename: ${{ steps.resolve.outputs.linux_filename }}
+      installer_filename: ${{ steps.resolve.outputs.installer_filename }}
+      release_key_prefix: ${{ steps.resolve.outputs.release_key_prefix }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+
+      # Runs with no dependencies installed and no build: scripts/release/resolve-release-metadata.mjs
+      # uses only Node builtins on purpose, so the tag/version/publish-ref mismatch checks fail within
+      # seconds instead of after a 30-minute Electron build. This is also the step that refuses a
+      # publish attempt started from anything other than refs/tags/v<version> — loudly, rather than by
+      # letting the publish job's own `if:` silently skip.
+      - name: Resolve and validate release metadata
+        id: resolve
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REF: ${{ github.ref }}
+          RELEASE_INPUT_VERSION: ${{ inputs.version }}
+          RELEASE_INPUT_PUBLISH: ${{ inputs.publish }}
+        run: node scripts/release/resolve-release-metadata.mjs
+
+  windows-build:
+    name: Windows desktop installer
+    needs: [quality-gate, resolve-metadata]
+    runs-on: windows-latest
+    # Electron Forge/Squirrel packaging is the longest step in this pipeline and the one most likely to
+    # wedge (native rebuilds, code-signing prompts, antivirus scanning the output). 45 minutes is
+    # comfortably above a healthy run and still bounded, so a stuck build fails instead of occupying a
+    # runner indefinitely.
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+
+      - name: Enable pinned pnpm
+        shell: pwsh
+        run: |
+          corepack enable
+          corepack prepare pnpm@${{ env.PNPM_VERSION }} --activate
+
+      - name: Install dependencies
+        run: corepack pnpm install --frozen-lockfile
+
+      # Runs the real `pnpm --filter @disco-voador/desktop run make`, deterministically locates the
+      # genuine Forge/Squirrel Setup.exe (never a hardcoded filename), validates it, and copies it to
+      # dist-release/<version>/ChantivoSetup-<version>.exe. Exits non-zero with a specific message on
+      # no candidate / ambiguous candidates / zero bytes / a candidate outside the expected output tree.
+      - name: Build Windows installer
+        run: node scripts/release/build-windows-artifact.mjs
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-installer
+          path: ${{ needs.resolve-metadata.outputs.release_dir }}/${{ needs.resolve-metadata.outputs.windows_filename }}
+          if-no-files-found: error
+          retention-days: 14
+
+  linux-build:
+    name: Linux Dedicated Server tarball
+    needs: [quality-gate, resolve-metadata]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+
+      - name: Enable pinned pnpm
+        shell: bash
+        run: |
+          corepack enable
+          corepack prepare pnpm@${{ env.PNPM_VERSION }} --activate
+
+      - name: Install dependencies
+        run: corepack pnpm install --frozen-lockfile
+
+      # Proven in T15: reuses the exact `pnpm deploy --prod --config.inject-workspace-packages=true`
+      # pruning services/dedicated-server/Dockerfile's build stage uses, so the tarball and the Docker
+      # image's runtime contents come from the same real build step.
+      - name: Build Dedicated Server artifact
+        run: node scripts/release/build-dedicated-server-artifact.mjs
+
+      # Existence + non-zero size + `tar -tzf` readability + dist/cli.js present + the package.json
+      # INSIDE the archive agreeing with the release version + no arm64 claim anywhere. linux-x64 is
+      # the only architecture this project has actually built and run.
+      - name: Verify Dedicated Server artifact
+        run: node scripts/release/verify-linux-server-artifact.mjs "${{ needs.resolve-metadata.outputs.version }}"
+
+      - name: Upload Dedicated Server artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux-server
+          path: ${{ needs.resolve-metadata.outputs.release_dir }}/${{ needs.resolve-metadata.outputs.linux_filename }}
+          if-no-files-found: error
+          retention-days: 14
+
+  assemble:
+    name: Assemble release candidate
+    needs: [resolve-metadata, windows-build, linux-build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+
+      - name: Prepare a clean release directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "${{ needs.resolve-metadata.outputs.release_dir }}"
+          mkdir -p "${{ needs.resolve-metadata.outputs.release_dir }}"
+
+      - name: Download Windows installer
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: windows-installer
+          path: ${{ needs.resolve-metadata.outputs.release_dir }}
+
+      - name: Download Dedicated Server artifact
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: linux-server
+          path: ${{ needs.resolve-metadata.outputs.release_dir }}
+
+      # install-chantivo.sh is the one release artifact that is NOT built: it is the repository's own
+      # bootstrap installer, copied verbatim out of this checkout. Promotion later copies these exact
+      # bytes to the bucket's canonical installer location, so it must be the tagged commit's version,
+      # never something regenerated afterwards.
+      - name: Add bootstrap installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp -- "infrastructure/install/${{ needs.resolve-metadata.outputs.installer_filename }}" \
+                "${{ needs.resolve-metadata.outputs.release_dir }}/${{ needs.resolve-metadata.outputs.installer_filename }}"
+
+      - name: Generate SHA256SUMS and release-manifest.json
+        run: node scripts/release/build-manifest.mjs "${{ needs.resolve-metadata.outputs.version }}"
+
+      # An unverified checksum file must never exist as though it were trustworthy: verify it with the
+      # same standard tool operators will use, immediately after generating it.
+      - name: Verify SHA256SUMS with sha256sum -c
+        shell: bash
+        working-directory: ${{ needs.resolve-metadata.outputs.release_dir }}
+        run: |
+          set -euo pipefail
+          sha256sum -c SHA256SUMS
+
+      # The structural gate for the T15 bug where Forge genuinely produced a Setup.exe, the build
+      # reported success, and the file was simply absent from dist-release/<version>/ because nothing
+      # was looking. Exactly five files, each non-empty, manifest and checksums consistent with the real
+      # bytes, no extra file, no near-miss filename, no arm64 claim.
+      - name: Verify release candidate completeness
+        run: node scripts/release/verify-release-directory.mjs "${{ needs.resolve-metadata.outputs.version }}"
+
+      # Uploaded on EVERY tag push, so a candidate can always be downloaded and inspected before anyone
+      # decides whether it deserves to be published.
+      - name: Upload complete release candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ needs.resolve-metadata.outputs.artifact_bundle }}
+          path: ${{ needs.resolve-metadata.outputs.release_dir }}
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    name: Publish immutable release to R2
+    needs: [resolve-metadata, assemble]
+    # THE gate. All three conditions must hold:
+    #   1. workflow_dispatch — a tag push can never reach this job, so tagging never writes to R2;
+    #   2. publish == true   — the input defaults to false, so even a dispatch is build-only unless a
+    #                          human explicitly asks for publication;
+    #   3. the workflow's own ref IS refs/tags/v<version> — a branch commit that merely happens to
+    #      carry the right package.json version is not good enough; the published bytes must be
+    #      provably the tagged commit's.
+    # Condition 3 is ALSO enforced in resolve-metadata, which hard-fails when publish was requested
+    # from a non-tag ref. That job runs first, so a mistaken publish attempt produces a red run with a
+    # specific message rather than a green run that quietly skipped this job.
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.publish == true &&
+      github.ref == format('refs/tags/v{0}', inputs.version)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # The ONLY job in this workflow with the production environment, and therefore the only one that
+    # can see the R2 credentials. quality-gate, resolve-metadata, windows-build, linux-build, and
+    # assemble all run without them by construction. The environment is operator-configured and
+    # restricted to branch `main` and tag pattern `v*`.
+    environment: production
+    # Two publish runs for the same version must never race each other into a half-written release.
+    # Keyed per version so unrelated candidate builds for other versions/branches are never serialized.
+    concurrency:
+      group: release-publish-${{ inputs.version || github.ref_name }}
+      cancel-in-progress: false
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+
+      - name: Download release candidate
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: ${{ needs.resolve-metadata.outputs.artifact_bundle }}
+          path: ${{ needs.resolve-metadata.outputs.release_dir }}
+
+      # Immutability is enforced here, not by bucket policy: the publisher asks R2 what it already
+      # holds for releases/<version>/ and then
+      #   - absent               -> uploads artifacts first, release-manifest.json LAST (the
+      #                             completeness marker every consumer checks for);
+      #   - present + identical  -> reports an idempotent no-op and uploads nothing;
+      #   - present + different  -> FAILS HARD without overwriting a single byte;
+      #   - partially present    -> reports the partial state honestly and re-uploads only what is
+      #                             missing, still refusing to overwrite anything that conflicts.
+      # releases/** is written with a long-lived immutable Cache-Control. This step never touches
+      # channels/stable.json or installer/install-chantivo.sh — publishing a version does not decide
+      # what new installs get.
+      - name: Publish release to R2
+        env:
+          RELEASE_VERSION: ${{ needs.resolve-metadata.outputs.version }}
+          RELEASE_DIR: ${{ needs.resolve-metadata.outputs.release_dir }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+          CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+          CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
+        run: node scripts/release/publish-release-to-r2.mjs

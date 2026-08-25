@@ -84,9 +84,20 @@ operator-provided, not Chantivo-verified.
   the native releases/current symlink scheme, and the same-file concurrent `AuthorizationStore` access
   pattern — both are real, if narrow, additions to the trusted surface, each with dedicated test
   coverage precisely because they're new, not because existing coverage happened to already prove them.
-- No public release hosting exists yet — `install-chantivo.sh`'s `--release-source`/
+- ~~No public release hosting exists yet~~ — `install-chantivo.sh`'s `--release-source`/
   `CHANTIVO_RELEASE_SOURCE` abstraction means adding one later is a documentation and default-value
-  change, not a script rewrite.
+  change, not a script rewrite. **Amended by T15.1**, which proved that prediction correct: the
+  release pipeline (`.github/workflows/release.yml`, `promote-release.yml`) now builds, publishes to
+  Cloudflare R2, and promotes a stable channel, and the installer's default release source became
+  `https://downloads.chantivo.app` with `channels/stable.json`/`--version` resolution layered on top
+  of the same `--release-source` abstraction, which is unchanged and still fully supported for
+  mirrors, air-gapped installs, and fixtures. T15.1 also closed two honesty gaps this ADR's manifest
+  design left open: `release-manifest.json` gained an explicit versioned schema with truthful
+  platform/architecture fields (T15's filename-regex classifier reported `platform: "unknown"` for
+  the Windows installer, whose canonical name carries no platform token) and lost its wall-clock
+  `releasedAt` field, so the manifest is a deterministic function of the release's own bytes — which
+  is what makes "is this already-published version identical to what I would upload?" a decidable
+  question rather than a guess. See [`docs/RELEASE_PROCESS.md`](../RELEASE_PROCESS.md).
 - TLS/certificate issuance remains a manual step for every deployment mode; this is an accepted,
   deliberate scope boundary, not an oversight.
 

@@ -115,27 +115,117 @@ join_release_uri() {
   esac
 }
 
+# try_fetch_uri <source_uri> <dest_path> [quiet] — the non-fatal core of fetch_uri below. Returns 0 on
+# success and non-zero on any failure, without exiting, so a caller can legitimately PROBE for an
+# optional object (T15.1's channels/stable.json lookup) instead of treating its absence as fatal.
+# `quiet` (any non-empty value) suppresses curl's own stderr, which matters only for that probe: a
+# 404 on an optional file must not print an alarming error an operator would reasonably read as a
+# real failure.
+#
+# Uses `if ...; then ...; else return 1; fi` rather than `cmd || return 1` throughout: under the
+# callers' `set -e`, a bare `||` list that ends a function makes the function's status reflect the
+# failed side, which is the exact class of surprise install-chantivo.sh's cleanup() already documents.
+try_fetch_uri() {
+  local source_uri="$1" dest_path="$2" quiet="${3:-}"
+  case "$source_uri" in
+    http://* | https://*)
+      require_cmd curl
+      if [ -n "$quiet" ]; then
+        if ! curl --fail --silent --location --output "$dest_path" -- "$source_uri" 2>/dev/null; then
+          return 1
+        fi
+      else
+        if ! curl --fail --silent --show-error --location --output "$dest_path" -- "$source_uri"; then
+          return 1
+        fi
+      fi
+      ;;
+    file://*)
+      local local_path="${source_uri#file://}"
+      if [ ! -f "$local_path" ]; then
+        return 1
+      fi
+      if ! cp -- "$local_path" "$dest_path"; then
+        return 1
+      fi
+      ;;
+    *)
+      if [ ! -f "$source_uri" ]; then
+        return 1
+      fi
+      if ! cp -- "$source_uri" "$dest_path"; then
+        return 1
+      fi
+      ;;
+  esac
+  return 0
+}
+
 # fetch_uri <source_uri> <dest_path> — supports http(s):// (via curl), file://<path>, and a bare local
 # filesystem path. Always fails loudly (via die) rather than leaving a partial/missing destination
 # file silently unnoticed.
 fetch_uri() {
   local source_uri="$1" dest_path="$2"
+  if try_fetch_uri "$source_uri" "$dest_path"; then
+    return 0
+  fi
   case "$source_uri" in
-    http://* | https://*)
-      require_cmd curl
-      curl --fail --silent --show-error --location --output "$dest_path" -- "$source_uri" \
-        || die "Failed to download: $source_uri"
-      ;;
-    file://*)
-      local local_path="${source_uri#file://}"
-      [ -f "$local_path" ] || die "Release source file not found: $local_path"
-      cp -- "$local_path" "$dest_path"
-      ;;
-    *)
-      [ -f "$source_uri" ] || die "Release source file not found: $source_uri"
-      cp -- "$source_uri" "$dest_path"
-      ;;
+    http://* | https://*) die "Failed to download: $source_uri" ;;
+    file://*) die "Release source file not found: ${source_uri#file://}" ;;
+    *) die "Release source file not found: $source_uri" ;;
   esac
+}
+
+# validate_release_version <value> — the same deliberately plain MAJOR.MINOR.PATCH rule
+# scripts/bump-version.mjs and scripts/release/resolve-release-metadata.mjs enforce. No pre-release or
+# build-metadata suffixes anywhere in this project's release surface (ADR 0025), and — importantly for
+# a value that becomes part of a URL path and a filesystem path — no leading `v`, no slashes, no dots
+# beyond the two separators, so `--version ../../etc` can never traverse anywhere.
+validate_release_version() {
+  local value="$1"
+  case "$value" in
+    *[!0-9.]*) return 1 ;;
+  esac
+  printf '%s' "$value" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'
+}
+
+# resolve_stable_channel_version <release_source>
+#
+# Probes <release_source>/channels/stable.json — the published pointer naming the version a NEW
+# install should get — and prints the version it names. Returns non-zero (printing nothing) when the
+# channel document simply is not there, which is the normal, expected case for a local fixture
+# directory or a mirror that only carries one release. A channel document that IS there but is
+# malformed is fatal, via read_manifest_version: a corrupted pointer at a real distribution point must
+# be loud, never silently ignored in favour of a guess.
+#
+# The version it returns is not trusted as content: it only selects which directory to download from,
+# and everything downloaded is still verified against that directory's own SHA256SUMS.
+resolve_stable_channel_version() {
+  local release_source="$1"
+  local probe_dir
+  probe_dir="$(mktemp -d "${TMPDIR:-/tmp}/chantivo-channel.XXXXXX")" || return 1
+  CLEANUP_PATHS+=("$probe_dir")
+
+  local channel_uri="${probe_dir}/stable.json"
+  if ! try_fetch_uri "$(join_release_uri "$(join_release_uri "$release_source" 'channels')" 'stable.json')" "$channel_uri" quiet; then
+    return 1
+  fi
+  [ -s "$channel_uri" ] || die "channels/stable.json at $release_source is empty — refusing to guess which version to install."
+
+  local version
+  version="$(read_manifest_version "$channel_uri")"
+  validate_release_version "$version" \
+    || die "channels/stable.json at $release_source names version \"$version\", which is not a plain MAJOR.MINOR.PATCH value."
+  printf '%s' "$version"
+}
+
+# release_dir_uri_for_version <release_source> <version> — the immutable release directory for one
+# version under a distribution base. Mirrors scripts/release/r2-publication-plan.mjs's
+# `releases/<version>/` object layout exactly; the two are held together by
+# tests/repository/release-object-layout.test.mjs.
+release_dir_uri_for_version() {
+  local release_source="$1" version="$2"
+  join_release_uri "$(join_release_uri "$release_source" 'releases')" "$version"
 }
 
 # read_manifest_version <json_file> — extracts the top-level "version" string field.
@@ -159,10 +249,10 @@ read_manifest_version() {
   printf '%s' "$version"
 }
 
-# download_and_verify_release <release_source>
+# download_and_verify_release <release_dir_uri> [expected_version]
 #
 # Downloads release-manifest.json, SHA256SUMS, and the one platform-specific tarball this host needs
-# from <release_source> into a FRESH mktemp -d directory (never a predictable/fixed path — a
+# from <release_dir_uri> into a FRESH mktemp -d directory (never a predictable/fixed path — a
 # predictable download directory would let another local user race a symlink into place between
 # download and verification), verifies the tarball's SHA-256 against SHA256SUMS, and hard-fails
 # (via die) on: a missing/empty release source, a missing or unreadable SHA256SUMS, SHA256SUMS not
@@ -175,10 +265,17 @@ read_manifest_version() {
 # catch, while adding real complexity (parsing curl's response headers, which differ in availability
 # and format between plain HTTP and a local file:// source that has no headers at all).
 #
+# <expected_version>, when given, is the version the CALLER asked for (via install-chantivo.sh's
+# --version, or resolved from channels/stable.json). The manifest actually found at that location must
+# declare exactly that version. This closes the one gap a "point at a directory and trust it" model
+# would otherwise leave: asking for 0.1.1 and silently getting 0.1.0 because the URL was stale, a
+# mirror was behind, or a channel pointer and a directory disagreed. Chantivo never substitutes a
+# different version than the one requested — it stops and says so.
+#
 # Sets (does not return via echo): RELEASE_VERSION, RELEASE_ARCH, RELEASE_ARTIFACT_NAME,
 # RELEASE_DOWNLOAD_DIR, RELEASE_TARBALL_PATH. Appends the download directory to CLEANUP_PATHS.
 download_and_verify_release() {
-  local release_source="$1"
+  local release_source="$1" expected_version="${2:-}"
   [ -n "$release_source" ] \
     || die "No release source configured. Pass --release-source explicitly (a URL or a local path/file:// for testing)."
 
@@ -200,6 +297,9 @@ download_and_verify_release() {
 
   local version arch artifact_name
   version="$(read_manifest_version "${download_dir}/release-manifest.json")"
+  if [ -n "$expected_version" ] && [ "$version" != "$expected_version" ]; then
+    die "Version mismatch: ${release_source} serves Chantivo ${version}, but ${expected_version} was requested. Refusing to install a different version than the one you asked for."
+  fi
   arch="$(detect_arch)"
   artifact_name="chantivo-dedicated-server-${version}-linux-${arch}.tar.gz"
 

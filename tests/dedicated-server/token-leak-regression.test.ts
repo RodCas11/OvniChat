@@ -239,8 +239,11 @@ describe('T15 token-leak regression — real spawned processes, real stdio captu
       // Windows-observed flake: a just-killed child process can hold its data-directory handle open
       // for a brief moment after `exit` fires, racing a bare `rmSync` with `EPERM`. `maxRetries`/
       // `retryDelay` are `fs.rmSync`'s own documented mechanism for exactly this class of transient
-      // Windows file-lock error — no custom retry loop needed.
-      rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      // Windows file-lock error — no custom retry loop needed. A first attempt at 5x100ms still
+      // flaked under real load (multiple vitest worker processes competing for disk/AV scan time),
+      // so this widens the total retry window to ~3s (10x300ms) rather than reaching for a custom
+      // backoff scheme on top of the platform's own documented retry mechanism.
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
     }
   });
 

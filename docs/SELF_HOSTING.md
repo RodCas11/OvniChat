@@ -16,22 +16,38 @@ Prerequisites: a fresh Ubuntu 24.04 LTS host (a small VPS or a home server; 22.0
 install Node/pnpm, or compile anything — the installer downloads a prebuilt, checksummed release
 artifact and does the rest.
 
-1. **No public release hosting exists yet** — there is no real URL to `curl` this from today. Until
-   one does, get the script directly from the repository (`infrastructure/install/install-chantivo.sh`)
-   and pass `--release-source` pointing at wherever you've placed a built release (a local path,
-   an internal `https://` mirror, or a `file://` URL — see
-   [`infrastructure/install/README.md`](../infrastructure/install/README.md) for how to build one with
-   `scripts/release/build-dedicated-server-artifact.mjs`). Once real hosting exists, this section
-   becomes the genuine `curl -fsSL <url>/install-chantivo.sh -o install-chantivo.sh` one-liner — the
-   installer's own `--release-source`/`CHANTIVO_RELEASE_SOURCE` mechanism is what makes that swap a
-   documentation update, not a script change. Whichever source you use, download-inspect-then-run is
-   the safe habit — never pipe an installer script straight into a shell:
+1. **Get the installer, read it, then run it.** The installer defaults to Chantivo's public
+   distribution point, `https://downloads.chantivo.app`, where it looks up `channels/stable.json` and
+   downloads that version's checksummed artifacts. Download-inspect-then-run is the safe habit — never
+   pipe an installer script straight into a shell:
+
    ```sh
-   cp infrastructure/install/install-chantivo.sh .   # or curl -fsSL <url>/... once hosting exists
+   curl -fsSL https://downloads.chantivo.app/installer/install-chantivo.sh -o install-chantivo.sh
    less install-chantivo.sh
    chmod +x install-chantivo.sh
+   sudo ./install-chantivo.sh
+   ```
+
+   Add `--version 0.1.1` to pin an exact published release instead of following the stable channel.
+
+   **Status, honestly:** the release pipeline that publishes to that host exists
+   ([`docs/RELEASE_PROCESS.md`](RELEASE_PROCESS.md)), but until a release has actually been published
+   _and_ promoted there, the default will fail with a clear "could not read `channels/stable.json`"
+   message rather than guessing a version. Until then — and always, for mirrors, air-gapped installs,
+   and development — get the script from the repository
+   (`infrastructure/install/install-chantivo.sh`) and pass `--release-source` pointing at a built
+   release directory (a local path, an internal `https://` mirror, or a `file://` URL — see
+   [`infrastructure/install/README.md`](../infrastructure/install/README.md) for how to build one with
+   `scripts/release/build-dedicated-server-artifact.mjs`):
+
+   ```sh
    sudo ./install-chantivo.sh --release-source <path-or-url-to-a-built-release>
    ```
+
+   `downloads.chantivo.app` is distribution only — it serves release files and nothing else. It is not
+   a signaling server, not a relay, not a directory of deployments, and your installed server never
+   contacts it at runtime.
+
 2. Choose **Native Linux** or **Docker Compose** when prompted (or pass `--mode native`/`--mode
 docker` for a non-interactive run — required when there's no TTY, e.g. scripted VPS provisioning).
    The installer asks only what it can't safely default: your **Public Server Endpoint** — the one

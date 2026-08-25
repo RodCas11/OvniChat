@@ -49,7 +49,6 @@ MODE=""
 HOSTNAME_ARG=""
 TURN_URL_ARG=""
 ASSUME_YES=0
-RELEASE_SOURCE="${CHANTIVO_RELEASE_SOURCE:-}"
 CONFIGURE_FIREWALL=0
 FORCE_REINSTALL=0
 I_UNDERSTAND_DATA_RISK=0
@@ -59,6 +58,44 @@ INSTALL_TLS=0
 TLS_DECISION_MADE=0
 TLS_ONLY=0
 SKIP_DNS_CHECK=0
+
+# --- Where release bytes come from -----------------------------------------------------------------
+#
+# DEFAULT_RELEASE_SOURCE is Chantivo's public distribution point, and it is DISTRIBUTION ONLY: it
+# serves release files over HTTPS and does nothing else. It is not a signaling server, not a relay,
+# not a registry of deployments, and no installed Chantivo server ever contacts it at runtime. A
+# self-hosted deployment that installs from a local mirror never touches it at all. Chantivo has no
+# central service (ADR 0010) and this default does not create one — it makes downloading the software
+# work without a checkout, nothing more.
+#
+# Never a GitHub raw URL (not a release channel, no stable content addressing, rate-limited), and
+# never Chantivo's own beta Dedicated Server host (that is one operator's deployment, not a
+# distribution point — scripts/verify-infrastructure.mjs enforces that repository-wide).
+#
+# The override path is fully preserved and is a first-class supported mode, not a debug hatch: this
+# repository's own fixture testing, air-gapped installs, corporate mirrors, and development builds all
+# depend on pointing --release-source / $CHANTIVO_RELEASE_SOURCE somewhere else. Everything downloaded
+# is verified against that source's own SHA256SUMS regardless of where it came from.
+DEFAULT_RELEASE_SOURCE="https://downloads.chantivo.app"
+
+# RELEASE_SOURCE          the distribution base (or, for an explicit override with no channel
+#                         document, a release directory directly — see resolve_release_location).
+# RELEASE_SOURCE_EXPLICIT 1 when the operator chose it via --release-source or
+#                         $CHANTIVO_RELEASE_SOURCE; 0 when it is the built-in default.
+# RELEASE_VERSION_ARG     an explicit --version, or empty to follow the stable channel.
+# RELEASE_DIR_URI         the resolved directory the release files are actually fetched from.
+# RELEASE_SOURCE_NOTE     a short, honest description of HOW that directory was resolved, printed in
+#                         the confirmation summary so an operator can see and abort on it.
+if [ -n "${CHANTIVO_RELEASE_SOURCE:-}" ]; then
+  RELEASE_SOURCE="$CHANTIVO_RELEASE_SOURCE"
+  RELEASE_SOURCE_EXPLICIT=1
+else
+  RELEASE_SOURCE="$DEFAULT_RELEASE_SOURCE"
+  RELEASE_SOURCE_EXPLICIT=0
+fi
+RELEASE_VERSION_ARG=""
+RELEASE_DIR_URI=""
+RELEASE_SOURCE_NOTE=""
 
 # --- Public Server Endpoint ----------------------------------------------------------------------
 #
@@ -121,13 +158,29 @@ Options:
                                      only address — remote clients could never reach it.
   --yes                             Skip the confirmation prompt. Required in place of that prompt
                                      when running non-interactively.
-  --release-source <url-or-path>    Where to download the release tarball/SHA256SUMS/manifest from
-                                     (native mode only — docker mode builds from this checkout's own
-                                     Dockerfile and does not use a release tarball at all). An
-                                     http(s):// URL, a file://<path> URI, or a bare local directory
-                                     path. Overridable via the CHANTIVO_RELEASE_SOURCE environment
-                                     variable. No default is provided (no public release hosting exists
-                                     yet) — native mode fails with a clear message if neither is set.
+  --release-source <url-or-path>    Distribution base to download the release from (native mode only —
+                                     docker mode builds from this checkout's own Dockerfile and does
+                                     not use a release tarball at all). An http(s):// URL, a
+                                     file://<path> URI, or a bare local directory path. Also settable
+                                     via the CHANTIVO_RELEASE_SOURCE environment variable.
+                                     Default: https://downloads.chantivo.app — Chantivo's public
+                                     download host, which serves release files and nothing else (no
+                                     signaling, no relay, no telemetry; an installed server never
+                                     contacts it). Override it freely for mirrors, air-gapped installs,
+                                     or local fixtures; downloads are verified against the source's own
+                                     SHA256SUMS either way.
+                                     A base is expected to contain channels/stable.json and
+                                     releases/<version>/. An explicitly-overridden source that has no
+                                     channels/stable.json is instead used AS the release directory
+                                     (the local-fixture layout), and the script says so before
+                                     installing.
+  --version <version>               Install this exact release (plain MAJOR.MINOR.PATCH, e.g. 0.1.1),
+                                     resolved to <release-source>/releases/<version>/. Without it, the
+                                     version named by <release-source>/channels/stable.json is used —
+                                     the normal public-install path. Either way the downloaded
+                                     release-manifest.json must declare the version that was asked
+                                     for; a source serving something else is a hard error, never a
+                                     silent substitution.
   --with-turn                       Install/configure Coturn (TURN relay) alongside the server.
   --no-turn                         Do not install Coturn. (Default when non-interactive and neither
                                      flag is given.)
@@ -157,8 +210,16 @@ Options:
   -h, --help                        Show this help and exit.
 
 Examples:
+  # Normal public install: follows channels/stable.json on the default distribution base.
+  ./install-chantivo.sh --mode native --hostname voice.example.com --yes
+
+  # Pin an exact published version.
+  ./install-chantivo.sh --mode native --version 0.1.1 --hostname voice.example.com --yes
+
+  # Local fixture / mirror: an explicit source with no channel document, used as the release
+  # directory directly.
   ./install-chantivo.sh --mode native \
-      --release-source file:///opt/chantivo-dist/dist-release/0.1.0 --hostname voice.example.com --yes
+      --release-source file:///opt/chantivo-dist/dist-release/0.1.1 --hostname voice.example.com --yes
 
   ./install-chantivo.sh --mode docker --hostname voice.example.com --with-turn --configure-firewall
 
@@ -202,10 +263,20 @@ parse_args() {
         ;;
       --release-source)
         RELEASE_SOURCE="${2:-}"
+        RELEASE_SOURCE_EXPLICIT=1
         shift 2
         ;;
       --release-source=*)
         RELEASE_SOURCE="${1#*=}"
+        RELEASE_SOURCE_EXPLICIT=1
+        shift
+        ;;
+      --version)
+        RELEASE_VERSION_ARG="${2:-}"
+        shift 2
+        ;;
+      --version=*)
+        RELEASE_VERSION_ARG="${1#*=}"
         shift
         ;;
       --with-turn)
@@ -336,6 +407,54 @@ resolve_tls_decision() {
   fi
 }
 
+# resolve_release_location: turns --release-source/--version/$CHANTIVO_RELEASE_SOURCE into the one
+# concrete directory URI the release files are fetched from, and records HOW it got there so the
+# confirmation summary can state it plainly. Native mode only — docker mode builds from this
+# checkout's Dockerfile and never downloads a release artifact.
+#
+# Resolution order, deliberately explicit rather than clever:
+#
+#   1. --version <v>                  -> <source>/releases/<v>/. An exact, operator-stated request.
+#   2. <source>/channels/stable.json  -> <source>/releases/<that version>/. The normal public path.
+#   3. An EXPLICIT --release-source with no channel document -> the source itself is the release
+#      directory. This is the local-fixture/mirror layout (a bare dist-release/<version>/ directory)
+#      that this repository's own installer testing depends on, and it is announced, never assumed
+#      silently.
+#   4. The BUILT-IN default with no channel document -> hard failure. If Chantivo's own distribution
+#      point cannot say which version is stable, guessing (or falling back to treating the bucket root
+#      as a release directory) would be worse than stopping: pass --version explicitly.
+#
+# Whatever is resolved, download_and_verify_release still verifies every downloaded byte against that
+# directory's own SHA256SUMS, and refuses a manifest whose version is not the one requested.
+resolve_release_location() {
+  [ -n "$RELEASE_SOURCE" ] \
+    || die "Empty release source. Pass --release-source <url-or-path>, or omit it to use the default distribution base."
+
+  if [ -n "$RELEASE_VERSION_ARG" ]; then
+    validate_release_version "$RELEASE_VERSION_ARG" \
+      || die "Invalid --version \"$RELEASE_VERSION_ARG\": expected a plain MAJOR.MINOR.PATCH value such as 0.1.1 (no leading 'v', no suffix)."
+    RELEASE_DIR_URI="$(release_dir_uri_for_version "$RELEASE_SOURCE" "$RELEASE_VERSION_ARG")"
+    RELEASE_SOURCE_NOTE="requested version ${RELEASE_VERSION_ARG}"
+    return 0
+  fi
+
+  local channel_version=""
+  if channel_version="$(resolve_stable_channel_version "$RELEASE_SOURCE")" && [ -n "$channel_version" ]; then
+    RELEASE_VERSION_ARG="$channel_version"
+    RELEASE_DIR_URI="$(release_dir_uri_for_version "$RELEASE_SOURCE" "$channel_version")"
+    RELEASE_SOURCE_NOTE="stable channel -> ${channel_version}"
+    return 0
+  fi
+
+  if [ "$RELEASE_SOURCE_EXPLICIT" -eq 1 ]; then
+    RELEASE_DIR_URI="$RELEASE_SOURCE"
+    RELEASE_SOURCE_NOTE="explicit source used directly as the release directory (no channels/stable.json there)"
+    return 0
+  fi
+
+  die "Could not read ${RELEASE_SOURCE}/channels/stable.json, so there is no way to know which version is current. Pass --version <version> to install an exact release, or --release-source to install from a mirror or a local release directory. This script never guesses a version."
+}
+
 confirm_and_summarize() {
   echo
   echo "About to install Chantivo Dedicated Server:"
@@ -353,7 +472,8 @@ confirm_and_summarize() {
   fi
   echo "  Configure ufw:   $([ "$CONFIGURE_FIREWALL" -eq 1 ] && echo yes || echo no)"
   if [ "$MODE" = native ]; then
-    echo "  Release source:  ${RELEASE_SOURCE:-<none — will fail>}"
+    echo "  Release source:  ${RELEASE_SOURCE}"
+    echo "  Release dir:     ${RELEASE_DIR_URI:-<unresolved — will fail>} (${RELEASE_SOURCE_NOTE:-unresolved})"
   fi
   echo
 
@@ -657,7 +777,11 @@ harden_native_release_dir() {
 }
 
 fetch_and_lay_out_native_release() {
-  download_and_verify_release "$RELEASE_SOURCE"
+  # RELEASE_VERSION_ARG carries either the operator's explicit --version or the version the stable
+  # channel named; either way it is the version this install ASKED for, and the manifest at
+  # RELEASE_DIR_URI must agree with it. Empty only in the explicit-source-used-directly case, where
+  # there is no independent expectation to check against.
+  download_and_verify_release "$RELEASE_DIR_URI" "$RELEASE_VERSION_ARG"
 
   local extract_staging
   extract_staging="$(mktemp -d "${TMPDIR:-/tmp}/chantivo-install-extract.XXXXXX")"
@@ -1298,8 +1422,8 @@ native_install() {
   check_os_ubuntu
   preflight_native_or_exit
 
-  [ -n "$RELEASE_SOURCE" ] \
-    || die "No release source configured for --mode native. Pass --release-source explicitly (a URL or a local path/file:// for testing)."
+  [ -n "$RELEASE_DIR_URI" ] \
+    || die "No release directory resolved for --mode native (resolve_release_location did not run)."
 
   # VPS-tested real-fresh-host bug (T15): fetch_and_lay_out_native_release's `mv` into
   # /opt/chantivo/releases/<version> requires that directory to already exist —
@@ -1667,6 +1791,15 @@ main() {
   resolve_turn_url
 
   resolve_tls_decision
+
+  # Resolved BEFORE the confirmation prompt, for the same reason the endpoint/TURN values are: the
+  # operator must be able to see — and abort on — the exact version and exact location this install is
+  # about to fetch, rather than discovering it afterwards.
+  if [ "$MODE" = native ]; then
+    resolve_release_location
+  elif [ -n "$RELEASE_VERSION_ARG" ]; then
+    die "--version is only meaningful with --mode native. Docker mode builds the server image from this checkout's own Dockerfile and never downloads a release artifact."
+  fi
 
   confirm_and_summarize
 

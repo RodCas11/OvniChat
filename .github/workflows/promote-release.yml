@@ -1,0 +1,85 @@
+# PROMOTE: move the `stable` pointer to an ALREADY-PUBLISHED immutable release.
+#
+# This workflow builds NOTHING. There is no Electron build, no Forge make, no Dedicated Server build,
+# no `pnpm build`, and no artifact generation of any kind in it — deliberately, because the whole
+# value of separating promotion from publication is that the bytes an operator downloads after a
+# promotion are provably the exact bytes that were verified and published earlier from the tagged
+# commit. It runs only small, dependency-free repository helper scripts that validate metadata and
+# copy already-published bytes.
+#
+# See docs/RELEASE_PROCESS.md for the full three-phase flow.
+name: Promote release to stable
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Already-published version to promote to stable (bare SemVer, e.g. 0.1.1).'
+        required: true
+        type: string
+      public_base_url:
+        description: 'Public distribution base URL written into channels/stable.json.'
+        required: false
+        default: 'https://downloads.chantivo.app'
+        type: string
+
+# Reads the repository, writes nothing back to GitHub. No release is created, no tag moved, no commit
+# pushed — the only thing this workflow writes lives in the R2 bucket.
+permissions:
+  contents: read
+
+# Global, not per-version: two promotions must never race, regardless of which versions they name.
+# The stable pointer is a single shared piece of state and there is exactly one of it.
+concurrency:
+  group: stable-promotion
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    name: Promote to stable
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Operator-configured environment (restricted to branch `main` and tag pattern `v*`), carrying the
+    # bucket-scoped R2 credentials. This job needs them because promotion writes the two mutable
+    # pointer objects; nothing else in this repository's workflows has access to them except
+    # release.yml's `publish` job.
+    environment: production
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+
+      # Cheap, dependency-free SemVer validation using the same canonical resolver the release workflow
+      # uses, so `0.1.1`, `v0.1.1`, and `latest` cannot mean three different things in three places.
+      # Fails before any credential is used.
+      - name: Validate requested version
+        env:
+          PROMOTE_VERSION: ${{ inputs.version }}
+        run: node scripts/release/validate-promotion-input.mjs
+
+      # Fetches releases/<version>/release-manifest.json and SHA256SUMS read-only, verifies the release
+      # is complete and internally consistent (all three artifacts declared, declared checksums agreeing
+      # with SHA256SUMS, no arm64 claim, truthful platform/architecture fields), verifies the published
+      # install-chantivo.sh against the manifest, and only then writes — in this order —
+      #   1. installer/install-chantivo.sh  (the exact, byte-identical published bytes; never regenerated)
+      #   2. channels/stable.json           (the pointer)
+      # so a client never sees a stable pointer whose canonical installer is not yet consistent with it.
+      # Both pointer objects are written with a no-cache policy. Reruns are idempotent: an object that
+      # already holds these exact bytes is left untouched. Any inconsistency fails hard with no partial
+      # promotion.
+      - name: Promote to stable
+        env:
+          PROMOTE_VERSION: ${{ inputs.version }}
+          PUBLIC_BASE_URL: ${{ inputs.public_base_url }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+          CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+          CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
+        run: node scripts/release/promote-stable.mjs

@@ -177,13 +177,23 @@ Build a real local release with this repo's own tooling, then point the installe
 
 ```sh
 node scripts/release/build-dedicated-server-artifact.mjs
-node scripts/release/build-manifest.mjs
-# produces dist-release/<version>/{chantivo-dedicated-server-<version>-linux-<arch>.tar.gz,
+# build-manifest.mjs enforces a COMPLETE release (Windows installer + Linux tarball +
+# install-chantivo.sh) by default. --allow-partial is for exactly this Linux-only local fixture; a
+# partial manifest can never be published, since verify-release-directory.mjs and the promote
+# workflow both independently require the full artifact set.
+node scripts/release/build-manifest.mjs --allow-partial
+# produces dist-release/<version>/{chantivo-dedicated-server-<version>-linux-x64.tar.gz,
 #                                   release-manifest.json, SHA256SUMS}
 
 ./infrastructure/install/install-chantivo.sh --mode native \
   --release-source "file://$(pwd)/dist-release/<version>" --yes
 ```
+
+`--release-source` here is an explicit override that points DIRECTLY at a release directory, and it
+stays fully supported: when an explicitly-given source has no `channels/stable.json`, the installer
+uses it as the release directory and says so in its confirmation summary. Without an override, the
+installer follows `https://downloads.chantivo.app`'s `channels/stable.json` (or `--version <version>`)
+— see [`docs/RELEASE_PROCESS.md`](../../docs/RELEASE_PROCESS.md).
 
 The download/checksum-verify/extract pipeline itself (`lib/fetch-verify.sh`'s
 `download_and_verify_release` / `extract_release_tarball`) can be exercised in complete isolation, with

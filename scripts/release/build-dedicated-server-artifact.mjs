@@ -24,10 +24,30 @@ async function readVersion() {
   return JSON.parse(content).version;
 }
 
+/**
+ * T15.1 — the artifact filename embeds a platform/architecture pair, and that pair is a claim every
+ * operator's installer resolves a download URL from. `process.arch` is the build machine's
+ * architecture, so on an arm64 runner this function would happily name a `linux-arm64` artifact that
+ * has never been built or run on real arm64 hardware, that no `release-manifest.json` in this project
+ * declares, and that `detect_arch()` in `infrastructure/install/lib/fetch-verify.sh` deliberately
+ * refuses to download. Refuse it here too, at the source, so the failure names the real cause instead
+ * of surfacing later as a confusing "expected file not found".
+ *
+ * linux-x64 is the only architecture Chantivo has actually built and verified. Adding arm64 means
+ * building it, running it on real arm64 hardware, and then relaxing this check and `detect_arch()`
+ * together — not relaxing this one alone.
+ */
+const SUPPORTED_TARGETS = Object.freeze([{ platform: 'linux', arch: 'x64' }]);
+
 export async function buildDedicatedServerArtifact({
   platform = process.platform === 'win32' ? 'linux' : process.platform,
   arch = process.arch,
 } = {}) {
+  if (!SUPPORTED_TARGETS.some((target) => target.platform === platform && target.arch === arch)) {
+    throw new Error(
+      `Refusing to build a ${platform}-${arch} Dedicated Server artifact: Chantivo ships ${SUPPORTED_TARGETS.map((target) => `${target.platform}-${target.arch}`).join(', ')} only. No other architecture has been built and run on real hardware for this project, and naming an artifact for one would advertise support that does not exist.`,
+    );
+  }
   const version = await readVersion();
   const stagingRoot = await mkdtemp(path.join(tmpdir(), 'chantivo-release-'));
   const deployDir = path.join(stagingRoot, 'chantivo-dedicated-server');

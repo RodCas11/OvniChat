@@ -1,6 +1,6 @@
 {
   "name": "disco-voador",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Engineering scaffold for a self-hosted Windows desktop communication application.",
   "license": "UNLICENSED",
@@ -42,6 +42,7 @@
     "@vitest/coverage-v8": "4.1.10",
     "eslint": "10.8.1",
     "globals": "17.11.0",
+    "js-yaml": "4.3.1",
     "jsdom": "30.0.1",
     "prettier": "3.9.6",
     "typescript": "6.0.3",
