@@ -25,10 +25,13 @@ P2P-first/SFU-ready). It does not depend on Electron, React, Windows APIs, Node-
   signaling before the matching remote offer/answer has finished applying (trickle ICE). This
   queues candidates that arrive too early and hands them back, in order, once the remote
   description is set — including a queued `null` (the platform's end-of-candidates signal).
-- `isTerminalPeerConnectionState` (`src/connection-state.ts`): `'failed'`/`'closed'` are terminal;
-  `'disconnected'` is treated as transient per the WebRTC specification and does not trigger
-  cleanup. T3 does not implement ICE-restart recovery for `'disconnected'` — see "Remaining risks"
-  in the T3 handoff.
+- `classifyPeerTransportHealth` / `isTerminalPeerConnectionState` (`src/connection-state.ts`): the
+  single shared `'closed' | 'failed' | 'established' | 'pending'` classification every lifecycle
+  decision in this package uses — "may a credential refresh disturb this peer?", "should ICE
+  recovery run?", and "is this peer done?" all read the same function, so they cannot drift apart.
+  `'disconnected'` is `'pending'`, never `'failed'`: the WebRTC specification describes it as
+  transient, so it triggers neither a restart nor a teardown. T3 does not implement ICE-restart
+  recovery for `'disconnected'` — see "Remaining risks" in the T3 handoff.
 - `createRtcPeerConnection` / `RtcPeerConnectionLike` (`src/rtc-peer-connection.ts`): the single
   place an `RTCPeerConnection` is constructed from `RtcTransportConfig`, and the narrow surface of
   it this package actually depends on (enabling a fully-typed test fake without every deprecated
@@ -42,7 +45,23 @@ P2P-first/SFU-ready). It does not depend on Electron, React, Windows APIs, Node-
   `handleRemoteIceCandidate`.
 - It does not implement perfect negotiation/glare recovery — T3's deterministic initiator/responder
   role assignment means a correctly behaving pair never has both sides create an offer.
-- It does not implement ICE restart on `'disconnected'`.
+- It does not implement ICE restart on `'disconnected'` — that state is transient per the
+  specification and is deliberately left alone.
+- It **does**, since T15.2, implement bounded ICE-failure recovery. A peer that reaches `'failed'` is
+  no longer closed on the spot: `Peer` re-applies the freshest ICE server list it knows about and
+  calls `restartIce()` up to `ICE_RECOVERY_MAX_ATTEMPTS` (3) times with exponential backoff (1s, 3s,
+  9s, then a 27s verdict window), letting the existing perfect-negotiation `negotiationneeded` path
+  carry the renegotiation. Only once that budget is spent does it report terminal, at which point the
+  transport closes and removes it exactly as before — the participant's last observed state stays
+  `'failed'`, which is what a caller surfaces as a per-participant connection-problem indication. A
+  successful reconnection resets the budget; `close()` cancels any armed retry, so a departed
+  participant leaks no timer.
+- The other ICE restart it performs is T15.1's: `setIceServers()` applies a newly-known ICE server
+  list to every existing peer that has not yet established a working transport, via
+  `RTCPeerConnection.setConfiguration()` + `restartIce()`, so a peer created before usable ICE servers
+  were known is not stuck host-only forever. Already-working peers are never restarted — since T15.2
+  they do record the new list, so a later failure recovers against current credentials rather than
+  possibly-expired ones.
 
 ## Testing
 

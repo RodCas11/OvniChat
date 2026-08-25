@@ -95,7 +95,8 @@ describe('ServerHome (T13.1)', () => {
     const tile = await screen.findByTestId('server-home-tile-a');
     fireEvent.click(tile);
 
-    expect(onConnect).toHaveBeenCalledWith('ws://127.0.0.1:8090', undefined);
+    // Bare bookmark addresses (no scheme) resolve to wss:// (secure by default) at use time.
+    expect(onConnect).toHaveBeenCalledWith('wss://127.0.0.1:8090', undefined);
   });
 
   it('opens the Add Server dialog from the add-server action, wired to the real bookmark IPC', async () => {
@@ -124,10 +125,11 @@ describe('ServerHome (T13.1)', () => {
     });
     fireEvent.click(screen.getByTestId('add-server-submit'));
 
+    // The canonical, already-parsed wss:// form is persisted — not the raw typed string.
     await waitFor(() => {
       expect(addBookmark).toHaveBeenCalledWith({
         displayName: 'New Server',
-        serverAddress: '10.0.0.5:8090',
+        serverAddress: 'wss://10.0.0.5:8090',
       });
     });
   });

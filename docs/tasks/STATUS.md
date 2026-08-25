@@ -24,7 +24,7 @@
 | [T13.5](T13_5_STREAMS_CAMERA_PRODUCT_INTEGRATION.md) | COMPLETE    | Chantivo rebrand + streams / camera / media stage               |
 | [T13.5.1](T13_5_1_FINAL_VISUAL_POLISH.md)            | COMPLETE    | Final visual polish (scale, typography, focus styling)          |
 | [T14](T14_PRODUCTION_SELF_HOSTING.md)                | COMPLETE    | Production self-hosting (TURN, TLS, Docker, configuration)      |
-| T15                                                  | NOT STARTED | Windows client installer and dedicated-server releases          |
+| [T15](T15_DISTRIBUTION_AND_EASY_INSTALL.md)          | COMPLETE    | Windows client installer and dedicated-server releases          |
 | T16                                                  | NOT STARTED | Private beta / usage polish                                     |
 | T17                                                  | NOT STARTED | SFU evaluation/migration, only if measured scale requires it    |
 | T18                                                  | NOT STARTED | Hardening / release candidate                                   |
@@ -98,7 +98,7 @@ now **T15**, private beta/UX polish is now **T16**, SFU evaluation is now **T17*
 (hardening/release candidate) was added to close out the roadmap. `docs/ROADMAP.md` predates this
 renumbering (and, independently, predates the real T7-T12 history) — this file (`STATUS.md`) is the
 authoritative source per `CLAUDE.md`; treat `ROADMAP.md` as superseded until it is rewritten to match.
-Do not treat T15+ as started until their own task documents and STATUS.md rows say so.
+Do not treat T16+ as started until their own task documents and STATUS.md rows say so.
 
 T14 turned the Dedicated Server from "runs on a developer's machine" into something a technically
 capable operator can self-host safely: a production multi-stage Docker image
@@ -123,3 +123,27 @@ candidate pairs confirmed `candidateType: "relay"`. See
 [`T14_PRODUCTION_SELF_HOSTING.md`](T14_PRODUCTION_SELF_HOSTING.md) and
 [`../architecture/PRODUCTION_SELF_HOSTING.md`](../architecture/PRODUCTION_SELF_HOSTING.md) for the
 full design and verification record.
+
+T15 turns that proven-but-manual deployment into something a non-expert operator can install with one
+script (`infrastructure/install/install-chantivo.sh`, native and Docker modes, checksummed release
+artifacts built by `scripts/release/*.mjs`), automating exactly the T14-proven procedure rather than
+inventing a new one — including reproducing T14's hard-won Coturn Docker-permission fix
+(`chown 65534:65534`/`chmod 400`) in its own dedicated code path. A native `/opt/chantivo/releases/
+<version>`/`current`-symlink scheme (new in T15) enables `chantivo-server update`'s atomic swap and
+rollback. T9's existing single-use bootstrap-token/`createToken` primitives were reused, not
+rewritten, for the operator-recovery `admin-token create` command — proven safe to run against a live
+server via a new same-file concurrent-`AuthorizationStore`-access test (see
+[`../adr/0025-release-versioning-and-installer-architecture.md`](../adr/0025-release-versioning-and-installer-architecture.md)).
+Electron Forge gained its first-ever Windows installer maker (Squirrel), verified with a genuine
+two-version **upgrade** proof (not just install/launch/uninstall) proving the T13.5 userData pin and a
+real user identity/setting survive an actual Squirrel upgrade between two distinct packaged builds. The
+installer also automates HTTPS/WSS via Caddy when a real hostname is given — DNS-validated locally (no
+third-party dependency), never touching a pre-existing Caddy config, with a `--tls-only` path to add a
+hostname later without touching server data — proven with a real, publicly CA-issued Let's Encrypt
+certificate against the validation VPS. A real installer-flow proof against the validation VPS (native,
+in an isolated systemd-capable fixture never touching the real host's own T14 deployment, and Docker)
+found and fixed several genuine, blocking bugs that only a truly fresh host or a second real
+installer-script invocation exposed — a directory-creation ordering bug, a symlink-vs-realpath bug in
+`cli-doctor.ts`/`cli-admin-token.ts`, a non-idempotent GPG-keyring write, and a missing environment-file
+source in the `chantivo-server` dispatcher — all fixed and independently re-verified with real evidence.
+See [`T15_DISTRIBUTION_AND_EASY_INSTALL.md`](T15_DISTRIBUTION_AND_EASY_INSTALL.md) for the full record.

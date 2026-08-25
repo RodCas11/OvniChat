@@ -43,3 +43,4 @@ hypothesis. An accepted target decision may precede implementation; say so expli
 22. Durable per-server identity correlation token for local voice preferences
 23. TURN REST credential-minting architecture
 24. TLS and reverse-proxy responsibility
+25. Release versioning and installer architecture

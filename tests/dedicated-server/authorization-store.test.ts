@@ -29,29 +29,80 @@ function openStore(
   });
 }
 
-describe('AuthorizationStore — bootstrap', () => {
-  it('a fresh store generates a one-time bootstrap token targeting Server Admin', () => {
-    const store = openStore();
-    expect(store.bootstrapToken).toMatch(/^DV-ADMIN-[A-Za-z0-9_-]+$/u);
+/** T15 — the exact same mechanism `chantivo-server admin-token create` uses
+ * (`mintServerAdminRecoveryToken`): mints a `privilege` token targeting the built-in Server Admin
+ * group directly via the store's own `createToken`, never a second/parallel minting path. Used
+ * throughout this suite anywhere a test previously relied on the removed `bootstrapToken` field to
+ * get itself an initial admin. */
+function mintAdminToken(store: AuthorizationStore): string {
+  const result = store.createToken({
+    tokenKind: 'privilege',
+    groupId: SERVER_ADMIN_GROUP_ID,
+    expiresInMs: undefined,
+  });
+  if (!result.ok) throw new Error(`expected admin token minting to succeed: ${result.message}`);
+  return result.token;
+}
+
+describe('AuthorizationStore — T15 initial admin claim (no pre-seeded token)', () => {
+  it('a fresh store claims zero Server Admins and mints/persists no token at all', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'dv-auth-no-preseed-'));
+    const dbPath = path.join(dir, 'authorization.sqlite');
+    try {
+      const store = new AuthorizationStore(dbPath, { accessMode: 'open' });
+      expect(store.hasAnyServerAdmin()).toBe(false);
+      store.close();
+
+      // Inspect the real persisted file directly, independent of the store's own read path, to
+      // prove fresh initialization truly writes zero rows to `tokens` — not merely that nothing
+      // currently redeemable happens to be exposed through a public getter.
+      const raw = new DatabaseSync(dbPath);
+      const tokenCount = raw.prepare('SELECT COUNT(*) AS count FROM tokens').get() as {
+        count: number;
+      };
+      raw.close();
+      expect(tokenCount.count).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('invite-only: a fresh server with no persistent membership and no token is rejected, never auto-admitted', () => {
+    const store = openStore({ accessMode: 'invite-only' });
+    expect(store.hasAnyServerAdmin()).toBe(false);
+    const result = store.admit({
+      identityId: 'dv1_operator',
+      nickname: 'Op',
+      serverToken: undefined,
+    });
+    expect(result).toMatchObject({ ok: false, code: 'INVITE_REQUIRED' });
     store.close();
   });
 
-  it('redeeming the bootstrap token grants Server Admin', () => {
-    const store = openStore();
-    const token = store.bootstrapToken;
-    if (!token) throw new Error('expected a bootstrap token');
+  it("invite-only: a 'privilege' token minted via admin-token create's own mechanism admits a fresh server's operator (avoids a permanent lockout)", () => {
+    const store = openStore({ accessMode: 'invite-only' });
+    const token = mintAdminToken(store);
 
-    const result = store.redeemToken('dv1_admin', token);
-    expect(result).toMatchObject({ ok: true, group: { groupId: SERVER_ADMIN_GROUP_ID } });
-    expect(store.can('dv1_admin', 'server.manage')).toBe(true);
-    expect(store.can('dv1_admin', 'authorization.groups.manage')).toBe(true);
+    const result = store.admit({ identityId: 'dv1_admin', nickname: 'Admin', serverToken: token });
+    expect(result).toMatchObject({ ok: true, groups: [{ groupId: SERVER_ADMIN_GROUP_ID }] });
+    expect(store.hasAnyServerAdmin()).toBe(true);
     store.close();
   });
 
-  it('the bootstrap token is single-use', () => {
+  it('hasAnyServerAdmin flips from false to true only once a minted admin token is actually redeemed', () => {
     const store = openStore();
-    const token = store.bootstrapToken;
-    if (!token) throw new Error('expected a bootstrap token');
+    expect(store.hasAnyServerAdmin()).toBe(false);
+    const token = mintAdminToken(store);
+    // Minting alone must not itself claim the server — only redemption does.
+    expect(store.hasAnyServerAdmin()).toBe(false);
+    store.redeemToken('dv1_admin', token);
+    expect(store.hasAnyServerAdmin()).toBe(true);
+    store.close();
+  });
+
+  it('the minted admin token is single-use, same as every other token kind', () => {
+    const store = openStore();
+    const token = mintAdminToken(store);
 
     store.redeemToken('dv1_admin', token);
     const second = store.redeemToken('dv1_someone_else', token);
@@ -59,16 +110,16 @@ describe('AuthorizationStore — bootstrap', () => {
     store.close();
   });
 
-  it('reopening an existing store never generates a second bootstrap token', () => {
-    const dir = mkdtempSync(path.join(tmpdir(), 'dv-auth-bootstrap-'));
+  it('reopening an existing store still claims zero Server Admins (nothing pre-seeds one on fresh init or reopen)', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'dv-auth-reopen-'));
     const dbPath = path.join(dir, 'authorization.sqlite');
     try {
       const first = new AuthorizationStore(dbPath, { accessMode: 'open' });
-      expect(first.bootstrapToken).toBeDefined();
+      expect(first.hasAnyServerAdmin()).toBe(false);
       first.close();
 
       const second = new AuthorizationStore(dbPath, { accessMode: 'open' });
-      expect(second.bootstrapToken).toBeUndefined();
+      expect(second.hasAnyServerAdmin()).toBe(false);
       second.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -120,16 +171,6 @@ describe('AuthorizationStore — open vs invite-only admission', () => {
     store.close();
   });
 
-  it("invite-only: the bootstrap token itself admits a fresh server's operator (avoids a permanent lockout)", () => {
-    const store = openStore({ accessMode: 'invite-only' });
-    const token = store.bootstrapToken;
-    if (!token) throw new Error('expected a bootstrap token');
-
-    const result = store.admit({ identityId: 'dv1_admin', nickname: 'Admin', serverToken: token });
-    expect(result).toMatchObject({ ok: true, groups: [{ groupId: SERVER_ADMIN_GROUP_ID }] });
-    store.close();
-  });
-
   it('invite-only: an unknown identity with no token is rejected with INVITE_REQUIRED', () => {
     const store = openStore({ accessMode: 'invite-only' });
     const result = store.admit({ identityId: 'dv1_x', nickname: 'X', serverToken: undefined });
@@ -150,8 +191,7 @@ describe('AuthorizationStore — open vs invite-only admission', () => {
 
   it('invite-only: a valid invite token admits and grants its configured group', () => {
     const store = openStore({ accessMode: 'invite-only' });
-    const admin = store.bootstrapToken;
-    if (!admin) throw new Error('expected a bootstrap token');
+    const admin = mintAdminToken(store);
     store.redeemToken('dv1_admin', admin);
 
     const invite = store.createToken({
@@ -168,8 +208,7 @@ describe('AuthorizationStore — open vs invite-only admission', () => {
 
   it('invite-only: reconnecting without a token succeeds once membership is persistent', () => {
     const store = openStore({ accessMode: 'invite-only' });
-    const admin = store.bootstrapToken;
-    if (!admin) throw new Error('expected a bootstrap token');
+    const admin = mintAdminToken(store);
     store.redeemToken('dv1_admin', admin);
     const invite = store.createToken({
       tokenKind: 'invite',
@@ -186,8 +225,7 @@ describe('AuthorizationStore — open vs invite-only admission', () => {
 
   it('invite-only: a second identity cannot reuse an already-consumed invite', () => {
     const store = openStore({ accessMode: 'invite-only' });
-    const admin = store.bootstrapToken;
-    if (!admin) throw new Error('expected a bootstrap token');
+    const admin = mintAdminToken(store);
     store.redeemToken('dv1_admin', admin);
     const invite = store.createToken({
       tokenKind: 'invite',
@@ -295,8 +333,7 @@ describe('AuthorizationStore — groups', () => {
     adminId: string;
   } {
     const store = openStore({ accessMode });
-    const token = store.bootstrapToken;
-    if (!token) throw new Error('expected a bootstrap token');
+    const token = mintAdminToken(store);
     store.redeemToken('dv1_admin', token);
     return { store, adminId: 'dv1_admin' };
   }
@@ -455,8 +492,7 @@ describe('AuthorizationStore — groups', () => {
 describe('AuthorizationStore — grant/revoke and last-admin protection', () => {
   function adminStore(): { store: AuthorizationStore } {
     const store = openStore();
-    const token = store.bootstrapToken;
-    if (!token) throw new Error('expected a bootstrap token');
+    const token = mintAdminToken(store);
     store.redeemToken('dv1_admin', token);
     return { store };
   }
@@ -508,8 +544,7 @@ describe('AuthorizationStore — grant/revoke and last-admin protection', () => 
 
   it('revoking the only membership on an invite-only server reports stillAdmitted: false', () => {
     const store = openStore({ accessMode: 'invite-only' });
-    const admin = store.bootstrapToken;
-    if (!admin) throw new Error('expected a bootstrap token');
+    const admin = mintAdminToken(store);
     store.redeemToken('dv1_admin', admin);
     store.grantGroup('dv1_x', MEMBER_GROUP_ID);
 
@@ -520,8 +555,7 @@ describe('AuthorizationStore — grant/revoke and last-admin protection', () => 
 
   it('revoking one of several memberships on an invite-only server reports stillAdmitted: true', () => {
     const store = openStore({ accessMode: 'invite-only' });
-    const admin = store.bootstrapToken;
-    if (!admin) throw new Error('expected a bootstrap token');
+    const admin = mintAdminToken(store);
     store.redeemToken('dv1_admin', admin);
     store.grantGroup('dv1_x', MEMBER_GROUP_ID);
     const created = store.createGroup({ name: 'Extra', permissions: [] });
@@ -672,8 +706,7 @@ describe('AuthorizationStore — restart persistence (T9 Section 50)', () => {
 
   it('membership, bans, and unused tokens all survive closing and reopening the store', () => {
     const first = new AuthorizationStore(dbPath, { accessMode: 'open' });
-    const admin = first.bootstrapToken;
-    if (!admin) throw new Error('expected a bootstrap token');
+    const admin = mintAdminToken(first);
     first.redeemToken('dv1_admin', admin);
     first.grantGroup('dv1_member', MEMBER_GROUP_ID);
     first.ban('dv1_banned', undefined, 'testing');
@@ -732,8 +765,7 @@ describe('AuthorizationStore — permission evaluation', () => {
 
   it('a custom group grants exactly its own permissions, nothing more', () => {
     const store = openStore();
-    const admin = store.bootstrapToken;
-    if (!admin) throw new Error('expected a bootstrap token');
+    const admin = mintAdminToken(store);
     store.redeemToken('dv1_admin', admin);
     const created = store.createGroup({
       name: 'Mod',
@@ -751,8 +783,7 @@ describe('AuthorizationStore — permission evaluation', () => {
 
   it('getPublicBadges never exposes permissions, only group id/name', () => {
     const store = openStore();
-    const admin = store.bootstrapToken;
-    if (!admin) throw new Error('expected a bootstrap token');
+    const admin = mintAdminToken(store);
     store.redeemToken('dv1_admin', admin);
     const badges = store.getPublicBadges('dv1_admin');
     expect(badges).toEqual([{ groupId: SERVER_ADMIN_GROUP_ID, name: 'Server Admin' }]);

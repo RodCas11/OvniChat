@@ -296,9 +296,14 @@ store.ts`) uses `node:sqlite`'s parameterized queries throughout (`?` placeholde
   loop, so exactly one can ever win. See
   `docs/adr/0013-server-authorization-storage-and-rbac.md` for why this was a correctness
   requirement, not an optimization.
-- Raw bearer tokens are never persisted — only a SHA-256 digest. The one-time bootstrap Server Admin
-  token is printed to the operator's own console exactly once (a genuinely fresh authorization
-  store only), never through the structured logger, never repeated on a later restart.
+- Raw bearer tokens are never persisted — only a SHA-256 digest. The Dedicated Server's own supervised
+  process never prints a raw token at all (T15 security fix — its startup banner shows only a safe,
+  non-secret hint while unclaimed, never a credential, since that process's stdout is captured
+  wholesale by `journalctl`/`docker compose logs`). The initial admin claim and all later recovery use
+  the same mechanism: a distinct, one-shot `chantivo-server admin-token create` process, invoked
+  directly by the installer or an operator with local shell access, whose stdout is never captured by
+  the supervised service's log stream — printed to that operator's own console exactly once per
+  invocation, never through the structured logger.
 - Every `client:authorization-*` mutation is permission-checked server-side
   (`services/realtime/src/protocol-handlers.ts`) against the _caller's own_ current permissions
   before the mutation runs — client UI (`AuthorizationPanel.tsx`) hiding a section is a presentation

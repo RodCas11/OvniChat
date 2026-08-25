@@ -274,4 +274,125 @@ describe('useVoiceChannel — server:turn-credentials -> transport.setIceServers
     // comment: this message is never sent at all, never sent empty, when TURN is not configured).
     expect(transport.setIceServers).not.toHaveBeenCalled();
   });
+
+  /**
+   * T15.1 regression coverage. Before this, a reconnect's `recreateTransport()` rebuilt the mesh
+   * from the bare configured STUN list, discarding every TURN server the session had already
+   * learned — re-opening the "no relay available yet" window on every single reconnect, worst for
+   * exactly the restrictive-NAT clients that reconnect most and need relay most.
+   */
+  it('a reconnect rebuilds the transport with the last-known STUN+TURN list, never back to bare STUN', async () => {
+    const config = { url: 'ws://127.0.0.1:8090', iceServers: STUN_ICE_SERVERS };
+    renderHook(() => useVoiceChannel(config));
+
+    const socket = await connectAndHandshake();
+    const turnServers = [
+      { urls: 'turn:turn.example.com:3478', username: 'relay-user', credential: 'relay-secret' },
+    ];
+    socket.simulateMessage(JSON.stringify(turnCredentialsMessage({ iceServers: turnServers })));
+    await waitFor(() => {
+      if (FakeP2PMeshTransport.instances[0]?.setIceServers.mock.calls.length === 0) {
+        throw new Error('setIceServers not called yet');
+      }
+    });
+
+    // An abnormal close of an already-established session is what drives `ReconnectController`'s
+    // `'reconnecting'` handler, which synchronously calls `recreateTransport()`.
+    socket.close(1006, 'simulated network loss');
+
+    await waitFor(() => {
+      if (FakeP2PMeshTransport.instances.length < 2) throw new Error('transport not recreated yet');
+    });
+    expect(FakeP2PMeshTransport.instances[1]?.initialConfig.iceServers).toEqual([
+      ...STUN_ICE_SERVERS,
+      ...turnServers,
+    ]);
+  });
+
+  it('a refreshed second server:turn-credentials replaces the list used for future peer creation', async () => {
+    const config = { url: 'ws://127.0.0.1:8090', iceServers: STUN_ICE_SERVERS };
+    renderHook(() => useVoiceChannel(config));
+
+    const socket = await connectAndHandshake();
+    const transport = FakeP2PMeshTransport.instances[0];
+    if (!transport) throw new Error('transport not constructed');
+
+    const firstServers = [
+      {
+        urls: 'turn:turn.example.com:3478',
+        username: 'relay-user-1',
+        credential: 'relay-secret-1',
+      },
+    ];
+    const refreshedServers = [
+      {
+        urls: 'turn:turn.example.com:3478',
+        username: 'relay-user-2',
+        credential: 'relay-secret-2',
+      },
+    ];
+    socket.simulateMessage(JSON.stringify(turnCredentialsMessage({ iceServers: firstServers })));
+    socket.simulateMessage(
+      JSON.stringify(turnCredentialsMessage({ iceServers: refreshedServers })),
+    );
+
+    await waitFor(() => {
+      if (transport.setIceServers.mock.calls.length < 2) throw new Error('second call not made');
+    });
+    expect(transport.setIceServers).toHaveBeenNthCalledWith(1, [
+      ...STUN_ICE_SERVERS,
+      ...firstServers,
+    ]);
+    expect(transport.setIceServers).toHaveBeenNthCalledWith(2, [
+      ...STUN_ICE_SERVERS,
+      ...refreshedServers,
+    ]);
+  });
+
+  it('never logs a TURN url, username, or credential value anywhere on this path', async () => {
+    const logged: string[] = [];
+    const capture = (...args: unknown[]) => {
+      logged.push(
+        args.map((arg) => (typeof arg === 'string' ? arg : JSON.stringify(arg))).join(' '),
+      );
+    };
+    const spies = [
+      vi.spyOn(console, 'info').mockImplementation(capture),
+      vi.spyOn(console, 'log').mockImplementation(capture),
+      vi.spyOn(console, 'warn').mockImplementation(capture),
+      vi.spyOn(console, 'error').mockImplementation(capture),
+      vi.spyOn(console, 'debug').mockImplementation(capture),
+    ];
+    const config = { url: 'ws://127.0.0.1:8090', iceServers: STUN_ICE_SERVERS };
+    renderHook(() => useVoiceChannel(config));
+
+    const socket = await connectAndHandshake();
+    socket.simulateMessage(
+      JSON.stringify(
+        turnCredentialsMessage({
+          iceServers: [
+            {
+              urls: 'turn:turn.example.com:3478',
+              username: 'relay-user-secret-value',
+              credential: 'relay-credential-secret-value',
+            },
+          ],
+        }),
+      ),
+    );
+    await waitFor(() => {
+      if (FakeP2PMeshTransport.instances[0]?.setIceServers.mock.calls.length === 0) {
+        throw new Error('setIceServers not called yet');
+      }
+    });
+    for (const spy of spies) spy.mockRestore();
+
+    const all = logged.join('\n');
+    expect(all).not.toContain('relay-credential-secret-value');
+    expect(all).not.toContain('relay-user-secret-value');
+    expect(all).not.toContain('turn.example.com');
+    // The diagnostic marker that *is* emitted carries only counts/booleans, so a real client's log
+    // can confirm TURN availability without anyone ever handling a live credential.
+    expect(all).toContain('disco-voador:turn-credentials:servers=1:credentialed=true');
+  });
 });

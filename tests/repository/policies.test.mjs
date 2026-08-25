@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
 import { architectureViolationsForSource } from '../../scripts/verify-architecture.mjs';
+import {
+  caddyfileViolationsForSource,
+  centralEndpointViolationsForSource,
+  isProductionCodePath,
+  turnUrlDefaultViolationsForSource,
+} from '../../scripts/verify-infrastructure.mjs';
 import { containsPotentialSecret, isCandidateTextPath } from '../../scripts/verify-secrets.mjs';
 
 describe('architecture policy behavior', () => {
@@ -95,5 +101,204 @@ describe('secret policy behavior', () => {
     ['static-auth', '-secret=<runtime-only>'].join(''),
   ])('allows a blank or unmistakable placeholder', (candidate) => {
     expect(containsPotentialSecret(candidate)).toBe(false);
+  });
+});
+
+describe('reverse-proxy Caddyfile policy behavior', () => {
+  const source = 'infrastructure/reverse-proxy/Caddyfile.example';
+
+  const validCaddyfile = `
+{$CHANTIVO_PUBLIC_HOSTNAME} {
+    @blocked_health path /healthz /readyz
+    respond @blocked_health 404
+
+    reverse_proxy 127.0.0.1:8090
+}
+`;
+
+  it('allows a Caddyfile that blocks /healthz and /readyz before the reverse_proxy catch-all', () => {
+    expect(caddyfileViolationsForSource(validCaddyfile, source)).toHaveLength(0);
+  });
+
+  it('rejects a Caddyfile with no matcher blocking /healthz and /readyz at all', () => {
+    const content = `
+{$CHANTIVO_PUBLIC_HOSTNAME} {
+    reverse_proxy 127.0.0.1:8090
+}
+`;
+    const violations = caddyfileViolationsForSource(content, source);
+    expect(violations.some((v) => v.includes('missing a named matcher'))).toBe(true);
+  });
+
+  it('rejects a Caddyfile with the matcher defined but no respond 404 for it', () => {
+    const content = `
+{$CHANTIVO_PUBLIC_HOSTNAME} {
+    @blocked_health path /healthz /readyz
+
+    reverse_proxy 127.0.0.1:8090
+}
+`;
+    const violations = caddyfileViolationsForSource(content, source);
+    expect(violations.some((v) => v.includes('missing "respond @blocked_health 404"'))).toBe(true);
+  });
+
+  it('rejects a Caddyfile where the reverse_proxy catch-all is missing or scoped to a matcher', () => {
+    const content = `
+{$CHANTIVO_PUBLIC_HOSTNAME} {
+    @blocked_health path /healthz /readyz
+    respond @blocked_health 404
+
+    reverse_proxy @blocked_health 127.0.0.1:8090
+}
+`;
+    const violations = caddyfileViolationsForSource(content, source);
+    expect(violations.some((v) => v.includes('unconditional "reverse_proxy 127.0.0.1:8090"'))).toBe(
+      true,
+    );
+  });
+
+  it('rejects a Caddyfile where the block comes AFTER the reverse_proxy catch-all', () => {
+    const content = `
+{$CHANTIVO_PUBLIC_HOSTNAME} {
+    reverse_proxy 127.0.0.1:8090
+
+    @blocked_health path /healthz /readyz
+    respond @blocked_health 404
+}
+`;
+    const violations = caddyfileViolationsForSource(content, source);
+    expect(
+      violations.some((v) => v.includes('must be blocked BEFORE the reverse_proxy catch-all')),
+    ).toBe(true);
+  });
+});
+
+/**
+ * T15 follow-up — Chantivo has no central service. `beta.chantivo.app` is ONE operator's own beta
+ * Dedicated Server; nothing in installer/config/template code may point another installation at it
+ * (or any other Chantivo-operated address) for TURN, signaling, or anything else. Documentation,
+ * test fixtures, and explanatory comments recording real verification history against that real
+ * host are expected and allowed.
+ */
+describe('central-endpoint policy behavior', () => {
+  const CENTRAL_HOST = ['beta', '.chantivo', '.app'].join('');
+
+  it.each([
+    ['infrastructure/install/install-chantivo.sh', true],
+    ['infrastructure/docker/.env.example', true],
+    ['services/dedicated-server/src/config.ts', true],
+    ['apps/desktop/src/main/index.ts', true],
+    ['scripts/verify-links.mjs', true],
+    ['docs/SELF_HOSTING.md', false],
+    ['infrastructure/install/README.md', false],
+    ['tests/desktop/parse-server-address.test.ts', false],
+    ['apps/desktop/dist/renderer/parse-server-address.js', false],
+  ])('treats %s as a production code path: %s', (relativePath, expected) => {
+    expect(isProductionCodePath(relativePath)).toBe(expected);
+  });
+
+  it('rejects the Chantivo-operated host used as a shell fallback value', () => {
+    const violations = centralEndpointViolationsForSource(
+      'infrastructure/install/install-chantivo.sh',
+      `TURN_URL="\${TURN_URL_ARG:-turn:${CENTRAL_HOST}:3478}"\n`,
+    );
+    expect(violations.length).toBeGreaterThan(0);
+    expect(violations.join('\n')).toContain('own Coturn');
+  });
+
+  it('rejects the Chantivo-operated host used as a TypeScript default value', () => {
+    const violations = centralEndpointViolationsForSource(
+      'services/dedicated-server/src/config.ts',
+      `const DEFAULT_PUBLIC_HOST = '${CENTRAL_HOST}';\n`,
+    );
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toContain('as an effective value');
+  });
+
+  it('rejects a turns: URL for the Chantivo-operated host even inside a comment', () => {
+    const violations = centralEndpointViolationsForSource(
+      'infrastructure/docker/.env.example',
+      `# DISCO_VOADOR_TURN_URLS=turns:${CENTRAL_HOST}:5349\n`,
+    );
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toContain('TURN/STUN URL');
+  });
+
+  it('allows a shell comment recording real verification history against that host', () => {
+    expect(
+      centralEndpointViolationsForSource(
+        'infrastructure/install/install-chantivo.sh',
+        `# Security-review finding (production ${CENTRAL_HOST}, T15 follow-up): ...\n`,
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('allows a TypeScript block comment naming that host as a real-world example', () => {
+    expect(
+      centralEndpointViolationsForSource(
+        'apps/desktop/src/renderer/connection/parse-server-address.ts',
+        `/**\n * e.g. typing \`${CENTRAL_HOST}\` with no scheme.\n */\nexport const x = 1;\n`,
+      ),
+    ).toHaveLength(0);
+  });
+
+  it.each([
+    ['docs/tasks/T15_DISTRIBUTION_AND_EASY_INSTALL.md', `Verified against ${CENTRAL_HOST}.`],
+    ['tests/desktop/parse-server-address.test.ts', `parse('${CENTRAL_HOST}')`],
+  ])('allows %s to reference the host freely', (relativePath, content) => {
+    expect(centralEndpointViolationsForSource(relativePath, content)).toHaveLength(0);
+  });
+});
+
+/**
+ * T15 follow-up — the generation half of the same incident: a `DISCO_VOADOR_TURN_URLS` template or
+ * default that no remote client could ever reach. These values are handed to clients verbatim.
+ */
+describe('TURN URL default policy behavior', () => {
+  it.each([
+    'turn:127.0.0.1:3478',
+    'turn:localhost:3478',
+    'turn:10.0.0.5:3478',
+    'turn:172.17.0.2:3478',
+    'turn:coturn:3478',
+    'turns:[::1]:5349',
+  ])('rejects an unreachable default value %s', (url) => {
+    const violations = turnUrlDefaultViolationsForSource(
+      'infrastructure/docker/.env.example',
+      `DISCO_VOADOR_TURN_URLS=${url}\n`,
+    );
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toContain('no remote client can reach');
+  });
+
+  it.each([
+    'turn:voice.example.com:3478',
+    'turns:voice.example.com:5349',
+    'turn:203.0.113.10:3478',
+  ])('allows a reachable example value %s', (url) => {
+    expect(
+      turnUrlDefaultViolationsForSource(
+        'infrastructure/docker/.env.example',
+        `DISCO_VOADOR_TURN_URLS=${url}\n`,
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('ignores a template placeholder — the substituted result is what the installer tests cover', () => {
+    expect(
+      turnUrlDefaultViolationsForSource(
+        'infrastructure/install/install-chantivo.sh',
+        'printf \'DISCO_VOADOR_TURN_URLS=turn:%s:3478\\n\' "$PUBLIC_ENDPOINT"\n',
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('allows a test fixture to use a loopback TURN URL deliberately', () => {
+    expect(
+      turnUrlDefaultViolationsForSource(
+        'tests/dedicated-server/cli-doctor.test.ts',
+        "DISCO_VOADOR_TURN_URLS: 'turn:127.0.0.1:3478',\n",
+      ),
+    ).toHaveLength(0);
   });
 });

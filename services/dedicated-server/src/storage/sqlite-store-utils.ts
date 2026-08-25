@@ -49,6 +49,14 @@ export function openManagedDatabase(
   const db = new DatabaseSync(path);
   db.exec('PRAGMA journal_mode = WAL');
   db.exec('PRAGMA foreign_keys = ON');
+  // T15 — `cli-admin-token.ts` deliberately opens a second connection against a live server's
+  // authorization.sqlite (see its own doc comment for why this is safe under WAL). Without a busy
+  // timeout, a write landing in the same instant as the live server's own transaction would fail
+  // immediately with SQLITE_BUSY instead of waiting briefly for the lock to clear — harmless (WAL
+  // guarantees no corruption either way), but an unnecessary transient failure a short retry window
+  // avoids. 5s is generous relative to how briefly a single INSERT/UPDATE transaction here ever holds
+  // the writer lock.
+  db.exec('PRAGMA busy_timeout = 5000');
 
   db.exec(
     'CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL)',

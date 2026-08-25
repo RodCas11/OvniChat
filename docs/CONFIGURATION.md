@@ -57,10 +57,30 @@ doc comment on why secrets never do.
 
 | Variable                                   | Secret? | Notes                                                                                      |
 | ------------------------------------------ | ------- | ------------------------------------------------------------------------------------------ |
-| `DISCO_VOADOR_SERVER_PUBLIC_HOST`          | No      | Display-only; never used for binding                                                       |
+| `DISCO_VOADOR_SERVER_PUBLIC_HOST`          | No      | The Public Server Endpoint; display-only, never used for binding                           |
+| `DISCO_VOADOR_DEPLOYMENT_SCOPE`            | No      | `public` or `local`; diagnostic only. Inferred from the public host when unset             |
 | `DISCO_VOADOR_TURN_SHARED_SECRET`          | Secret  | Coturn `use-auth-secret` REST shared secret; must be set with the URLs below or not at all |
-| `DISCO_VOADOR_TURN_URLS`                   | No      | Comma-separated `turn:`/`turns:` URIs                                                      |
+| `DISCO_VOADOR_TURN_URLS`                   | No      | Comma-separated `turn:`/`turns:` URIs, handed to remote clients verbatim                   |
 | `DISCO_VOADOR_TURN_CREDENTIAL_TTL_SECONDS` | No      | Default `21600` (6 hours); only meaningful when TURN is configured                         |
+
+### The Public Server Endpoint
+
+`DISCO_VOADOR_SERVER_PUBLIC_HOST` and `DISCO_VOADOR_TURN_URLS` describe the same physical thing from
+two angles: the address remote clients use. `install-chantivo.sh` derives both from one `--hostname`
+(the **Public Server Endpoint**) precisely so they cannot disagree; an operator configuring by hand
+must keep them consistent themselves.
+
+**`DISCO_VOADOR_TURN_URLS` is handed to every remote client verbatim** as their `RTCIceServer.urls`.
+A loopback (`turn:127.0.0.1:3478`), private-network, or Docker-internal value means every client
+tries to reach _its own_ machine and relay fails silently — this happened in production. A
+loopback/LAN value is legitimate for development, integration tests, and deliberate LAN-only
+deployments; set `DISCO_VOADOR_DEPLOYMENT_SCOPE=local` there so diagnostics expect it.
+
+`DISCO_VOADOR_DEPLOYMENT_SCOPE` changes no binding, routing, or authentication behavior. It exists
+only so `chantivo-server doctor`'s `TURN advertised endpoint` check can distinguish a deliberate
+local address from a broken public one. When unset it is inferred from
+`DISCO_VOADOR_SERVER_PUBLIC_HOST` (public-looking host → `public`, unset or LAN-looking → `local`),
+so no existing deployment has to set anything.
 
 `DISCO_VOADOR_TURN_SHARED_SECRET` is never client-visible and never persisted — the realtime
 service (`services/realtime/src/turn-credential-port.ts`, backed by

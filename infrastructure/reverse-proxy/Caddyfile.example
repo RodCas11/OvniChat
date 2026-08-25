@@ -1,8 +1,22 @@
-# Chantivo Dedicated Server reverse-proxy example: TLS termination + WebSocket passthrough only.
+# Chantivo Dedicated Server reverse-proxy example: TLS termination + WebSocket passthrough, with the
+# two internal-only operational health routes blocked from public exposure. See README.md in this
+# directory for what this does and does not cover, and its real preconditions.
+#
+# /healthz and /readyz are internal operational endpoints (Docker/systemd health checks, the
+# installer's own readiness probe, `chantivo-server doctor`) — they must keep answering locally via
+# plain http://127.0.0.1:8090/healthz (services/realtime's own listener, never touched by this file),
+# but must NOT be reachable by an anonymous request to the public hostname: there is no reason for an
+# internet scanner to learn Chantivo's operational status. The matcher/respond pair below MUST stay
+# before the reverse_proxy catch-all and MUST NOT wrap it — every other path, and in particular the
+# real WebSocket upgrade this whole product depends on, must keep reaching 127.0.0.1:8090 exactly as
+# before.
+#
 # Copy to an ignored runtime Caddyfile, set CHANTIVO_PUBLIC_HOSTNAME (real public DNS name), and
-# run Caddy on the same host as (or with network access to) the Chantivo Dedicated Server. See
-# README.md in this directory for what this does and does not cover, and its real preconditions.
+# run Caddy on the same host as (or with network access to) the Chantivo Dedicated Server.
 
 {$CHANTIVO_PUBLIC_HOSTNAME} {
+    @blocked_health path /healthz /readyz
+    respond @blocked_health 404
+
     reverse_proxy 127.0.0.1:8090
 }

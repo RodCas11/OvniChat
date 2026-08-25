@@ -217,11 +217,35 @@ on their Dedicated Server, it mints short-lived Coturn `use-auth-secret` REST cr
 right after identity-proof succeeds, via a new additive `server:turn-credentials` protocol message —
 no protocol version bump. `packages/rtc-core`'s `P2PMeshTransport.setIceServers()` applies them to
 every peer connection created after they arrive (REPLACE semantics — the caller merges STUN and TURN
-itself; already-established peer connections are unaffected, no ICE restart). See
+itself).
+
+**T15.1 corrected one wrong assumption here.** This originally also stated that already-created peer
+connections could not be updated at all ("the platform does not support changing a live
+`RTCPeerConnection`'s ICE servers in place"). That is not true: `RTCPeerConnection.setConfiguration()`
+is standard WebRTC, and pairing it with `restartIce()` makes an existing connection genuinely
+re-gather against the new list — verified directly on this project's own Electron/Chromium build (a
+connection constructed with an empty `iceServers` array gathered host candidates only; after
+`setConfiguration()` + `restartIce()` + renegotiation, the same connection gathered `srflx` and
+`relay` candidates). `setIceServers()` therefore now also heals every existing peer that has not yet
+established a working transport, and deliberately leaves already-working peers completely untouched
+so a routine credential refresh can never disturb a call in progress. See
 [`../adr/0023-turn-rest-credential-minting-architecture.md`](../adr/0023-turn-rest-credential-minting-architecture.md)
-and [`../references/COTURN.md`](../references/COTURN.md) for the full design, including the accepted
-limitation that a credential is not proactively refreshed mid-session before its default 6-hour TTL
-expires.
+and [`../references/COTURN.md`](../references/COTURN.md) for the full design.
+
+**T15.2 closed the mid-session credential-expiry gap.** T14's credential was minted exactly once per
+connection and never again, so a peer connection created after `expiresAt` — a friend joining hours
+into a call, or a connection rebuilt by ICE recovery — presented an expired `use-auth-secret`
+username to Coturn and gathered no relay candidate at all. The Dedicated Server now re-mints and
+re-pushes `server:turn-credentials` at **half the current credential's remaining lifetime** (three
+hours at the 6-hour default), so a client is never holding a credential that is more than
+half-expired. This needed **no protocol change at all**: the same message type, the same payload
+shape, and the client's existing handler, which merges the new TURN servers with its own STUN list
+and hands the result to `setIceServers()`. A replacement credential arriving for an already-healthy
+peer is recorded and nothing else — no `setConfiguration`, no restart, no renegotiation on a live
+call. The timer is per-connection, armed by the same identity-proof transition that sends the first
+credential, and cancelled on every teardown path. Half the remaining lifetime, rather than a fixed
+lead time before expiry, is what keeps the safety margin scale-free for any operator-configured TTL;
+see `services/realtime/src/turn-credential-refresh.ts`.
 
 ## Automated end-to-end verification
 
@@ -269,22 +293,33 @@ note).
 
 ## Known gaps / deliberately deferred
 
-- Still no ICE-restart for an individual peer connection that reaches `'disconnected'` while the
-  underlying realtime WebSocket stays up (only `'failed'`/`'closed'` are treated as terminal — see
-  `rtc-core/src/connection-state.ts`); a flaky _media_ path alone (the signaling connection itself
-  stays healthy) can leave one pair "disconnected" with no automatic recovery attempt. This remains
-  open — it is a narrower, still-unaddressed gap than the one T11 closed: T11's automatic reconnect
+- **T15.2 added real ICE-restart recovery for a peer connection that reaches `'failed'`**, which used
+  to be an unrecoverable dead end (the peer was closed and removed, and the participant stayed in the
+  roster with no media for the rest of the session). A failed peer now re-applies the freshest known
+  ICE servers and restarts ICE up to three times with exponential backoff (1s, 3s, 9s, then a 27s
+  window to judge the last attempt), renegotiating through the existing perfect-negotiation path;
+  only when that budget is exhausted is the peer torn down, leaving the per-participant "Voice
+  connection problem" indicator as the terminal state. A successful reconnection restores a full
+  retry budget, and leaving/teardown cancels the chain. See `rtc-core/src/peer.ts`.
+- Still **no** ICE-restart for a peer connection that reaches `'disconnected'` while the underlying
+  realtime WebSocket stays up. That state is transient per the WebRTC specification and recovers on
+  its own in the ordinary case, so T15.2 deliberately did not extend recovery to it — a restart there
+  would disturb connections that were about to heal by themselves. A media path that stalls in
+  `'disconnected'` indefinitely without ever reaching `'failed'` therefore still has no automatic
+  recovery. This is narrower than the gap T11 closed: T11's automatic reconnect
   (`docs/architecture/CLIENT_SETTINGS_AND_RECONNECT.md`, ADR 0016) recovers from the _realtime
   connection itself_ being lost (the WebSocket closes — server restart, network drop, etc.), which
   necessarily rebuilds every peer connection from scratch as part of rejoining the voice channel, but
-  does nothing for a peer connection that alone goes `'disconnected'` while the WebSocket is still
-  open. A future task could add real ICE-restart for that narrower case.
+  does nothing for a single peer connection degrading while the WebSocket is still open.
 - No SFU — see ADR 0006; the mesh does not scale past a small room.
-- TURN credential minting is implemented (T14) — see [ICE servers](#ice-servers) above. It is not
-  proactively refreshed before its TTL expires mid-session, and `P2PMeshTransport.setIceServers`
-  isn't part of the shared `MediaTransport` interface, so a future SFU-backed transport will need its
-  own equivalent wiring at `use-voice-channel.ts`'s one call site rather than inheriting this for
-  free — see ADR 0023.
+- TURN credential minting is implemented (T14) and, since T15.2, proactively refreshed mid-session —
+  see [ICE servers](#ice-servers) above. What remains open here is a boundary case rather than the
+  main gap: Coturn's own behavior for a relay allocation whose _original_ minting credential has since
+  expired has not been measured by this project (the reproduced failure — `401 Unauthorized`, zero
+  relay candidates — was for a _new_ allocation, which is exactly what the refresh prevents).
+  Separately, `P2PMeshTransport.setIceServers` still isn't part of the shared `MediaTransport`
+  interface, so a future SFU-backed transport will need its own equivalent wiring at
+  `use-voice-channel.ts`'s one call site rather than inheriting this for free — see ADR 0023.
 - Speaking indicators and per-participant local volume were explicitly out of T3's scope; both are
   now implemented (T13.4), entirely as Renderer-side Web Audio processing over the same
   `MediaTransport`/`RemoteAudio`-supplied streams — no change to this document's own transport

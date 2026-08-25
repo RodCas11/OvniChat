@@ -8,18 +8,38 @@ automatic public TLS for the `wss://` case, not a mandatory component.
 
 ## What this Caddyfile does — and does not do
 
-`Caddyfile.example` does exactly two things: terminate TLS for one public hostname, and reverse-proxy
-both ordinary HTTP and WebSocket traffic to the Dedicated Server's one bound port (`127.0.0.1:8090`
-by default — see `docs/CONFIGURATION.md`'s `REALTIME_PORT`). Caddy's `reverse_proxy` directive
-upgrades WebSocket connections automatically in Caddy v2 — it detects the `Connection: Upgrade`/
-`Upgrade: websocket` request headers and proxies the hijacked TCP connection transparently, with no
-extra directive needed (confirmed against Caddy's own current documentation and changelog; this has
-been true since v2 and was never a `v1`-style opt-in feature). The one real caveat found while
-verifying this: a Caddy issue reported in 2026 around WebSocket upgrades specifically over a **Unix
-domain socket** upstream (returning `200` instead of `101 Switching Protocols`) — irrelevant here,
-since this template proxies to a TCP `host:port` upstream, not a Unix socket. If a future change
-points this Caddyfile at a Unix-socket upstream instead, re-verify WebSocket upgrade behavior
-separately before relying on it.
+`Caddyfile.example` terminates TLS for one public hostname and reverse-proxies both ordinary HTTP and
+WebSocket traffic to the Dedicated Server's one bound port (`127.0.0.1:8090` by default — see
+`docs/CONFIGURATION.md`'s `REALTIME_PORT`) — with one deliberate exception (see "Public vs. internal
+routes" below). Caddy's `reverse_proxy` directive upgrades WebSocket connections automatically in
+Caddy v2 — it detects the `Connection: Upgrade`/`Upgrade: websocket` request headers and proxies the
+hijacked TCP connection transparently, with no extra directive needed (confirmed against Caddy's own
+current documentation and changelog; this has been true since v2 and was never a `v1`-style opt-in
+feature). The one real caveat found while verifying this: a Caddy issue reported in 2026 around
+WebSocket upgrades specifically over a **Unix domain socket** upstream (returning `200` instead of
+`101 Switching Protocols`) — irrelevant here, since this template proxies to a TCP `host:port`
+upstream, not a Unix socket. If a future change points this Caddyfile at a Unix-socket upstream
+instead, re-verify WebSocket upgrade behavior separately before relying on it.
+
+## Public vs. internal routes
+
+`GET /healthz` and `GET /readyz` are internal operational endpoints — used by Docker's/systemd's own
+health checks, this installer's own TLS-readiness probe, and `chantivo-server doctor`, all of which
+talk to the Dedicated Server directly over `http://127.0.0.1:8090` and never go through this proxy at
+all. A real production deployment (`beta.chantivo.app`) was found serving both routes publicly through
+Caddy, exposing internal operational status to anyone on the internet — not a secret leak (both routes
+already return only a boolean-shaped status, never version/config/secret data — see
+`services/realtime/src/server.ts`), but still unnecessary public surface for an anonymous scanner to
+learn from.
+
+This template now blocks both paths from ever reaching the backend publicly: a named matcher
+(`@blocked_health`) matches exactly `/healthz` and `/readyz`, and a `respond @blocked_health 404`
+directive — placed BEFORE the `reverse_proxy` catch-all — answers them with a bare `404` (no body, no
+operational information) instead of proxying them. Everything else, including the real WebSocket
+upgrade path, is unaffected: the `reverse_proxy 127.0.0.1:8090` directive remains unconditional and
+still receives every request that isn't exactly `/healthz` or `/readyz`. If you need to check health
+through the public hostname for some other reason, use SSH/a private network to reach
+`http://127.0.0.1:8090/healthz` directly on the host instead of exposing it publicly again.
 
 **What it explicitly does NOT do: TURN.** Coturn's TURN/STUN relay runs over UDP, TCP, TLS, and
 optionally DTLS on its own ports (3478, optionally 5349, plus the entire configured relay port

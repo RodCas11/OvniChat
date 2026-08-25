@@ -16,6 +16,28 @@ import {
   type DedicatedServerHandle,
 } from '../../services/dedicated-server/src/create-dedicated-server.js';
 import type { DedicatedServerConfig } from '../../services/dedicated-server/src/config.js';
+import { AuthorizationStore } from '../../services/dedicated-server/src/authorization/store.js';
+import { SERVER_ADMIN_GROUP_ID } from '../../services/dedicated-server/src/authorization/permissions.js';
+
+/** T15 — the exact same mechanism `chantivo-server admin-token create` uses
+ * (`mintServerAdminRecoveryToken`): mints a `privilege` token targeting the built-in Server Admin
+ * group directly via the store's own `createToken`. Replaces the removed `bootstrapToken` field
+ * these integration tests used to read straight off a fresh `DedicatedServerHandle`. */
+function mintAdminToken(store: AuthorizationStore): string {
+  const result = store.createToken({
+    tokenKind: 'privilege',
+    groupId: SERVER_ADMIN_GROUP_ID,
+    expiresInMs: undefined,
+  });
+  if (!result.ok) throw new Error(`expected admin token minting to succeed: ${result.message}`);
+  return result.token;
+}
+
+function authorizationPathFor(config: DedicatedServerConfig): string {
+  return config.dataDir === ':memory:'
+    ? ':memory:'
+    : path.join(config.dataDir, 'authorization.sqlite');
+}
 
 /**
  * T13.3 real-network integration tests for profiles/avatars/members/presence — mirroring
@@ -51,6 +73,7 @@ function testConfig(overrides: Partial<DedicatedServerConfig> = {}): DedicatedSe
     configFilePath: '(test)',
     configFileFound: false,
     publicHost: undefined,
+    deploymentScope: 'local',
     turn: undefined,
     ...overrides,
   };
@@ -251,23 +274,28 @@ describe('Dedicated Server — T13.3 profiles/avatars/members/presence (real net
   async function startServer(
     overrides: Partial<DedicatedServerConfig> = {},
     deps: Parameters<typeof createDedicatedServer>[1] = {},
-  ): Promise<{ server: DedicatedServerHandle; url: string }> {
-    const server = track(createDedicatedServer(testConfig(overrides), deps));
+  ): Promise<{ server: DedicatedServerHandle; url: string; adminToken: string }> {
+    const config = testConfig(overrides);
+    // T15 — mint the admin token via the real `AuthorizationStore.createToken` mechanism (the exact
+    // same call `chantivo-server admin-token create` makes) before the server starts, unless the
+    // caller already injected its own `authorization` store via `deps`.
+    const authorization =
+      deps.authorization ??
+      new AuthorizationStore(authorizationPathFor(config), { accessMode: config.accessMode });
+    const adminToken = mintAdminToken(authorization);
+    const server = track(createDedicatedServer(config, { ...deps, authorization }));
     const address = await server.start();
-    return { server, url: `ws://${address.host}:${String(address.port)}` };
+    return { server, url: `ws://${address.host}:${String(address.port)}`, adminToken };
   }
 
-  async function connectAsAdmin(
-    server: DedicatedServerHandle,
-    url: string,
-  ): Promise<{ ws: WebSocket }> {
+  async function connectAsAdmin(adminToken: string, url: string): Promise<{ ws: WebSocket }> {
     const ws = track(await connect(url));
     await handshake(ws, 'Admin');
     const redeemed = waitForMessageOfType(ws, 'server:authorization-token-redeemed');
     send(ws, {
       type: 'client:authorization-redeem-token',
       id: 'redeem-1',
-      token: server.bootstrapToken,
+      token: adminToken,
     });
     await redeemed;
     return { ws };
@@ -385,8 +413,8 @@ describe('Dedicated Server — T13.3 profiles/avatars/members/presence (real net
   });
 
   it('target:"server" avatar mutation is rejected without server.manage and accepted with it', async () => {
-    const { server, url } = await startServer();
-    const { ws: admin } = await connectAsAdmin(server, url);
+    const { url, adminToken } = await startServer();
+    const { ws: admin } = await connectAsAdmin(adminToken, url);
 
     const guestWs = track(await connect(url));
     await handshake(guestWs, 'Guest');
@@ -417,8 +445,8 @@ describe('Dedicated Server — T13.3 profiles/avatars/members/presence (real net
   });
 
   it('target:"member" clear is rejected without moderation.profile.clear, accepted with it, and cannot set arbitrary content (only clear)', async () => {
-    const { server, url } = await startServer();
-    const { ws: admin } = await connectAsAdmin(server, url);
+    const { url, adminToken } = await startServer();
+    const { ws: admin } = await connectAsAdmin(adminToken, url);
 
     await createGroupWithPermissions(admin, 'clearer', 'Clearer', ['moderation.profile.clear']);
     const clearerGroupId = await findGroupIdByName(admin, 'Clearer');
@@ -499,8 +527,8 @@ describe('Dedicated Server — T13.3 profiles/avatars/members/presence (real net
   });
 
   it('a memberRef naming an offline/nonexistent member returns the non-fatal MEMBER_NOT_FOUND', async () => {
-    const { server, url } = await startServer();
-    const { ws: admin } = await connectAsAdmin(server, url);
+    const { url, adminToken } = await startServer();
+    const { ws: admin } = await connectAsAdmin(adminToken, url);
     await createGroupWithPermissions(admin, 'clearer', 'Clearer', ['moderation.profile.clear']);
     const clearerGroupId = await findGroupIdByName(admin, 'Clearer');
     const participantId = await joinGeneralAndGetParticipantId(admin, 'Admin');
@@ -517,8 +545,8 @@ describe('Dedicated Server — T13.3 profiles/avatars/members/presence (real net
   });
 
   it('hostile hidden-channel-leakage: presence payloads never carry any channel-shaped field, even for a member currently inside a hidden channel', async () => {
-    const { server, url } = await startServer();
-    const { ws: admin } = await connectAsAdmin(server, url);
+    const { url, adminToken } = await startServer();
+    const { ws: admin } = await connectAsAdmin(adminToken, url);
 
     await createGroupWithPermissions(admin, 'staff', 'Staff', ['voice.channel.join']);
     const staffGroupId = await findGroupIdByName(admin, 'Staff');
@@ -623,8 +651,8 @@ describe('Dedicated Server — T13.3 profiles/avatars/members/presence (real net
   });
 
   it('role-bucket derivation: a real admin-permission holder shows "admin", a moderation-permission holder via a custom group shows "moderator", and a plain member has no bucket', async () => {
-    const { server, url } = await startServer();
-    const { ws: admin } = await connectAsAdmin(server, url);
+    const { url, adminToken } = await startServer();
+    const { ws: admin } = await connectAsAdmin(adminToken, url);
 
     await createGroupWithPermissions(admin, 'kicker', 'Kicker', ['moderation.kick']);
     const kickerGroupId = await findGroupIdByName(admin, 'Kicker');
@@ -774,8 +802,8 @@ describe('Dedicated Server — T13.3 profiles/avatars/members/presence (real net
   });
 
   it('server:hello carries the current server avatarRef once one has been set (visible to a freshly connecting client)', async () => {
-    const { server, url } = await startServer();
-    const { ws: admin } = await connectAsAdmin(server, url);
+    const { url, adminToken } = await startServer();
+    const { ws: admin } = await connectAsAdmin(adminToken, url);
 
     const setAck = waitForMessageOfType(admin, 'server:profile-self-updated');
     send(admin, {

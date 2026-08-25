@@ -9,6 +9,9 @@ node_modules/
 **/out/
 *.tsbuildinfo
 
+# T15 release artifacts (built on demand by scripts/release/*.mjs — never committed)
+dist-release/
+
 # Native helper build output (packages/windows-media/native/*/build/) - never a committed binary; see
 # packages/windows-media/native/process-loopback-helper/build.ps1 for the reproducible build step.
 packages/windows-media/native/**/build/
@@ -30,6 +33,13 @@ disco-voador-server-data/
 **/*.pem
 infrastructure/coturn/turnserver.conf
 infrastructure/coturn/turnserver.dev.conf
+# Real runtime Compose copies an operator creates from the *.example.yaml templates — documented in
+# infrastructure/docker/README.md as gitignored; this pattern was missing even though the doc already
+# claimed it (found during T15). The *.example.yaml templates themselves remain tracked.
+infrastructure/docker/compose.server.yaml
+infrastructure/docker/compose.self-hosted.yaml
+infrastructure/docker/compose.turn.yaml
+infrastructure/docker/compose.turn-bridge.yaml
 .claude/settings.local.json
 
 # Editors and operating systems

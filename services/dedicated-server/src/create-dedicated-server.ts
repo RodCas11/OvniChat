@@ -33,10 +33,11 @@ const DEDICATED_SERVER_CAPABILITIES: readonly ServerCapability[] = [
 export interface DedicatedServerHandle {
   readonly connectionCount: number;
   readonly config: DedicatedServerConfig;
-  /** T9 — set only when this call created a brand-new authorization store (see
-   * `AuthorizationStore.bootstrapToken`'s own doc comment) — the one-time Server Admin bootstrap
-   * token, in raw form. `cli.ts` prints this once and only once. */
-  readonly bootstrapToken: string | undefined;
+  /** T15 — whether this server's authorization store already has at least one claimed Server Admin
+   * at the moment this handle was composed (see `AuthorizationStore.hasAnyServerAdmin`'s own doc
+   * comment). `cli.ts` uses this, never a raw token, to decide whether its startup banner should
+   * point the operator at `chantivo-server admin-token create`. */
+  readonly hasAnyServerAdmin: boolean;
   start(): Promise<RealtimeServerAddress>;
   stop(): Promise<void>;
 }
@@ -137,7 +138,7 @@ export function createDedicatedServer(
       return realtimeServer.connectionCount;
     },
     config,
-    bootstrapToken: authorization.bootstrapToken,
+    hasAnyServerAdmin: authorization.hasAnyServerAdmin(),
     start: () => realtimeServer.start(),
     stop: async () => {
       if (stopped) return;

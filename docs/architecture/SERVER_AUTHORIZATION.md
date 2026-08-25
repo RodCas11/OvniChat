@@ -153,27 +153,37 @@ precise, corrected statement and its own regression evidence.
 
 ### Bootstrap on an invite-only server
 
-The one-time bootstrap token (below) also satisfies invite-only admission, not only `client:
-authorization-redeem-token` post-connection. This was a real gap found while building T9, not part
-of the original design: a server started directly in `accessMode: invite-only` would otherwise
-permanently lock out its own operator — a fresh identity has no persistent membership and no invite
-yet exists, and the bootstrap token's row has `kind: 'bootstrap'`, not `'invite'`, so a
-kind-restricted check would reject it exactly like any other unknown identity. Fixed by having the
-admission check accept a matching row of either kind. Regression-tested
-(`authorization-store.test.ts`'s "the bootstrap token itself admits a fresh server's operator") and
-exercised end to end by the real-socket integration suite.
+**Updated by T15's security fix — see "Server Admin bootstrap" below for the current mechanism; this
+section's history is preserved because the underlying operator-lockout problem it solved is still
+real and still solved, just by a different token kind.** A server started directly in `accessMode:
+invite-only` must not permanently lock out its own operator — a fresh identity has no persistent
+membership and no invite yet exists, so _something_ has to satisfy the pre-connection admission check
+besides an `'invite'`-kind token, or the operator could never even connect to redeem their own admin
+credential. Originally (T9) this was the one-time `'bootstrap'`-kind token described below; T15
+removed that token kind entirely (see below) and the admission check now accepts a `'privilege'`-kind
+row instead — the exact kind `chantivo-server admin-token create` mints. This grants no new
+capability: `'privilege'` tokens are already admin-issued-or-explicitly-minted-by-an-operator-with-
+shell-access, never self-servable by an ordinary participant. Regression-tested
+(`authorization-store.test.ts`'s "T15 initial admin claim" block) and exercised end to end by the
+real-socket integration suite and `tests/dedicated-server/token-leak-regression.test.ts`.
 
 ## Server Admin bootstrap
 
-A fresh authorization store (detected as "no `schema_migrations` rows before this open") generates
-one cryptographically random token (`DV-ADMIN-<43-char base64url>`, 256 bits of entropy via
-`node:crypto`'s `randomBytes`), stores only its SHA-256 digest, and returns the _raw_ value exactly
-once, in memory, to `services/dedicated-server`'s composition root
-(`AuthorizationStore.bootstrapToken`). `cli.ts` prints it in a single, visually distinct startup
-banner block — never on a later restart (the field is `undefined` for every subsequent open of an
-existing store), never through the structured logger, and never persisted anywhere in raw form.
-Redeeming it (`client:authorization-redeem-token`, the same message any privilege/invite token uses)
-atomically consumes it and grants `server-admin`.
+**Redesigned by T15's security fix.** The original design (a fresh authorization store automatically
+generating a `DV-ADMIN-<43-char base64url>` token and having `cli.ts` print it in the server's own
+startup banner) leaked the raw admin-equivalent secret into infrastructure log collectors: `cli.ts`
+runs inside the same long-running, systemd/Docker-supervised process whose stdout is captured
+wholesale into `journalctl -u chantivo-server` / `docker compose logs` — confirmed for real on the
+validation VPS's own journal. A fresh authorization store now seeds only its three built-in groups and
+claims no admin at all; the server's startup banner instead prints a safe, non-secret hint ("No
+administrator has claimed this server yet. Run: sudo chantivo-server admin-token create") whenever
+`AuthorizationStore.hasAnyServerAdmin()` reports false, gated so it never repeats once claimed. The
+very first Server Admin credential a server ever has now comes exclusively from an explicit, one-shot
+`chantivo-server admin-token create` invocation (`cli-admin-token.ts`) — a distinct process whose
+stdout is never part of the supervised service's captured log stream — using the exact same
+`createToken`/`'privilege'`-kind mechanism as every later recovery call. There is no longer a separate
+"initial claim" mechanism distinct from "lost my token, recover" — they are now the same command, and
+the disposable, always-repeatable one already had this safety property before T15.
 
 ## Tokens
 

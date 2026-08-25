@@ -445,25 +445,26 @@ Config file:   disco-voador-server.config.json
 Ready.
 ```
 
-**T9's one deliberate exception**: on a genuinely fresh authorization store (first-ever start
-against an empty `dataDir`), the _same_ banner write additionally includes the one-time Server
-Admin bootstrap privilege key, exactly once:
+**Redesigned by T15's security fix**: this banner never prints a raw token. On a genuinely fresh
+authorization store (first-ever start against an empty `dataDir`, or more precisely: whenever
+`hasAnyServerAdmin()` reports no identity yet holds the built-in Server Admin group), the _same_
+banner write additionally includes a safe, non-secret hint, exactly once per unclaimed startup:
 
 ```text
-Initial Server Admin privilege key:
-
-  DV-ADMIN-<43-char base64url secret>
-
-This key is shown once and cannot be recovered later. Use it (or "Use Privilege Key" once
-connected as a Guest) to become this server's Server Admin.
+No administrator has claimed this server yet.
+Run:
+  sudo chantivo-server admin-token create
 ```
 
-This is folded into the same `console.info` call as the rest of the banner (never a second,
-separately-timed write, and never repeated on a later restart — the server only ever generates a
-bootstrap token once, on the database's first-ever initialization; see
-[`SERVER_AUTHORIZATION.md`](SERVER_AUTHORIZATION.md#server-admin-bootstrap)). Every other startup
-value remains non-sensitive: no client private keys, no other invite/privilege secrets, no
-environment values beyond the display fields above. Signal handling: `SIGINT` (Ctrl+C) and
+The server's own supervised process never generates or prints an admin credential at all — it runs
+inside the same long-running process whose stdout `journalctl`/`docker compose logs` capture
+wholesale, so nothing printed here can ever be treated as secret. The one-time initial admin
+credential (and every later recovery credential) comes exclusively from `chantivo-server admin-token
+create` — a distinct, one-shot process whose stdout is never part of this captured stream; see
+[`SERVER_AUTHORIZATION.md`](SERVER_AUTHORIZATION.md#server-admin-bootstrap) for the full design and
+why the original T9 bootstrap-token-in-banner mechanism was removed. Every other startup value
+remains non-sensitive: no client private keys, no invite/privilege secrets, no environment values
+beyond the display fields above. Signal handling: `SIGINT` (Ctrl+C) and
 `SIGTERM` both trigger the same
 graceful-shutdown path (`server.stop()` — stop accepting new connections, close existing sessions,
 release resources, then `process.exit(0)`); a shutdown failure exits non-zero. This is the same
@@ -493,12 +494,13 @@ pnpm --filter @disco-voador/dedicated-server run smoke
 ```
 
 Real end-to-end, no Electron involved: spawns the actual built CLI (`dist/cli.js`) as a child
-process, waits for it to report listening, captures the one-time bootstrap Server Admin token
-straight from the real stdout banner (T9), connects a real `ws` client, completes the full T7
-handshake, receives `server:hello` (asserting the `serverName`/`serverCapabilities` fields) and the
-voice-channel catalog, redeems the bootstrap token over the real socket and asserts it grants
-`server-admin` (T9), disconnects cleanly, then sends `SIGTERM` and observes the exit (subject to
-the Windows caveat above).
+process, waits for it to report listening, confirms its banner shows the safe "unclaimed" hint (never
+a raw token), mints a real admin token via a SEPARATE real child process (`dist/cli-admin-token.js`,
+the same `chantivo-server admin-token create` mechanism an operator would run — T15), connects a real
+`ws` client, completes the full T7 handshake, receives `server:hello` (asserting the
+`serverName`/`serverCapabilities` fields) and the voice-channel catalog, redeems that admin token over
+the real socket and asserts it grants `server-admin` (T9), disconnects cleanly, then sends `SIGTERM`
+and observes the exit (subject to the Windows caveat above).
 
 ## Isolation guarantee — two independent servers
 

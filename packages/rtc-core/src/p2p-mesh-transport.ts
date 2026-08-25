@@ -1,3 +1,4 @@
+import { toRtcIceServers } from './ice-servers.js';
 import { Peer } from './peer.js';
 import { createRtcPeerConnection, type RtcPeerConnectionLike } from './rtc-peer-connection.js';
 import type {
@@ -28,6 +29,13 @@ export interface P2PMeshTransportOptions {
  * rather than reject, because a caller cannot meaningfully recover from a specific rejected
  * `handleRemote*` call; the connection's real health is observable through `peerStateChanged`
  * transitioning to `'failed'`, which is the WebRTC-idiomatic signal for that.
+ *
+ * T15.2 note on the `'failed'` lifecycle: a peer reaching `'failed'` is no longer removed from the
+ * mesh on the spot. `Peer` first runs its own bounded ICE-restart recovery (see that class), and
+ * only reports terminal — at which point `cleanupPeer` closes and removes it, emitting `peerClosed`
+ * exactly as before — once that budget is spent. Keeping the peer in `peers` for the duration is
+ * load-bearing, not incidental: it is what lets an ICE-restart offer from the *remote* side of the
+ * pair still be routed to a connection that has failed locally.
  */
 export class P2PMeshTransport implements MediaTransport {
   /**
@@ -37,7 +45,9 @@ export class P2PMeshTransport implements MediaTransport {
    * handshake) without forcing a caller to discard and recreate this transport just to pick up a
    * new ICE server list. `addParticipant` always reads this field lazily at the moment it creates a
    * new `RTCPeerConnection`, so a `setIceServers` call made any time before a given
-   * `addParticipant` call is fully honored by that call.
+   * `addParticipant` call is fully honored by that call — and, since T15.1, a `setIceServers` call
+   * made *after* one is honored too, for any peer that has not yet established a working transport
+   * (see {@link setIceServers}).
    */
   private config: RtcTransportConfig;
   private readonly signalingPort: SignalingPort;
@@ -89,15 +99,44 @@ export class P2PMeshTransport implements MediaTransport {
    * special-cased behavior, producing the same STUN/host-only connectivity as if no ICE servers had
    * ever been configured.
    *
-   * Only affects `RTCPeerConnection`s created *after* this call. Every already-connected peer keeps
-   * using whatever ICE servers its own connection was originally created with — this method never
-   * touches an existing `RTCPeerConnection`'s configuration, never triggers an ICE restart, and never
-   * forces renegotiation. (The platform does not support changing a live `RTCPeerConnection`'s ICE
-   * servers in place at all; an ICE restart for already-connected peers is a distinct, deliberately
-   * out-of-scope future concern.)
+   * ## T15.1 — self-healing for peers created before this call
+   *
+   * This originally only affected `RTCPeerConnection`s created *after* the call, on the (incorrect)
+   * assumption that the platform cannot change a live connection's ICE servers. It can:
+   * `RTCPeerConnection.setConfiguration()` is standard, supported WebRTC, and pairing it with
+   * `restartIce()` makes an already-created connection genuinely re-gather against the new list.
+   *
+   * That assumption produced a real, field-reproduced dead end: any peer connection created while
+   * the ICE server list was still empty (or still pointed at an endpoint that turned out to be
+   * unreachable) stayed limited to host candidates for the entire session, with no mechanism able to
+   * repair it. So this call now *also* pushes the new list into every existing peer that has not yet
+   * established a working transport (see `Peer.applyIceServers`/`Peer.hasEstablishedTransport`).
+   *
+   * Peers that already have a working transport are deliberately left completely untouched — no
+   * `setConfiguration`, no ICE restart, no renegotiation. A routine credential refresh must never
+   * disturb a call that is currently working; only a connection that has not managed to connect yet
+   * has anything to gain from re-gathering. Since T15.2 those untouched peers do still *remember*
+   * the new list (see `Peer.applyIceServers`), so that if one of them later fails, its bounded
+   * ICE-restart recovery re-gathers against the newest credentials rather than the possibly-expired
+   * ones its connection was constructed with.
    */
   setIceServers(iceServers: readonly RtcIceServerConfig[]): void {
     this.config = { ...this.config, iceServers };
+    if (this.closedAll) return;
+
+    const platformIceServers = toRtcIceServers(this.config);
+    for (const [participantId, peer] of this.peers) {
+      try {
+        peer.applyIceServers(platformIceServers);
+      } catch (error) {
+        // One peer rejecting the new configuration (e.g. it is mid-teardown and the platform throws
+        // `InvalidStateError`) must never prevent every other peer in the mesh from being healed.
+        console.error(`rtc-core: failed to apply new ICE servers to an existing peer`, {
+          participantId,
+          error,
+        });
+      }
+    }
   }
 
   addParticipant(participantId: ParticipantId, role: 'initiator' | 'responder'): void {

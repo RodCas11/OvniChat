@@ -503,7 +503,7 @@ describe('P2PMeshTransport — remote track / state events carry the participant
     },
   );
 
-  it('a peer reaching "failed" both emits peerStateChanged and triggers cleanup/peerClosed', () => {
+  it('a peer reaching "failed" emits peerStateChanged but is NOT torn down on the spot (T15.2)', () => {
     const { transport, connections } = createTransport();
     transport.addParticipant('peer-1', 'responder');
     const stateEvents: RTCPeerConnectionState[] = [];
@@ -516,6 +516,23 @@ describe('P2PMeshTransport — remote track / state events carry the participant
     pc?.onconnectionstatechange?.(new Event('connectionstatechange'));
 
     expect(stateEvents).toEqual(['failed']);
+    // The peer stays in the mesh while its bounded ICE-restart recovery runs — which is also what
+    // keeps an ICE-restart offer from the *remote* side routable to it. See the recovery suite below
+    // for the eventual teardown once the budget is spent.
+    expect(closedEvents).toEqual([]);
+    expect(pc?.closeCallCount).toBe(0);
+  });
+
+  it('a peer reaching "closed" is torn down immediately — no recovery applies', () => {
+    const { transport, connections } = createTransport();
+    transport.addParticipant('peer-1', 'responder');
+    const closedEvents: string[] = [];
+    transport.on('peerClosed', (participantId) => closedEvents.push(participantId));
+
+    const pc = [...connections.values()][0];
+    if (pc) pc.connectionState = 'closed';
+    pc?.onconnectionstatechange?.(new Event('connectionstatechange'));
+
     expect(closedEvents).toEqual(['peer-1']);
     expect(pc?.closeCallCount).toBe(1);
   });
@@ -792,8 +809,8 @@ describe('P2PMeshTransport — setIceServers (T14: late-arriving TURN credential
     );
   });
 
-  it('a participant already added before setIceServers keeps its existing RTCPeerConnection untouched — no forced renegotiation or ICE restart', () => {
-    const { transport, connections, signalingPort } = createTransport();
+  it('a participant already added before setIceServers has the new list pushed into its existing RTCPeerConnection, never a replacement connection', () => {
+    const { transport, connections } = createTransport();
     transport.addParticipant('peer-existing', 'responder');
     const existingPc = [...connections.values()][0];
 
@@ -801,13 +818,15 @@ describe('P2PMeshTransport — setIceServers (T14: late-arriving TURN credential
       { urls: 'turn:turn.example.com:3478', username: 'u', credential: 'c' },
     ]);
 
-    // The existing connection is the exact same object — never closed, replaced, or reconstructed —
-    // and setIceServers triggered no signaling activity (no offer, no renegotiation) on it.
+    // Same connection object — never closed, replaced, or reconstructed — but its configuration is
+    // genuinely updated in place rather than left stuck on what it was constructed with.
     expect(connections.size).toBe(1);
     expect([...connections.values()][0]).toBe(existingPc);
     expect(existingPc?.closeCallCount).toBe(0);
-    expect(existingPc?.setLocalDescriptionCalls).toEqual([]);
-    expect(signalingPort.offers).toEqual([]);
+    expect(existingPc?.setConfigurationCalls).toEqual([
+      { iceServers: [{ urls: 'turn:turn.example.com:3478', username: 'u', credential: 'c' }] },
+    ]);
+    expect(existingPc?.restartIceCallCount).toBe(1);
   });
 
   it('calling setIceServers with an empty array is valid and the next peer connection gets an empty iceServers array (TURN disabled)', () => {
@@ -828,6 +847,287 @@ describe('P2PMeshTransport — setIceServers (T14: late-arriving TURN credential
     transport.addParticipant('peer-1', 'responder');
 
     expect(configsSeenByFactory).toEqual([{ iceServers: [] }]);
+  });
+});
+
+/**
+ * T15.1 regression suite. These cover the exact field failure this task was opened for: a real
+ * packaged client whose peer connections were created with an ICE server list that could never
+ * produce a relay candidate, and which then had no mechanism at all to pick up a corrected or
+ * later-arriving list — leaving every peer permanently limited to host candidates.
+ *
+ * Every credential value here is a fixed, obviously-fake literal ('fake-user'/'fake-credential'),
+ * never a real minted one, matching this repository's existing token-leak-regression convention.
+ */
+describe('P2PMeshTransport — setIceServers self-heals peers created before it (T15.1)', () => {
+  const turnServers: RtcIceServerConfig[] = [
+    { urls: 'turn:turn.example.com:3478', username: 'fake-user', credential: 'fake-credential' },
+  ];
+
+  it('a peer created BEFORE any TURN credentials arrived still ends up with them, rather than being permanently stuck host-only', () => {
+    const { transport, connections } = createTransport();
+    // Reproduces the shipped production shape: no STUN configured at all, so a peer created now can
+    // only ever gather host candidates.
+    transport.addParticipant('peer-early', 'responder');
+    const pc = [...connections.values()][0];
+    expect(pc?.setConfigurationCalls).toEqual([]);
+
+    transport.setIceServers(turnServers);
+
+    expect(pc?.setConfigurationCalls).toHaveLength(1);
+    expect(pc?.setConfigurationCalls[0]?.iceServers).toEqual(turnServers);
+    expect(pc?.restartIceCallCount).toBe(1);
+  });
+
+  it('heals every not-yet-connected peer in the mesh, not only the first', () => {
+    const { transport, connections } = createTransport();
+    transport.addParticipant('peer-1', 'responder');
+    transport.addParticipant('peer-2', 'responder');
+    transport.addParticipant('peer-3', 'responder');
+
+    transport.setIceServers(turnServers);
+
+    for (const pc of connections.values()) {
+      expect(pc.setConfigurationCalls).toHaveLength(1);
+      expect(pc.restartIceCallCount).toBe(1);
+    }
+  });
+
+  it('never disturbs a peer whose transport is already established — a credential refresh must not break a working call', () => {
+    const { transport, connections } = createTransport();
+    transport.addParticipant('peer-working', 'responder');
+    transport.addParticipant('peer-stuck', 'responder');
+    const [working, stuck] = [...connections.values()];
+    if (!working || !stuck) throw new Error('expected two fake connections');
+    working.connectionState = 'connected';
+    working.iceConnectionState = 'connected';
+
+    transport.setIceServers(turnServers);
+
+    expect(working.setConfigurationCalls).toEqual([]);
+    expect(working.restartIceCallCount).toBe(0);
+    expect(stuck.setConfigurationCalls).toHaveLength(1);
+    expect(stuck.restartIceCallCount).toBe(1);
+  });
+
+  it('treats iceConnectionState "completed" as established too, even while connectionState reports a transient "disconnected"', () => {
+    const { transport, connections } = createTransport();
+    transport.addParticipant('peer-hiccup', 'responder');
+    const pc = [...connections.values()][0];
+    if (!pc) throw new Error('expected a fake connection');
+    pc.connectionState = 'disconnected';
+    pc.iceConnectionState = 'completed';
+
+    transport.setIceServers(turnServers);
+
+    expect(pc.setConfigurationCalls).toEqual([]);
+    expect(pc.restartIceCallCount).toBe(0);
+  });
+
+  it('heals a peer whose ICE already failed — the exact state the field failure ended in', () => {
+    const { transport, connections } = createTransport();
+    transport.addParticipant('peer-failed', 'responder');
+    const pc = [...connections.values()][0];
+    if (!pc) throw new Error('expected a fake connection');
+    pc.connectionState = 'failed';
+    pc.iceConnectionState = 'failed';
+
+    transport.setIceServers(turnServers);
+
+    expect(pc.setConfigurationCalls).toHaveLength(1);
+    expect(pc.restartIceCallCount).toBe(1);
+  });
+
+  it('a second (refreshed) credential set is applied again to a still-unconnected peer', () => {
+    const { transport, connections } = createTransport();
+    transport.setIceServers(turnServers);
+    transport.addParticipant('peer-1', 'responder');
+    const pc = [...connections.values()][0];
+
+    transport.setIceServers([
+      {
+        urls: 'turn:turn.example.com:3478',
+        username: 'fake-user-2',
+        credential: 'fake-credential-2',
+      },
+    ]);
+
+    expect(pc?.setConfigurationCalls).toHaveLength(1);
+    expect(pc?.setConfigurationCalls[0]?.iceServers).toEqual([
+      {
+        urls: 'turn:turn.example.com:3478',
+        username: 'fake-user-2',
+        credential: 'fake-credential-2',
+      },
+    ]);
+  });
+
+  it('an already-negotiated initiator turns the ICE restart into a real renegotiation offer', async () => {
+    const { transport, connections, signalingPort } = createTransport();
+    transport.addParticipant('peer-1', 'initiator');
+    await flushMicrotasks();
+    expect(signalingPort.offers).toHaveLength(1);
+    const pc = [...connections.values()][0];
+    if (!pc) throw new Error('expected a fake connection');
+    pc.iceConnectionState = 'checking';
+
+    transport.setIceServers(turnServers);
+    await flushMicrotasks();
+
+    // The platform's own negotiationneeded -> createAndSendOffer path (not a second, parallel
+    // offer-scheduling mechanism inside setIceServers) produced the ICE-restart offer.
+    expect(signalingPort.offers).toHaveLength(2);
+  });
+
+  it('one peer throwing on setConfiguration does not stop the rest of the mesh from being healed', () => {
+    const { transport, connections } = createTransport();
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    transport.addParticipant('peer-bad', 'responder');
+    transport.addParticipant('peer-good', 'responder');
+    const [bad, good] = [...connections.values()];
+    if (!bad || !good) throw new Error('expected two fake connections');
+    bad.setConfigurationImpl = () => {
+      throw new Error('InvalidStateError');
+    };
+
+    expect(() => transport.setIceServers(turnServers)).not.toThrow();
+
+    expect(good.setConfigurationCalls).toHaveLength(1);
+    expect(good.restartIceCallCount).toBe(1);
+    consoleError.mockRestore();
+  });
+
+  it('never logs a credential value while applying or failing to apply ICE servers', () => {
+    const { transport, connections } = createTransport();
+    const logged: string[] = [];
+    const capture = (...args: unknown[]) => {
+      logged.push(args.map((a) => JSON.stringify(a) ?? String(a)).join(' '));
+    };
+    const spies = [
+      vi.spyOn(console, 'error').mockImplementation(capture),
+      vi.spyOn(console, 'warn').mockImplementation(capture),
+      vi.spyOn(console, 'info').mockImplementation(capture),
+      vi.spyOn(console, 'log').mockImplementation(capture),
+      vi.spyOn(console, 'debug').mockImplementation(capture),
+    ];
+    transport.addParticipant('peer-bad', 'responder');
+    const bad = [...connections.values()][0];
+    if (!bad) throw new Error('expected a fake connection');
+    bad.setConfigurationImpl = () => {
+      throw new Error('InvalidStateError');
+    };
+
+    transport.setIceServers(turnServers);
+
+    for (const spy of spies) spy.mockRestore();
+    expect(logged.join('\n')).not.toContain('fake-credential');
+    expect(logged.join('\n')).not.toContain('fake-user');
+  });
+
+  it('does nothing at all after closeAll', () => {
+    const { transport, connections } = createTransport();
+    transport.addParticipant('peer-1', 'responder');
+    const pc = [...connections.values()][0];
+    transport.closeAll();
+
+    expect(() => transport.setIceServers(turnServers)).not.toThrow();
+    expect(pc?.setConfigurationCalls).toEqual([]);
+    expect(pc?.restartIceCallCount).toBe(0);
+  });
+});
+
+describe('P2PMeshTransport — bounded ICE-failure recovery across the mesh (T15.2)', () => {
+  const turnServers: RtcIceServerConfig[] = [
+    { urls: 'turn:turn.example.com:3478', username: 'fake-user', credential: 'fake-credential' },
+  ];
+  /** 1s + 3s + 9s of attempts, then the 27s verdict window — see `ICE_RECOVERY_*` in `peer.ts`. */
+  const FULL_RECOVERY_WINDOW_MS = 1_000 + 3_000 + 9_000 + 27_000;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function failPeer(pc: FakePeerConnection): void {
+    pc.connectionState = 'failed';
+    pc.iceConnectionState = 'failed';
+    pc.onconnectionstatechange?.(new Event('connectionstatechange'));
+  }
+
+  it('a failed peer is eventually closed and removed once its retry budget is spent, leaving the rest of the mesh untouched', () => {
+    const { transport, connections } = createTransport();
+    transport.addParticipant('peer-broken', 'responder');
+    transport.addParticipant('peer-healthy', 'responder');
+    const [broken, healthy] = [...connections.values()];
+    if (!broken || !healthy) throw new Error('expected two fake connections');
+    healthy.connectionState = 'connected';
+    healthy.iceConnectionState = 'connected';
+    const closedEvents: string[] = [];
+    transport.on('peerClosed', (participantId) => closedEvents.push(participantId));
+
+    failPeer(broken);
+    vi.advanceTimersByTime(FULL_RECOVERY_WINDOW_MS);
+
+    expect(closedEvents).toEqual(['peer-broken']);
+    expect(broken.closeCallCount).toBe(1);
+    // The healthy peer was never restarted, reconfigured, or closed by any of this.
+    expect(healthy.restartIceCallCount).toBe(0);
+    expect(healthy.setConfigurationCalls).toEqual([]);
+    expect(healthy.closeCallCount).toBe(0);
+  });
+
+  it('recovers a failed peer against TURN credentials that arrived while it was still healthy', () => {
+    const { transport, connections } = createTransport();
+    transport.addParticipant('peer-1', 'responder');
+    const pc = [...connections.values()][0];
+    if (!pc) throw new Error('expected a fake connection');
+    pc.connectionState = 'connected';
+    pc.iceConnectionState = 'connected';
+
+    // A routine mid-call credential refresh: recorded, but the working call is not disturbed.
+    transport.setIceServers(turnServers);
+    expect(pc.setConfigurationCalls).toEqual([]);
+    expect(pc.restartIceCallCount).toBe(0);
+
+    failPeer(pc);
+    vi.advanceTimersByTime(1_000);
+
+    expect(pc.setConfigurationCalls).toHaveLength(1);
+    expect(pc.setConfigurationCalls[0]?.iceServers).toEqual(turnServers);
+    expect(pc.restartIceCallCount).toBe(1);
+  });
+
+  it('removeParticipant during recovery cancels the retry chain — no timer or peerClosed afterwards', () => {
+    const { transport, connections } = createTransport();
+    transport.addParticipant('peer-1', 'responder');
+    const pc = [...connections.values()][0];
+    if (!pc) throw new Error('expected a fake connection');
+    const closedEvents: string[] = [];
+
+    failPeer(pc);
+    transport.on('peerClosed', (participantId) => closedEvents.push(participantId));
+    transport.removeParticipant('peer-1');
+    vi.advanceTimersByTime(FULL_RECOVERY_WINDOW_MS * 10);
+
+    expect(closedEvents).toEqual(['peer-1']); // exactly the explicit removal, never a second one
+    expect(pc.restartIceCallCount).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('closeAll during recovery cancels every retry chain in the mesh', () => {
+    const { transport, connections } = createTransport();
+    transport.addParticipant('peer-1', 'responder');
+    transport.addParticipant('peer-2', 'responder');
+    for (const pc of connections.values()) failPeer(pc);
+
+    transport.closeAll();
+    vi.advanceTimersByTime(FULL_RECOVERY_WINDOW_MS * 10);
+
+    for (const pc of connections.values()) expect(pc.restartIceCallCount).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
 

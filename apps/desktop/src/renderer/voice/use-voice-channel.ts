@@ -1148,9 +1148,11 @@ export function useVoiceChannel(
     // T13.4 — derived once per real connection (stable across every T11 reconnect attempt for this
     // session, since `url` does not change; only a genuine server switch, which remounts this whole
     // effect, produces a different value) — see `serverScopeKeyRef`'s own doc comment. `url` is
-    // always a `ws://host:port` string (see `parse-server-address.ts`), so `new URL(url).host` is
-    // exactly the `host[:port]` shape `deriveServerScopeKey` expects — never re-derived independently
-    // from `main/settings/settings-file.ts`'s own copy, which would risk the two drifting apart.
+    // always a `ws://host:port` or `wss://host:port` string (see `parse-server-address.ts`), and
+    // `URL.host` yields the same `host[:port]` shape regardless of which of those two schemes is
+    // present, so `new URL(url).host` is exactly the shape `deriveServerScopeKey` expects — never
+    // re-derived independently from `main/settings/settings-file.ts`'s own copy, which would risk
+    // the two drifting apart.
     serverScopeKeyRef.current = deriveServerScopeKey(new URL(url).host);
 
     // T10 — a fresh connection starts with no outstanding chat-history requests; any left over
@@ -1190,7 +1192,27 @@ export function useVoiceChannel(
     // `onJoined`/`onLeft`/`onParticipantJoined`/`onParticipantLeft`/`onWebrtcOffer`/`onWebrtcAnswer`/
     // `onWebrtcIceCandidate`/`releaseMicrophone`/`releaseCamera`/`releaseScreen` to keep working
     // correctly across a transport recreation.
-    let transport = new P2PMeshTransport({ iceServers }, client);
+    /**
+     * T15.1 — the ICE server list a `P2PMeshTransport` is *constructed* with, kept as a mutable
+     * binding so it survives `recreateTransport()`.
+     *
+     * Previously both the initial construction and every reconnect's `recreateTransport()` passed
+     * the bare `iceServers` const (the operator's configured STUN list, which is legitimately empty
+     * in a default deployment), and the merged STUN+TURN list existed only inside the already-
+     * constructed transport. A reconnect therefore threw away every TURN server this session had
+     * already learned about and started again from nothing, re-opening the same "peer connections
+     * created before TURN is known" window on every single reconnect — worst for exactly the
+     * restrictive-NAT clients that need TURN in the first place and reconnect most often.
+     *
+     * A retained credential can be near or past its own `expiresAt` by the time a reconnect reuses
+     * it, which is fine and deliberate: the reconnect's own identity handshake always mints a fresh
+     * set moments later, and `P2PMeshTransport.setIceServers` now pushes that fresh set into any
+     * peer that has not connected yet (see that method's T15.1 doc comment). Starting a reconnect
+     * from the last-known list is therefore never worse than starting from an empty one.
+     */
+    let currentIceServers: readonly RtcIceServerConfig[] = iceServers;
+
+    let transport = new P2PMeshTransport({ iceServers: currentIceServers }, client);
     transportRef.current = transport;
 
     // T13.4 Decision 3 — one `RemoteAudioGraphController` per connection session, matching this
@@ -1310,7 +1332,9 @@ export function useVoiceChannel(
       transport.off('peerStateChanged', onPeerStateChanged);
       transport.closeAll();
 
-      transport = new P2PMeshTransport({ iceServers }, client);
+      // T15.1 — the last-known combined STUN+TURN list, never the bare configured STUN list; see
+      // `currentIceServers`' own doc comment above for why a reconnect must not reset it.
+      transport = new P2PMeshTransport({ iceServers: currentIceServers }, client);
       transportRef.current = transport;
 
       transport.on('remoteTrack', onRemoteTrack);
@@ -1556,7 +1580,16 @@ export function useVoiceChannel(
      * never runs and every peer connection keeps using `iceServers` (STUN only) exactly as before
      * this feature existed — a fully supported, no-op-safe degradation. */
     const onTurnCredentials = (message: ServerTurnCredentialsMessage) => {
-      transport.setIceServers([...iceServers, ...message.iceServers.map(toRtcIceServerConfig)]);
+      currentIceServers = [...iceServers, ...message.iceServers.map(toRtcIceServerConfig)];
+      transport.setIceServers(currentIceServers);
+      // Public metadata only — counts and a boolean, never a URL, username, or credential value.
+      // Exists so a real client's TURN availability can be confirmed from its own logs without
+      // anyone ever having to inspect (or accidentally paste) a live credential.
+      console.info(
+        `disco-voador:turn-credentials:servers=${message.iceServers.length}` +
+          `:credentialed=${message.iceServers.every((server) => typeof server.credential === 'string')}` +
+          `:expiresInSeconds=${Math.max(0, Math.round((Date.parse(message.expiresAt) - Date.now()) / 1000))}`,
+      );
     };
 
     // T13.2 — every `voice:catalog` replaces the tree wholesale (never merges/patches — see

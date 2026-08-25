@@ -35,3 +35,9 @@
   color: var(--chantivo-accent);
   flex-shrink: 0;
 }
+
+/* T15.1 — a failed media connection is a problem, not a feature: it must not read as one of the
+   accent-coloured camera/screen indicators sitting beside it. */
+.connectionProblem {
+  color: var(--chantivo-warning);
+}

@@ -90,7 +90,7 @@ export function AddServerDialog({
         const ok = await actions.updateBookmark({
           ...bookmark,
           displayName: trimmedName,
-          serverAddress: address.trim(),
+          serverAddress: parsed.address.url,
         });
         setSaving(false);
         if (!ok) {
@@ -103,7 +103,7 @@ export function AddServerDialog({
 
       const saved = await actions.addBookmark({
         displayName: trimmedName,
-        serverAddress: address.trim(),
+        serverAddress: parsed.address.url,
       });
       setSaving(false);
       if (!saved) {

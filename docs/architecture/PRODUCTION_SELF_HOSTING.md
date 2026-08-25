@@ -47,7 +47,11 @@ example) or accept a plain-`ws://` LAN/private posture. See
 
 **Health endpoints**: `GET /healthz` (liveness), `GET /readyz` (readiness — 503 once
 `connections.size >= REALTIME_MAX_CONNECTIONS`). Both return only `{"status": ..., ...}` — never
-version, config, or secret data.
+version, config, or secret data. Internal-use only: intended for a process supervisor/orchestrator
+hitting `127.0.0.1:8090` directly (Docker `HEALTHCHECK`, systemd, the installer's own readiness probe,
+`chantivo-server doctor`), never for public exposure. The documented Caddy template blocks both paths
+from reaching the backend when requested through the public hostname — see
+[Reverse proxy](#reverse-proxy) below.
 
 **Required ports**: the one WebSocket/health port (8090 by default). **Optional ports**: 80/443
 (reverse-proxy TLS), 3478 TCP+UDP and the configured relay range (TURN), 5349 TCP (TURN over TLS, only
@@ -106,11 +110,45 @@ identity proof (`server:hello`, catalog, presence snapshot, etc.) — a new, add
 `server:turn-credentials` protocol message, no version bump (protocol stays v5).
 
 The desktop client applies them via `packages/rtc-core`'s `P2PMeshTransport.setIceServers()` (REPLACE
-semantics — the caller merges STUN and TURN itself), which only affects peer connections created
-_after_ the call; already-established connections are unaffected. **Accepted limitation**: no
-mid-session credential refresh — a connection open past its credential's TTL (default 6 hours) that
-then needs a _new_ peer connection receives a stale credential for that one peer. Documented, not
-silently gapped.
+semantics — the caller merges STUN and TURN itself). Since T15.1 this also applies the new list to
+every already-created peer connection that has not yet established a working transport, via
+`RTCPeerConnection.setConfiguration()` + `restartIce()`; peers that are already connected are left
+untouched.
+
+**Operator warning — `DISCO_VOADOR_TURN_URLS` is handed to remote clients verbatim.** Each URL is
+copied unchanged into the `RTCIceServer.urls` every client uses, so it must be an address those
+clients can reach from the public internet (e.g. `turn:voice.example.com:3478`). A loopback or
+private-network address (`turn:127.0.0.1:3478`, `turn:10.x.x.x:3478`) makes every client try to reach
+a TURN server on _its own_ machine: no relay allocation ever reaches the operator's Coturn, no relay
+candidate is ever gathered, and — because Chromium also derives its `srflx` candidate from the TURN
+server's address when no separate `stun:` URL is configured — no server-reflexive candidate is
+gathered either. Clients are then limited to host candidates, which works on a LAN and fails across
+the internet. This was a real production defect, not a hypothetical.
+
+**Structural mitigation (T15 follow-up).** The value is no longer hand-authored on a fresh install.
+`install-chantivo.sh` derives it from one **Public Server Endpoint** (`--hostname`, or an
+auto-detected public IPv4), identically in native and Docker mode, with an advanced `--turn-url`
+override for a Coturn running on a separate machine; it refuses to write a placeholder at all, and
+refuses to write a loopback/private/CGNAT/link-local/container-only address when the deployment is
+public. `chantivo-server doctor`'s `TURN advertised endpoint` check applies the same classification
+at runtime, and `DISCO_VOADOR_DEPLOYMENT_SCOPE` (`public`/`local`, inferred from
+`DISCO_VOADOR_SERVER_PUBLIC_HOST` when unset) keeps a deliberate LAN-only deployment's loopback
+address from being reported as a defect. Classification lives in
+`services/dedicated-server/src/turn/public-endpoint.ts`, with intentional Bash and repo-guard copies
+kept aligned by a shared case table (`tests/turn-host-classification-cases.json`).
+
+**No central fallback.** There is no Chantivo-operated relay or signaling service, and no code path
+that substitutes one when an operator's own TURN is unavailable. If TURN is unreachable, direct P2P
+may still succeed; otherwise media fails visibly and diagnostics point at the operator's own server.
+`scripts/verify-infrastructure.mjs` fails the repository gate if a Chantivo-operated host ever
+appears as a default/fallback/template value in installer, config, or template code.
+
+**Accepted limitation**: no mid-session credential refresh — a connection open past its credential's
+TTL (`DISCO_VOADOR_TURN_CREDENTIAL_TTL_SECONDS`, default 6 hours) that then needs a _new_ peer
+connection receives a stale credential for that one peer, and real Coturn answers a stale credential
+with `401 Unauthorized` and gathers no relay candidate at all (measured, not assumed). Keep the TTL
+comfortably longer than a realistic session, and treat a short TTL as an availability risk rather
+than a security improvement until a refresh path exists.
 
 ## Docker image
 
@@ -166,9 +204,16 @@ was left untouched.
 ## Reverse proxy
 
 See [ADR 0024](../adr/0024-tls-and-reverse-proxy-responsibility.md). Caddy
-(`infrastructure/reverse-proxy/Caddyfile.example`) is the one first-class documented example: two
-lines, automatic HTTPS, WebSocket upgrade support by default with no extra directive. TURN is never
-routed through it — Coturn is exposed directly, per its own network requirements.
+(`infrastructure/reverse-proxy/Caddyfile.example`) is the one first-class documented example:
+automatic HTTPS, WebSocket upgrade support by default with no extra directive, plus one deliberate
+carve-out — `GET /healthz` and `GET /readyz` are matched and answered with a bare `404` BEFORE the
+`reverse_proxy` catch-all, so an anonymous public request never reaches the backend's operational
+status endpoints (a real finding against the production `beta.chantivo.app` deployment: both routes
+were previously reachable publicly through Caddy). Both routes keep working exactly as before for
+internal/operational use — a process supervisor or the installer hitting `127.0.0.1:8090` directly
+never goes through Caddy at all. Everything else, including the real WebSocket upgrade path, is
+unaffected — the `reverse_proxy` directive remains unconditional for every other path. TURN is never
+routed through this proxy either way — Coturn is exposed directly, per its own network requirements.
 
 ## Data-directory instance lock
 

@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted and implemented (T14 — Production Self-Hosting).
+Accepted and implemented (T14 — Production Self-Hosting). Amended by T15.2, which implemented the
+periodic credential refresh this ADR originally deferred; see "T15.2 amendment" below.
 
 ## Context
 
@@ -56,6 +57,28 @@ and never baked into the Docker image (supplied only at container-run time via e
 already-established relay does not drop when its minting credential later expires — so this default
 is intentionally generous relative to any realistic single voice session.
 
+### T15.2 amendment — periodic credential refresh (implemented)
+
+The "Alternatives" section below deferred a server-initiated refresh on the reasoning that a 6-hour
+TTL was generous enough. That reasoning does not survive contact with the failure it was meant to
+cover: the risk was never "one voice call lasts longer than the TTL", it was "a _connection_ outlives
+the TTL and then needs a _new peer connection_" — a friend joining the channel hours later, or a peer
+connection rebuilt by T15.2's own ICE-failure recovery. Both present an expired `use-auth-secret`
+username to Coturn, which answers `401 Unauthorized` and yields no relay candidate at all
+(reproduced against real Coturn during T15.1, not inferred).
+
+The implemented mechanism deliberately touches nothing this ADR decided. `Connection` arms a
+per-connection timer at **half the current credential's remaining lifetime** and re-pushes the same
+`server:turn-credentials` message with a freshly minted set; the timer is cancelled on every teardown
+path. There is no new message type, no client-initiated request, no protocol version change, and no
+client-side change whatsoever — the existing handler already treats an Nth push exactly like the
+first. Halving the remaining lifetime rather than using a fixed lead time keeps the margin scale-free
+for any operator-configured TTL (a client is never holding a credential more than half-expired),
+with a floor and a ceiling to bound the message rate and to stay inside what `setTimeout` can
+represent. Applying a _replacement_ credential never disturbs a peer whose transport is already
+established; it is only recorded, so that peer recovers against current credentials if it later
+fails. See `services/realtime/src/turn-credential-refresh.ts`.
+
 **Client wiring**: `packages/rtc-core`'s `P2PMeshTransport` gained `setIceServers()` (REPLACE, not
 merge, semantics — the caller is responsible for combining STUN and TURN servers before calling it).
 This method is deliberately _not_ added to the shared `MediaTransport` interface, to avoid obligating
@@ -70,13 +93,13 @@ accepted as a small, contained, and already-named cost — not treated as costle
 
 - Self-hosted TURN is fully optional and fully functional without any Chantivo-operated service.
 - The realtime protocol did not need a breaking or even a minor version change to add TURN support.
-- A very long-lived connection (beyond the TTL) that later needs a _new_ peer connection — e.g. a
+- ~~A very long-lived connection (beyond the TTL) that later needs a _new_ peer connection — e.g. a
   new participant joining the same voice channel well after the original credential's `expiresAt` —
-  receives a stale/expired TURN credential for that specific new peer, since there is no periodic
-  re-mint/re-push loop and `setIceServers` only affects peer connections created after it's called.
-  This is an accepted limitation at the current 6-hour default TTL, not a silent gap: an operator who
-  needs materially longer uninterrupted sessions should raise
-  `DISCO_VOADOR_TURN_CREDENTIAL_TTL_SECONDS` rather than expect automatic mid-session refresh.
+  receives a stale/expired TURN credential for that specific new peer.~~ **Resolved by T15.2's
+  periodic refresh** (see the amendment above). What is left is a boundary case this project has not
+  measured: Coturn's behavior for an already-established relay allocation whose original minting
+  credential has since expired. The refresh means a client always holds a valid credential for any
+  _new_ allocation, which is the case that was actually reproduced as broken.
 - A future SFU-backed `MediaTransport` implementation will need to touch `use-voice-channel.ts`'s one
   TURN-wiring call site, not zero call sites, when it lands.
 
@@ -89,9 +112,10 @@ accepted as a small, contained, and already-named cost — not treated as costle
 - **Durable, non-expiring TURN credentials shipped to every client:** rejected outright —
   contradicts `docs/SECURITY.md`'s explicit "never embed durable TURN credentials in the desktop
   application" rule and the standard TURN REST threat model this ADR follows.
-- **Periodic server-initiated credential refresh before expiry:** deferred, not implemented — the
-  6-hour default TTL was judged generous enough that this isn't worth the added complexity for T14;
-  revisit if real-world session lengths or "join hours into an existing call" patterns prove otherwise.
+- **Periodic server-initiated credential refresh before expiry:** deferred at T14 on the grounds that
+  the 6-hour default TTL was generous enough — **reversed and implemented in T15.2** once the real
+  failure mode ("join hours into an existing connection", the exact pattern this bullet said would
+  justify revisiting) was reproduced against real Coturn. See the T15.2 amendment above.
 - **Adding `setIceServers` to the shared `MediaTransport` interface:** rejected — would obligate
   every future transport implementation (including a not-yet-designed SFU transport, whose relay path
   typically isn't a per-peer TURN server applied this way at all) to support an identical mechanism

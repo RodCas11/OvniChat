@@ -21,10 +21,12 @@ import type { ProfilePort } from './profile-port.js';
 import type { TurnCredentialPort } from './turn-credential-port.js';
 import {
   buildFilteredVoiceCatalogMessage,
+  buildTurnCredentialsMessage,
   routeClientMessage,
   type PendingIdentityChallenge,
 } from './protocol-handlers.js';
 import { RateLimiter } from './rate-limiter.js';
+import { computeTurnCredentialRefreshDelayMs } from './turn-credential-refresh.js';
 import {
   maybeDestroyEmptyTemporaryChannel,
   type TemporaryChannelRegistry,
@@ -106,6 +108,10 @@ export class Connection {
   private readonly heartbeat: HeartbeatMonitor;
   private handshakeTimer: NodeJS.Timeout | undefined;
   private forceCloseTimer: NodeJS.Timeout | undefined;
+  /** T15.2 — the armed "push the next TURN credential set" timer (see
+   * `turn-credential-refresh.ts`). Only ever exists for a connection that actually received a first
+   * credential set, i.e. only when this Dedicated Server has TURN configured at all. */
+  private turnCredentialRefreshTimer: NodeJS.Timeout | undefined;
   private closeReason: string | undefined;
   private resolveClosed!: () => void;
   private readonly closedPromise: Promise<void>;
@@ -381,6 +387,13 @@ export class Connection {
         this.logger.info('handshake_completed', { connectionId: this.id });
       }
 
+      // T15.2 — arm the credential-refresh chain for the one transition that pushed a first
+      // credential set. Deliberately *before* the action loop below only in source order; the timer
+      // is scheduled against wall-clock time, so ordering relative to the send has no effect.
+      if (result.turnCredentialsExpiresAt !== undefined) {
+        this.scheduleTurnCredentialRefresh(result.turnCredentialsExpiresAt);
+      }
+
       for (const action of result.actions) {
         if (action.kind === 'reply') {
           this.send(action.message);
@@ -403,6 +416,47 @@ export class Connection {
       });
       this.rejectAndClose('INTERNAL_ERROR', 'Unexpected server error', parsed.message.id);
     }
+  }
+
+  /**
+   * T15.2 — arms the next `server:turn-credentials` push for this connection, replacing any
+   * previously armed one. `expiresAt` is the credential the client is holding *right now*; see
+   * `turn-credential-refresh.ts` for why the delay is half its remaining lifetime.
+   */
+  private scheduleTurnCredentialRefresh(expiresAt: string): void {
+    this.clearTurnCredentialRefreshTimer();
+    const delayMs = computeTurnCredentialRefreshDelayMs(expiresAt, this.now().getTime());
+    if (delayMs === undefined) return;
+    this.turnCredentialRefreshTimer = setTimeout(() => this.refreshTurnCredentials(), delayMs);
+  }
+
+  /**
+   * Re-mints and re-pushes this connection's TURN credentials, then arms the following refresh.
+   *
+   * Uses the same `TurnCredentialPort` and the same message builder as the original post-auth push
+   * — no new protocol message, no new client capability, and (critically) no client-visible
+   * distinction between the first push and an Nth one: a client applies every one of them
+   * identically, and applying a *replacement* credential never disturbs a peer connection that is
+   * already working (see `packages/rtc-core`'s `Peer.applyIceServers`).
+   *
+   * Never logs the minted `username`/`credential`, at any level — only how many ice-server entries
+   * were pushed, which is the same non-sensitive shape the client's own diagnostic marker uses.
+   */
+  private refreshTurnCredentials(): void {
+    this.turnCredentialRefreshTimer = undefined;
+    // A connection that is closing/closed has nothing to refresh, and `mint()` returning
+    // `undefined` means this server no longer has TURN configured at all — in both cases the chain
+    // simply stops rather than re-arming against nothing.
+    if (this._state !== 'ready') return;
+    const minted = this.turnCredentials.mint();
+    if (!minted) return;
+
+    this.send(buildTurnCredentialsMessage(minted));
+    this.logger.info('turn_credentials_refreshed', {
+      connectionId: this.id,
+      iceServerCount: minted.iceServers.length,
+    });
+    this.scheduleTurnCredentialRefresh(minted.expiresAt);
   }
 
   /** Fatal codes (present in {@link CLOSE_CODE_BY_ERROR}) close the connection; others do not. */
@@ -446,6 +500,7 @@ export class Connection {
     this._state = 'closing';
     this.closeReason = reason;
     this.clearHandshakeTimer();
+    this.clearTurnCredentialRefreshTimer();
     this.heartbeat.stop();
     this.socket.close(code, reason);
     this.forceCloseTimer = setTimeout(() => {
@@ -460,6 +515,7 @@ export class Connection {
     this._state = 'closing';
     this.closeReason = reason;
     this.clearHandshakeTimer();
+    this.clearTurnCredentialRefreshTimer();
     this.heartbeat.stop();
     this.socket.terminate();
   }
@@ -468,6 +524,7 @@ export class Connection {
     this._state = 'closed';
     this.clearHandshakeTimer();
     this.clearForceCloseTimer();
+    this.clearTurnCredentialRefreshTimer();
     this.heartbeat.stop();
     this.cleanupVoiceMembership();
     this.cleanupPresence();
@@ -567,6 +624,16 @@ export class Connection {
     if (this.forceCloseTimer) {
       clearTimeout(this.forceCloseTimer);
       this.forceCloseTimer = undefined;
+    }
+  }
+
+  /** T15.2 — called from every teardown path (`close`, `terminate`, `handleSocketClosed`) as well as
+   * before re-arming, so a disconnected connection can never leave a multi-hour timer holding the
+   * event loop open or firing against a dead socket. */
+  private clearTurnCredentialRefreshTimer(): void {
+    if (this.turnCredentialRefreshTimer) {
+      clearTimeout(this.turnCredentialRefreshTimer);
+      this.turnCredentialRefreshTimer = undefined;
     }
   }
 }

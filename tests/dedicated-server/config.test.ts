@@ -177,6 +177,52 @@ describe('loadDedicatedServerConfig', () => {
     });
   });
 
+  describe('T15 follow-up: deploymentScope', () => {
+    it('infers "local" when no public host is configured — an existing deployment is never newly failed', async () => {
+      const config = await loadDedicatedServerConfig({
+        DISCO_VOADOR_SERVER_CONFIG_PATH: path.join(dir, 'does-not-exist.json'),
+      });
+      expect(config.deploymentScope).toBe('local');
+    });
+
+    it('infers "public" from a public-looking public host', async () => {
+      const config = await loadDedicatedServerConfig({
+        DISCO_VOADOR_SERVER_CONFIG_PATH: path.join(dir, 'does-not-exist.json'),
+        DISCO_VOADOR_SERVER_PUBLIC_HOST: 'voice.example.com',
+      });
+      expect(config.deploymentScope).toBe('public');
+    });
+
+    it.each(['192.168.1.10', 'localhost', 'chantivo-server'])(
+      'infers "local" from a LAN/container public host (%s)',
+      async (publicHost) => {
+        const config = await loadDedicatedServerConfig({
+          DISCO_VOADOR_SERVER_CONFIG_PATH: path.join(dir, 'does-not-exist.json'),
+          DISCO_VOADOR_SERVER_PUBLIC_HOST: publicHost,
+        });
+        expect(config.deploymentScope).toBe('local');
+      },
+    );
+
+    it('lets an explicit DISCO_VOADOR_DEPLOYMENT_SCOPE win over the inference', async () => {
+      const config = await loadDedicatedServerConfig({
+        DISCO_VOADOR_SERVER_CONFIG_PATH: path.join(dir, 'does-not-exist.json'),
+        DISCO_VOADOR_SERVER_PUBLIC_HOST: '192.168.1.10',
+        DISCO_VOADOR_DEPLOYMENT_SCOPE: 'public',
+      });
+      expect(config.deploymentScope).toBe('public');
+    });
+
+    it('rejects an unrecognized scope value rather than silently defaulting', async () => {
+      await expect(
+        loadDedicatedServerConfig({
+          DISCO_VOADOR_SERVER_CONFIG_PATH: path.join(dir, 'does-not-exist.json'),
+          DISCO_VOADOR_DEPLOYMENT_SCOPE: 'internet',
+        }),
+      ).rejects.toThrow();
+    });
+  });
+
   describe('T14: turn', () => {
     it('is undefined when neither TURN environment variable is set (no error)', async () => {
       const config = await loadDedicatedServerConfig({
@@ -196,6 +242,20 @@ describe('loadDedicatedServerConfig', () => {
         credentialTtlSeconds: 21_600,
         urls: ['turn:turn.example.com:3478', 'turns:turn.example.com:5349'],
       });
+    });
+
+    it('never regresses the default TTL below the documented one-hour floor', async () => {
+      // T15.1 shipped a 300s default that made any voice join more than ~5 minutes after connecting
+      // fail against real Coturn with 401 Unauthorized and zero relay candidates. T15.2's periodic
+      // refresh now makes the exact value far less load-bearing, but this assertion stays as the
+      // enforced guard against silently reintroducing a value that short — a comment alone would not
+      // have caught it the first time.
+      const config = await loadDedicatedServerConfig({
+        DISCO_VOADOR_SERVER_CONFIG_PATH: path.join(dir, 'does-not-exist.json'),
+        DISCO_VOADOR_TURN_SHARED_SECRET: 'super-secret-value',
+        DISCO_VOADOR_TURN_URLS: 'turn:turn.example.com:3478',
+      });
+      expect(config.turn?.credentialTtlSeconds).toBeGreaterThanOrEqual(3_600);
     });
 
     it('honors an explicit DISCO_VOADOR_TURN_CREDENTIAL_TTL_SECONDS override', async () => {

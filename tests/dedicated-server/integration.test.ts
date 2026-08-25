@@ -17,6 +17,32 @@ import {
   type DedicatedServerHandle,
 } from '../../services/dedicated-server/src/create-dedicated-server.js';
 import type { DedicatedServerConfig } from '../../services/dedicated-server/src/config.js';
+import { AuthorizationStore } from '../../services/dedicated-server/src/authorization/store.js';
+import { SERVER_ADMIN_GROUP_ID } from '../../services/dedicated-server/src/authorization/permissions.js';
+
+/** T15 — the exact same mechanism `chantivo-server admin-token create` uses
+ * (`mintServerAdminRecoveryToken`): mints a `privilege` token targeting the built-in Server Admin
+ * group directly via the store's own `createToken`. Replaces the removed `bootstrapToken` field
+ * these integration tests used to read straight off a fresh `DedicatedServerHandle`. */
+function mintAdminToken(store: AuthorizationStore): string {
+  const result = store.createToken({
+    tokenKind: 'privilege',
+    groupId: SERVER_ADMIN_GROUP_ID,
+    expiresInMs: undefined,
+  });
+  if (!result.ok) throw new Error(`expected admin token minting to succeed: ${result.message}`);
+  return result.token;
+}
+
+/** Resolves the on-disk (or `:memory:`) path `createDedicatedServer` itself would use for the
+ * authorization store, given a config — mirrors `create-dedicated-server.ts`'s own private
+ * `authorizationPath` computation so tests can open the *same* store explicitly (to mint an admin
+ * token against it) before handing it to `createDedicatedServer` via `deps.authorization`. */
+function authorizationPathFor(config: DedicatedServerConfig): string {
+  return config.dataDir === ':memory:'
+    ? ':memory:'
+    : path.join(config.dataDir, 'authorization.sqlite');
+}
 
 /**
  * Real-network integration tests for the Dedicated Server product boundary (T8 Section 49/53):
@@ -53,6 +79,7 @@ function testConfig(overrides: Partial<DedicatedServerConfig> = {}): DedicatedSe
     configFilePath: '(test)',
     configFileFound: false,
     publicHost: undefined,
+    deploymentScope: 'local',
     turn: undefined,
     ...overrides,
   };
@@ -480,15 +507,24 @@ describe('Dedicated Server — T9 authorization (real network)', () => {
 
   async function startServer(
     overrides: Partial<DedicatedServerConfig> = {},
-  ): Promise<{ server: DedicatedServerHandle; url: string }> {
-    const server = track(createDedicatedServer(testConfig(overrides)));
+  ): Promise<{ server: DedicatedServerHandle; url: string; adminToken: string }> {
+    const config = testConfig(overrides);
+    // T15 — mint the admin token via the real `AuthorizationStore.createToken` mechanism (the exact
+    // same call `chantivo-server admin-token create` makes) *before* the server ever starts, then
+    // hand the same store instance to `createDedicatedServer` via `deps.authorization` so the
+    // running server and the token both come from one real store, not a mocked shortcut.
+    const authorization = new AuthorizationStore(authorizationPathFor(config), {
+      accessMode: config.accessMode,
+    });
+    const adminToken = mintAdminToken(authorization);
+    const server = track(createDedicatedServer(config, { authorization }));
     const address = await server.start();
-    return { server, url: `ws://${address.host}:${String(address.port)}` };
+    return { server, url: `ws://${address.host}:${String(address.port)}`, adminToken };
   }
 
-  it('a fresh server exposes a one-time bootstrap token, redeemable over the wire to become Server Admin', async () => {
-    const { server, url } = await startServer();
-    expect(server.bootstrapToken).toMatch(/^DV-ADMIN-/u);
+  it('a fresh server has no claimed Server Admin until a minted admin token is redeemed over the wire (T15)', async () => {
+    const { server, url, adminToken } = await startServer();
+    expect(server.hasAnyServerAdmin).toBe(false);
 
     const ws = track(await connect(url));
     const [, authState] = await handshakeWithAuthState(ws);
@@ -499,12 +535,29 @@ describe('Dedicated Server — T9 authorization (real network)', () => {
       JSON.stringify({
         type: 'client:authorization-redeem-token',
         id: 'redeem-1',
-        token: server.bootstrapToken,
+        token: adminToken,
       }),
     );
     expect(await redeemed).toMatchObject({
       type: 'server:authorization-token-redeemed',
       group: { groupId: 'server-admin' },
+    });
+
+    // A second real-protocol redemption attempt of the exact same, already-consumed admin token is
+    // rejected TOKEN_ALREADY_USED — non-fatal, so the same connection stays open
+    // (authorization-store.test.ts already proves this at the direct AuthorizationStore.redeemToken
+    // level; this asserts the same outcome through the full real WebSocket protocol path).
+    const secondAttempt = nextMessage(ws);
+    ws.send(
+      JSON.stringify({
+        type: 'client:authorization-redeem-token',
+        id: 'redeem-2',
+        token: adminToken,
+      }),
+    );
+    expect(await secondAttempt).toMatchObject({
+      type: 'server:error',
+      code: 'TOKEN_ALREADY_USED',
     });
   });
 
@@ -544,10 +597,11 @@ describe('Dedicated Server — T9 authorization (real network)', () => {
   });
 
   it('invite-only: a valid invite token in client:hello admits and grants Member', async () => {
-    const { server, url } = await startServer({ accessMode: 'invite-only' });
+    const { url, adminToken } = await startServer({ accessMode: 'invite-only' });
 
-    // On a fresh invite-only server the bootstrap token doubles as the operator's own admission
-    // credential (T9's own lockout-avoidance fix) — supplied directly in client:hello, since a
+    // On a fresh invite-only server the admin token minted via `chantivo-server admin-token
+    // create`'s own mechanism doubles as the operator's own admission credential (T9's own
+    // lockout-avoidance fix, T15's revision of it) — supplied directly in client:hello, since a
     // plain Guest connection attempt with no token would itself be rejected INVITE_REQUIRED before
     // ever reaching `ready` to redeem anything.
     const adminWs = track(await connect(url));
@@ -555,7 +609,7 @@ describe('Dedicated Server — T9 authorization (real network)', () => {
       adminWs,
       'Admin',
       generateIdentityKeyPair(),
-      server.bootstrapToken,
+      adminToken,
     );
     expect(adminAuthState).toMatchObject({ groups: [{ groupId: 'server-admin' }] });
 
@@ -582,7 +636,7 @@ describe('Dedicated Server — T9 authorization (real network)', () => {
   });
 
   it('an administrator can ban an online participant, whose connection is closed immediately', async () => {
-    const { server, url } = await startServer();
+    const { server, url, adminToken } = await startServer();
 
     const adminWs = track(await connect(url));
     await handshakeWithAuthState(adminWs, 'Admin');
@@ -596,7 +650,7 @@ describe('Dedicated Server — T9 authorization (real network)', () => {
       JSON.stringify({
         type: 'client:authorization-redeem-token',
         id: 'redeem-1',
-        token: server.bootstrapToken,
+        token: adminToken,
       }),
     );
     await adminRedeemed;
@@ -702,15 +756,10 @@ describe('Dedicated Server — T9 authorization (real network)', () => {
   });
 
   it('revoking an invite-only identity down to no remaining admission basis force-closes its live connection (T9 Section 63)', async () => {
-    const { server, url } = await startServer({ accessMode: 'invite-only' });
+    const { url, adminToken } = await startServer({ accessMode: 'invite-only' });
 
     const adminWs = track(await connect(url));
-    await handshakeWithAuthState(
-      adminWs,
-      'Admin',
-      generateIdentityKeyPair(),
-      server.bootstrapToken,
-    );
+    await handshakeWithAuthState(adminWs, 'Admin', generateIdentityKeyPair(), adminToken);
     const adminJoined = nextMessage(adminWs);
     adminWs.send(
       JSON.stringify({ type: 'voice:join', id: 'j1', channelId: 'general', displayName: 'Admin' }),
@@ -784,8 +833,8 @@ describe('Dedicated Server — T9 authorization (real network)', () => {
     expect(closeEvent.code).toBe(4420);
   });
 
-  it('a bootstrap token from Server A is invalid on Server B (T9 Section 52)', async () => {
-    const { server: serverA } = await startServer({ name: 'Server A' });
+  it('an admin token minted on Server A is invalid on Server B (T9 Section 52)', async () => {
+    const { adminToken: adminTokenA } = await startServer({ name: 'Server A' });
     const { url: urlB } = await startServer({ name: 'Server B' });
 
     const wsB = track(await connect(urlB));
@@ -796,7 +845,7 @@ describe('Dedicated Server — T9 authorization (real network)', () => {
       JSON.stringify({
         type: 'client:authorization-redeem-token',
         id: 'redeem-1',
-        token: serverA.bootstrapToken,
+        token: adminTokenA,
       }),
     );
     expect(await rejection).toMatchObject({ type: 'server:error', code: 'TOKEN_INVALID' });
@@ -824,10 +873,15 @@ describe('Dedicated Server — T10 persistent text chat (real network)', () => {
 
   async function startServer(
     overrides: Partial<DedicatedServerConfig> = {},
-  ): Promise<{ server: DedicatedServerHandle; url: string }> {
-    const server = track(createDedicatedServer(testConfig(overrides)));
+  ): Promise<{ server: DedicatedServerHandle; url: string; adminToken: string }> {
+    const config = testConfig(overrides);
+    const authorization = new AuthorizationStore(authorizationPathFor(config), {
+      accessMode: config.accessMode,
+    });
+    const adminToken = mintAdminToken(authorization);
+    const server = track(createDedicatedServer(config, { authorization }));
     const address = await server.start();
-    return { server, url: `ws://${address.host}:${String(address.port)}` };
+    return { server, url: `ws://${address.host}:${String(address.port)}`, adminToken };
   }
 
   it('server chat is persisted then broadcast live to every ready connection, including the sender', async () => {
@@ -1102,18 +1156,18 @@ describe('Dedicated Server — T10 persistent text chat (real network)', () => {
   });
 
   it('chat and authorization operations both work correctly in the same process (joint composition)', async () => {
-    const { server, url } = await startServer();
+    const { url, adminToken } = await startServer();
     const ws = track(await connect(url));
     const [, authState] = await handshakeWithAuthState(ws, 'Admin');
     expect(authState).toMatchObject({ groups: [{ groupId: 'guest' }] });
 
-    // An authorization operation (bootstrap redemption)...
+    // An authorization operation (admin token redemption)...
     const redeemed = nextMessage(ws);
     ws.send(
       JSON.stringify({
         type: 'client:authorization-redeem-token',
         id: 'redeem-1',
-        token: server.bootstrapToken,
+        token: adminToken,
       }),
     );
     expect(await redeemed).toMatchObject({ group: { groupId: 'server-admin' } });
@@ -1277,7 +1331,7 @@ describe('Dedicated Server — T10 persistent text chat (real network)', () => {
   });
 
   it('sending server chat without chat.server.send permission is rejected server-side, over a raw socket', async () => {
-    const { server, url } = await startServer();
+    const { url, adminToken } = await startServer();
 
     const adminWs = track(await connect(url));
     await handshakeWithAuthState(adminWs, 'Admin');
@@ -1286,7 +1340,7 @@ describe('Dedicated Server — T10 persistent text chat (real network)', () => {
       JSON.stringify({
         type: 'client:authorization-redeem-token',
         id: 'redeem-perm-1',
-        token: server.bootstrapToken,
+        token: adminToken,
       }),
     );
     await redeemed;

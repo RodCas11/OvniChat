@@ -6,10 +6,123 @@ private network. This guide gets a technically capable operator from "nothing ru
 connect," then covers the deeper operational questions (backup, upgrades, TLS, TURN) once the basics
 work.
 
-If you just want the fastest path, read only [Quick start](#quick-start) and
+If you just want the fastest path, read only [Quick install](#quick-install-recommended) and
 [Port matrix](#port-matrix). Everything after that is reference material for when you need it.
 
-## Quick start
+## Quick install (recommended)
+
+Prerequisites: a fresh Ubuntu 24.04 LTS host (a small VPS or a home server; 22.04 also works), root or
+`sudo` access, and basic comfort with the command line. You do **not** need to clone this repository,
+install Node/pnpm, or compile anything — the installer downloads a prebuilt, checksummed release
+artifact and does the rest.
+
+1. **No public release hosting exists yet** — there is no real URL to `curl` this from today. Until
+   one does, get the script directly from the repository (`infrastructure/install/install-chantivo.sh`)
+   and pass `--release-source` pointing at wherever you've placed a built release (a local path,
+   an internal `https://` mirror, or a `file://` URL — see
+   [`infrastructure/install/README.md`](../infrastructure/install/README.md) for how to build one with
+   `scripts/release/build-dedicated-server-artifact.mjs`). Once real hosting exists, this section
+   becomes the genuine `curl -fsSL <url>/install-chantivo.sh -o install-chantivo.sh` one-liner — the
+   installer's own `--release-source`/`CHANTIVO_RELEASE_SOURCE` mechanism is what makes that swap a
+   documentation update, not a script change. Whichever source you use, download-inspect-then-run is
+   the safe habit — never pipe an installer script straight into a shell:
+   ```sh
+   cp infrastructure/install/install-chantivo.sh .   # or curl -fsSL <url>/... once hosting exists
+   less install-chantivo.sh
+   chmod +x install-chantivo.sh
+   sudo ./install-chantivo.sh --release-source <path-or-url-to-a-built-release>
+   ```
+2. Choose **Native Linux** or **Docker Compose** when prompted (or pass `--mode native`/`--mode
+docker` for a non-interactive run — required when there's no TTY, e.g. scripted VPS provisioning).
+   The installer asks only what it can't safely default: your **Public Server Endpoint** — the one
+   public hostname or IP this server is reachable at (`--hostname`), which both the client address
+   and the TURN URL derive from (see [Public Server Endpoint](#public-server-endpoint)) — whether you
+   want it to install/configure Coturn for TURN relay (`--with-turn`
+   / `--no-turn`), and — if you gave a real hostname — whether to configure HTTPS/WSS automatically via
+   Caddy (`--with-tls` / `--no-tls`; defaults to **yes** when a hostname is given, whether prompted
+   interactively or answered non-interactively). Add `--configure-firewall` if you want it to open the
+   exact ports this deployment needs via `ufw` (SSH is always preserved first).
+3. When it finishes, it prints the server address, a status line per component (Chantivo/Coturn/TLS),
+   and the one-time initial administrator token directly in its own terminal output. Save it now — it
+   is shown nowhere else. This token is deliberately never written to `journalctl -u chantivo-server`
+   or `docker compose logs`: it is minted by a separate, one-shot `chantivo-server admin-token create`
+   invocation the installer runs on your behalf, not by the long-running server process itself, so it
+   never passes through infrastructure log collectors. Treat your terminal's scrollback as sensitive
+   for as long as it's visible. If you lose the token before claiming the server, run
+   `sudo chantivo-server admin-token create` yourself at any time to mint a fresh one — this is the same
+   safe, always-repeatable recovery path, not a fallback for a different, weaker mechanism.
+4. In the Chantivo desktop client, choose "Add Server," enter the address the installer printed — see
+   [What a user types in "Add Server"](#what-a-user-types-in-add-server) — then paste the
+   administrator token into the "Privilege key / invite token" field in Server Settings → Authorization
+   to claim the server.
+
+That's a real, working, self-hosted Chantivo server, administered from the client you just connected
+with. If you gave a hostname and TLS automation succeeded, it's reachable over `wss://` immediately; if
+you installed by IP only, add a hostname and automatic TLS later with `install-chantivo.sh --mode
+<native|docker> --hostname <host> --tls-only --yes` — a safe rerun that never touches
+`/var/lib/chantivo`, existing authorization state, chat, profiles, or the TURN secret. Everything below
+is reference material: TLS internals and the manual fallback (see [TLS](#tls)), backup, upgrades, and
+the exact manual procedure the installer itself automates, useful for custom setups or troubleshooting.
+Once installed, `chantivo-server status|logs|restart|doctor|backup|update|admin-token create|version` is
+the day-to-day operator command — see
+[`infrastructure/install/README.md`](../infrastructure/install/README.md) for the full command
+reference.
+
+## Public Server Endpoint
+
+Chantivo's installer works from one address, not several. The **Public Server Endpoint** is the
+single public hostname (or public IPv4) your server is reachable at, and both of the addresses your
+clients actually use derive from it:
+
+```
+--hostname voice.example.com
+  ->  client address:  wss://voice.example.com
+  ->  TURN:            turn:voice.example.com:3478
+```
+
+Both normally point at the same machine you're installing on, so you configure one thing. A bare
+public IPv4 works for TURN (`--hostname 203.0.113.10` → `turn:203.0.113.10:3478`); if you give no
+`--hostname` at all, the installer uses a public IPv4 of the host when it has one, and otherwise
+treats the install as a **local/LAN deployment** and derives the TURN URL from the host's LAN
+address. TLS is the one thing a bare IP genuinely cannot have — see [TLS](#tls).
+
+**`--turn-url turn:relay.example.net:3478` (advanced)** overrides the derived TURN URL, for the one
+case that needs it: running Coturn on a _different_ machine than the Dedicated Server. The WSS
+hostname and the TURN hostname are not coupled — the derivation is just the easy default.
+
+Whatever you end up with, the installer prints it before it starts and again when it finishes:
+
+```
+Public server:
+  voice.example.com
+
+Client address:
+  wss://voice.example.com
+
+TURN:
+  turn:voice.example.com:3478
+```
+
+**Why this matters.** `DISCO_VOADOR_TURN_URLS` is handed to every remote client verbatim as their ICE
+server. A real Chantivo production server once had `turn:127.0.0.1:3478` there — the _client's_ own
+loopback address — and every client that genuinely needed a relay failed silently. The installer now
+refuses to write a loopback/private/container-only TURN address for a public deployment (and refuses
+to write a placeholder at all), and `chantivo-server doctor` fails loudly if one ever appears. A
+loopback or LAN address is still correct — and still accepted — for a deliberate LAN-only deployment.
+
+Chantivo runs no central relay or signaling service. Nothing falls back to Chantivo-operated
+infrastructure if your TURN server is missing or unreachable: direct P2P may still work, and
+otherwise media fails visibly with diagnostics pointing at your own server.
+
+## Manual installation (advanced)
+
+Everything from here through [Upgrading](#upgrading) is the exact procedure `install-chantivo.sh`
+automates, kept as a fully manual reference for custom deployments, troubleshooting, or operators who
+prefer to see every step. If you used the installer above, you don't need to run any of this by hand
+— skip ahead to [Deployment topology](#deployment-topology) for the architecture reference, or
+[TURN](#turn)/[TLS](#tls)/[Backup and restore](#backup-and-restore)/[Upgrading](#upgrading) for the
+underlying mechanics behind what the installer automates (TURN via `--with-turn`, TLS via `--with-tls`)
+plus the operational topics it doesn't cover automatically (backup, upgrades).
 
 Prerequisites: a Linux host (a small VPS or a home server) with Docker and Docker Compose installed,
 and basic comfort with the command line. You do **not** need Node, pnpm, or a TypeScript toolchain —
@@ -200,7 +313,10 @@ alongside the Dedicated Server.
    ```
 2. Set the **same** secret as `DISCO_VOADOR_TURN_SHARED_SECRET` in `infrastructure/docker/.env`, and
    set `DISCO_VOADOR_TURN_URLS` to your Coturn instance's real reachable address (e.g.
-   `turn:voice.example.com:3478`).
+   `turn:voice.example.com:3478`) — normally exactly your
+   [Public Server Endpoint](#public-server-endpoint). Never a loopback, private-network, or
+   Docker-internal address for a public deployment: this value is handed to every remote client
+   verbatim. `chantivo-server doctor` checks it.
 3. Set `external-ip` in your Coturn config if it's behind NAT (a home server, most cloud providers'
    internal networking).
 4. Start the combined stack: `docker compose -f compose.self-hosted.example.yaml --profile turn up -d --build`.
@@ -229,7 +345,44 @@ Dedicated Server so clients connect over `wss://` instead of plain `ws://`. Chan
 for why.
 
 **Caddy** (`infrastructure/reverse-proxy/Caddyfile.example`) is the one first-class, documented
-example — chosen for automatic HTTPS with no manual certificate lifecycle:
+example — chosen for automatic HTTPS with no manual certificate lifecycle.
+
+### Automatic (recommended)
+
+If you used the Quick Install installer and gave it a real public hostname, this already happened for
+you — `configure_tls_caddy()` in `install-chantivo.sh`:
+
+1. Point real public DNS at your host first (`voice.example.com -> your public IP`) — the installer
+   checks this locally (`getent hosts` against `hostname -I`, no third-party lookup service) before
+   touching Caddy at all. If DNS doesn't resolve to this host yet, TLS is skipped for that run (the
+   rest of the install still succeeds) with an actionable message telling you how to retry.
+2. Caddy is installed from its official apt repository, and a Chantivo site block
+   (`infrastructure/reverse-proxy/Caddyfile.example`, with your real hostname substituted) is written
+   for it. If Caddy was already installed before this run, its existing `/etc/caddy/Caddyfile` is never
+   touched directly — the Chantivo block goes to `/etc/caddy/conf.d/chantivo.caddy` instead, reloaded
+   automatically if your existing Caddyfile already imports that directory, or left for you to wire in
+   with a one-line message telling you exactly what to add.
+3. The installer waits for a real WebSocket upgrade to succeed through `https://<hostname>/` (a genuine
+   `101 Switching Protocols` — not a `GET /healthz` poll, since `/healthz`/`/readyz` are deliberately
+   blocked from public exposure through Caddy; see "Public vs. internal routes" below) before declaring
+   TLS working, and reports the real outcome in its final summary — `TLS/WSS: OK (...)`, a
+   `SKIPPED (...)` reason, or `FAILED (...)` with a pointer to `journalctl -u caddy`. It never claims
+   success it didn't verify.
+4. Didn't give a hostname at install time, or DNS wasn't ready yet? Add it later, safely, with:
+   ```sh
+   sudo ./install-chantivo.sh --mode <native|docker> --hostname voice.example.com --tls-only --yes
+   ```
+   `--tls-only` runs ONLY DNS validation + Caddy install/config + a readiness check — it never touches
+   `/var/lib/chantivo`, `/opt/chantivo/releases`, or the Docker Compose stack, so it's safe to run
+   against a server that's already live with real data.
+5. Pass `--configure-firewall` (on the normal install or on `--tls-only`) to also open `80/tcp` and
+   `443/tcp` — required for Caddy's ACME challenge and for HTTPS/WSS traffic itself.
+6. Connect clients with `wss://voice.example.com` — no port needed.
+
+### Manual (advanced / custom setups)
+
+Everything the automated path above does, by hand — useful for a custom reverse-proxy setup, a
+non-Ubuntu host, or troubleshooting:
 
 1. Point real public DNS at your host (`voice.example.com -> your public IP`).
 2. Set `CHANTIVO_PUBLIC_HOSTNAME=voice.example.com` and run Caddy with the example Caddyfile.
@@ -238,7 +391,9 @@ example — chosen for automatic HTTPS with no manual certificate lifecycle:
 4. Connect clients with `wss://voice.example.com` — no port needed.
 
 A **LAN-only or development deployment doesn't need any of this** — plain `ws://` on a private network
-is a fully supported, permanent posture, not a "not done yet" placeholder.
+is a fully supported, permanent posture, not a "not done yet" placeholder. A bare IP address also
+doesn't need (or support) any of this — public CA-issued TLS requires a real hostname; a bare IP cannot
+get a publicly-trusted certificate.
 
 ## Configuration reference
 
@@ -252,9 +407,10 @@ covers only the fields most relevant to a first deployment):
 | `DISCO_VOADOR_SERVER_NAME`                 | No      | Display name shown to connecting clients. Default: "Chantivo Server".           |
 | `DISCO_VOADOR_SERVER_ACCESS_MODE`          | No      | `open` (default) or `invite-only`.                                              |
 | `DISCO_VOADOR_SERVER_DATA_DIR`             | No      | Where persistent state lives (see [Persistent data](#persistent-data)).         |
-| `DISCO_VOADOR_SERVER_PUBLIC_HOST`          | No      | Display-only address for docs/invites — never used for binding.                 |
+| `DISCO_VOADOR_SERVER_PUBLIC_HOST`          | No      | The Public Server Endpoint — display-only, never used for binding.              |
+| `DISCO_VOADOR_DEPLOYMENT_SCOPE`            | No      | `public` or `local`. Diagnostic only; inferred from the public host when unset. |
 | `DISCO_VOADOR_TURN_SHARED_SECRET`          | **Yes** | Coturn `use-auth-secret` shared secret. Set with `..._TURN_URLS` or not at all. |
-| `DISCO_VOADOR_TURN_URLS`                   | No      | Comma-separated `turn:`/`turns:` URIs.                                          |
+| `DISCO_VOADOR_TURN_URLS`                   | No      | Comma-separated `turn:`/`turns:` URIs, handed to remote clients verbatim.       |
 | `DISCO_VOADOR_TURN_CREDENTIAL_TTL_SECONDS` | No      | Default `21600` (6 hours).                                                      |
 
 Never set a real secret in the versioned config file — `DISCO_VOADOR_TURN_SHARED_SECRET` is
@@ -283,6 +439,10 @@ Nothing else is production state. Client cryptographic identity, bookmarks, and 
 entirely on each desktop client, never here.
 
 ## Backup and restore
+
+If you used the Quick Install installer: `sudo chantivo-server backup` does exactly the sequence
+below for you and prints the resulting timestamped archive path (`/var/backups/chantivo/chantivo-
+<ISO8601>.tar.gz` for native; the Docker CLI wraps the same model).
 
 Backup is intentionally simple: stop the server, copy the entire data directory, start it again. This
 is a deliberate choice, not a shortcut — a copy taken _while the server is running_ is not guaranteed
@@ -331,15 +491,32 @@ back those up separately if you'd need to reconstruct this exact deployment from
 
 ## Upgrading
 
+If you used the Quick Install installer, upgrading is one command:
+
+```sh
+sudo chantivo-server update
+```
+
+This downloads the new release, verifies its checksum, backs up your data directory automatically,
+swaps in the new version (native: an atomic release-directory/symlink flip under `/opt/chantivo`;
+Docker: a normal `docker compose` recreate), waits for the server to become healthy, and — if it
+doesn't within a bounded timeout — automatically rolls back to the previous version and restarts it,
+reporting where the pre-upgrade backup landed.
+
+For a manual/advanced deployment:
+
 ```sh
 # back up first (see above)
 git pull   # or otherwise update your checkout
 docker compose -f compose.server.example.yaml up -d --build
 ```
 
-Database schema migrations run automatically on startup. **Rollback is not guaranteed** once a schema
-migration has run — a server binary will refuse to open a data directory whose schema is newer than
-what it understands, rather than silently downgrading it. Back up before every upgrade.
+Database schema migrations run automatically on startup either way. **Rollback is not guaranteed**
+once a schema migration has run — a server binary will refuse to open a data directory whose schema
+is newer than what it understands, rather than silently downgrading it. `chantivo-server update`'s
+own automatic rollback only covers a failed _readiness_ check right after the swap, not a schema
+migration that already completed successfully but turns out to be undesired — back up before every
+upgrade regardless of which path you use.
 
 ## Health and diagnosing problems
 
@@ -348,6 +525,21 @@ what it understands, rather than silently downgrading it. Back up before every u
   capacity.
 - The container's own `HEALTHCHECK` uses `/healthz` — `docker ps` shows `healthy`/`unhealthy`
   directly.
+- Both routes are internal-only by design: reachable directly at `http://127.0.0.1:8090/healthz` (used
+  by Docker/systemd, this installer's own readiness checks, and `chantivo-server doctor`), but blocked
+  with a bare `404` when requested through the public hostname via the documented Caddy template
+  (`infrastructure/reverse-proxy/Caddyfile.example`) — see that directory's README "Public vs. internal
+  routes" section. If you front Chantivo with your own custom reverse proxy instead of the documented
+  Caddy template, add the equivalent block yourself; nothing in `services/realtime` restricts these
+  routes on its own.
+- `chantivo-server doctor` reports five separate TURN checks, deliberately not collapsed into one:
+  `TURN URL configured`, `TURN credential generation`, `TURN local listener`,
+  `TURN advertised endpoint` (fails when a **public** deployment advertises a loopback/private/
+  container-only address remote clients cannot reach), and `External TURN reachability` — which
+  always says **NOT VERIFIED**, because no server can confirm its own external reachability by
+  inspecting itself. A local listener being up proves nothing about NAT, firewall rules, or routing;
+  verify from a different network with a real allocation (`turnutils_uclient`) or a forced-relay
+  WebRTC test. No doctor output ever contains the TURN shared secret or a minted credential.
 - Startup errors are meant to be actionable: an unwritable data directory, a malformed TURN
   configuration, or an invalid port all fail immediately with a specific message, not a generic crash
   or a silent fallback to defaults.

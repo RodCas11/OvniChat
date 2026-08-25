@@ -1,10 +1,11 @@
-// T8/T9 Dedicated Server smoke test (Section 57): starts the real, built CLI entrypoint as its own
-// process (not a library call — this proves the actual product boundary, not just
-// `createDedicatedServer` in-process), connects a real WebSocket client, drives the full T2/T7
-// handshake (hello -> identity-challenge -> identity-proof -> hello), confirms server metadata and
-// the configured (non-default) voice-channel catalog arrive, redeems the real one-time bootstrap
-// token printed to stdout to become Server Admin (T9), disconnects, then terminates the server and
-// confirms a clean exit. No Electron involved.
+// T8/T9 Dedicated Server smoke test (Section 57), updated by T15's token-leak security fix: starts the
+// real, built CLI entrypoint as its own process (not a library call — this proves the actual product
+// boundary, not just `createDedicatedServer` in-process), connects a real WebSocket client, drives the
+// full T2/T7 handshake (hello -> identity-challenge -> identity-proof -> hello), confirms server
+// metadata and the configured (non-default) voice-channel catalog arrive, mints a real admin token via
+// a SEPARATE real `cli-admin-token.js` process (the server itself no longer prints one — see
+// `mintAdminTokenViaRealCli`) and redeems it to become Server Admin (T9), disconnects, then terminates
+// the server and confirms a clean exit. No Electron involved.
 
 import { spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -18,6 +19,7 @@ import { WebSocket } from 'ws';
 
 const packageDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const cliEntry = path.join(packageDir, 'dist', 'cli.js');
+const adminTokenCliEntry = path.join(packageDir, 'dist', 'cli-admin-token.js');
 const STARTUP_TIMEOUT_MS = 10_000;
 const HANDSHAKE_TIMEOUT_MS = 10_000;
 
@@ -30,6 +32,43 @@ if (!existsSync(cliEntry)) {
   fail(
     `Built CLI entry not found at ${cliEntry}.\nRun "pnpm --filter @disco-voador/dedicated-server run build" first.`,
   );
+}
+if (!existsSync(adminTokenCliEntry)) {
+  fail(
+    `Built CLI entry not found at ${adminTokenCliEntry}.\nRun "pnpm --filter @disco-voador/dedicated-server run build" first.`,
+  );
+}
+
+/** Mints a real Server Admin token by spawning the real, built `cli-admin-token.js` as its own
+ * process against the same config the running server was started with (T15 security fix: the
+ * server itself no longer prints an admin token on startup — this is now the ONLY way to obtain
+ * one, matching exactly what `install-chantivo.sh`/an operator would run). */
+function mintAdminTokenViaRealCli(configPath) {
+  return new Promise((resolve, reject) => {
+    const minter = spawn(process.execPath, [adminTokenCliEntry], {
+      env: { ...process.env, DISCO_VOADOR_SERVER_CONFIG_PATH: configPath, LOG_LEVEL: 'error' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    minter.stdout.on('data', (chunk) => {
+      stdout += chunk.toString();
+    });
+    minter.stderr.on('data', (chunk) =>
+      process.stderr.write(`[admin-token create] ${chunk.toString()}`),
+    );
+    minter.on('exit', (code) => {
+      if (code !== 0) {
+        reject(new Error(`admin-token create exited with code ${String(code)}`));
+        return;
+      }
+      const match = /(DV-PRIV-\S+)/u.exec(stdout);
+      if (!match) {
+        reject(new Error('admin-token create produced no token on stdout'));
+        return;
+      }
+      resolve(match[1]);
+    });
+  });
 }
 
 function nextMessage(ws, timeoutMs = HANDSHAKE_TIMEOUT_MS) {
@@ -129,14 +168,16 @@ async function main() {
     port = address.port;
     console.info(`Server listening on ${host}:${String(port)}`);
 
-    const bootstrapMatch = /Initial Server Admin privilege key:\s*\n\s*\n\s*(DV-ADMIN-\S+)/u.exec(
-      stdout,
-    );
-    if (!bootstrapMatch) {
-      throw new Error('Expected a one-time bootstrap token printed to stdout on first startup');
+    if (!stdout.includes('No administrator has claimed this server yet.')) {
+      throw new Error(
+        'Expected the fresh server\'s startup banner to show the safe "unclaimed" hint, not a raw token',
+      );
     }
-    bootstrapToken = bootstrapMatch[1];
-    console.info('Captured the one-time bootstrap Server Admin token from stdout.');
+    console.info(
+      "Minting a real admin token via 'admin-token create' (a separate one-shot process)...",
+    );
+    bootstrapToken = await mintAdminTokenViaRealCli(configPath);
+    console.info("Captured the admin token from the CLI's own stdout (never the server's).");
 
     console.info('Connecting a real WebSocket client and driving the full handshake...');
     const ws = new WebSocket(`ws://${host}:${String(port)}`);
@@ -216,7 +257,7 @@ async function main() {
       );
     }
 
-    console.info('Redeeming the bootstrap token to become Server Admin...');
+    console.info('Redeeming the admin token to become Server Admin...');
     const redeemedPromise = nextMessage(ws);
     ws.send(
       JSON.stringify({
@@ -231,10 +272,10 @@ async function main() {
     }
     if (redeemed.group.groupId !== 'server-admin') {
       throw new Error(
-        `Expected the bootstrap token to grant server-admin, got "${redeemed.group.groupId}"`,
+        `Expected the admin token to grant server-admin, got "${redeemed.group.groupId}"`,
       );
     }
-    console.info('Bootstrap token redeemed: now Server Admin.');
+    console.info('Admin token redeemed: now Server Admin.');
 
     console.info(
       `Authenticated as identityId ${serverHello.identityId}, server "${serverHello.serverName}" ` +

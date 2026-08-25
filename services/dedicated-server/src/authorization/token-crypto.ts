@@ -1,8 +1,8 @@
 import { createHash, randomBytes } from 'node:crypto';
 
 /**
- * T9 bearer-capability token generation and digesting (privilege keys, invite tokens, the
- * bootstrap Server Admin token). These are high-entropy random secrets, not user-chosen
+ * T9 bearer-capability token generation and digesting (privilege keys, invite tokens). These are
+ * high-entropy random secrets, not user-chosen
  * passwords — a slow, salted password-hashing KDF (bcrypt/scrypt/argon2) exists to slow down
  * brute-forcing a *low-entropy* human-chosen secret and is not justified here (T9 Section 12: "do
  * not invent password hashing requirements for random 256-bit capability tokens unless

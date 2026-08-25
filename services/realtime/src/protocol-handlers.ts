@@ -66,7 +66,7 @@ import { deriveMemberRoleBucket } from './presence/role-bucket.js';
 import type { PresenceRegistry } from './presence/registry.js';
 import type { ProfilePort } from './profile-port.js';
 import type { RateLimiter } from './rate-limiter.js';
-import type { TurnCredentialPort } from './turn-credential-port.js';
+import type { MintedTurnCredentials, TurnCredentialPort } from './turn-credential-port.js';
 import {
   maybeDestroyEmptyTemporaryChannel,
   type TemporaryChannelRegistry,
@@ -205,8 +205,30 @@ export type RouteResult =
        * nickname opens a *new* connection) — needed so chat sends can record `senderNicknameAtSend`
        * without re-deriving it from anywhere (see `docs/architecture/PERSISTENT_TEXT_CHAT.md`). */
       readonly nickname?: string;
+      /** T15.2 — set on exactly the transition that pushed a `server:turn-credentials` message
+       * (`handleIdentityProof`'s success path, and only when TURN is configured at all), carrying
+       * that credential's own `expiresAt`. `Connection` uses it to arm the periodic re-mint/re-push
+       * timer that keeps a long-lived connection from ever holding an expired credential (see
+       * `turn-credential-refresh.ts`). Reported rather than acted on here so `routeClientMessage`
+       * stays pure — it describes what happened, it never owns a timer. */
+      readonly turnCredentialsExpiresAt?: string;
     }
   | { readonly ok: false; readonly code: ErrorCode; readonly message: string };
+
+/**
+ * The one place a `server:turn-credentials` message is built, shared by the initial post-auth push
+ * (`handleIdentityProof`) and `Connection`'s later periodic refreshes, so the two can never drift
+ * into subtly different payload shapes. Copies each ice-server object rather than passing the port's
+ * own objects through, keeping the minted value immutable from a recipient's point of view.
+ */
+export function buildTurnCredentialsMessage(minted: MintedTurnCredentials): ServerMessage {
+  return {
+    type: 'server:turn-credentials',
+    id: randomUUID(),
+    iceServers: minted.iceServers.map((iceServer) => ({ ...iceServer })),
+    expiresAt: minted.expiresAt,
+  };
+}
 
 function reply(message: ServerMessage): OutgoingAction {
   return { kind: 'reply', message };
@@ -781,17 +803,9 @@ function handleIdentityProof(
     reply(buildProfileSelfUpdatedMessage(randomUUID(), identityId, ctx)),
     // T14 — only when this Dedicated Server actually has TURN configured (see
     // `turn-credential-port.ts`'s own doc comment); never sent at all otherwise, and never with an
-    // empty `iceServers` array either way.
-    ...(turnCredentials
-      ? [
-          reply({
-            type: 'server:turn-credentials' as const,
-            id: randomUUID(),
-            iceServers: turnCredentials.iceServers.map((iceServer) => ({ ...iceServer })),
-            expiresAt: turnCredentials.expiresAt,
-          }),
-        ]
-      : []),
+    // empty `iceServers` array either way. T15.2 — this is now the *first* of possibly several
+    // pushes on the same connection rather than a one-shot; see `RouteResult.turnCredentialsExpiresAt`.
+    ...(turnCredentials ? [reply(buildTurnCredentialsMessage(turnCredentials))] : []),
   ];
   // Only a genuine 0->1 transition for this identity is announced to everyone else — if this
   // identity already had another live connection, it was already visible as online, so no
@@ -812,6 +826,7 @@ function handleIdentityProof(
     identityId,
     nickname: challenge.nickname,
     actions,
+    ...(turnCredentials ? { turnCredentialsExpiresAt: turnCredentials.expiresAt } : {}),
   };
 }
 

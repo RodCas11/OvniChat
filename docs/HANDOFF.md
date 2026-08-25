@@ -547,13 +547,17 @@ Renderer/Main trust boundary.
 
 ## What does not exist?
 
-There is no installer/maker artifact or SFU — those remain T15/T17. TURN credential minting, Docker
-packaging, and reverse-proxy TLS support are implemented and fully verified with real evidence (T14 —
-see below) — Docker wasn't available on the Windows workstation, so verification moved to a real
-Ubuntu 24.04 VPS over SSH (the workstation itself was never modified), where every deployment path
-(native systemd, native Coturn+Caddy, Docker/Compose) and the decisive forced-relay WebRTC proof all
-passed (see [`tasks/T14_PRODUCTION_SELF_HOSTING.md`](tasks/T14_PRODUCTION_SELF_HOSTING.md) for the
-full record). Real avatars/presence/status (T13.3) and the gamer voice experience (T13.4 — Push to Talk, Voice Activity, speaking
+There is no SFU — that remains T17. TURN credential minting, Docker packaging, and reverse-proxy TLS
+support are implemented and fully verified with real evidence (T14) — Docker wasn't available on the
+Windows workstation, so verification moved to a real Ubuntu 24.04 VPS over SSH (the workstation itself
+was never modified), where every deployment path (native systemd, native Coturn+Caddy, Docker/Compose)
+and the decisive forced-relay WebRTC proof all passed (see
+[`tasks/T14_PRODUCTION_SELF_HOSTING.md`](tasks/T14_PRODUCTION_SELF_HOSTING.md) for the full record). A
+real Windows installer/maker artifact now exists too (T15, Squirrel), and a one-script easy installer
+(native + Docker) for the Dedicated Server, both fully implemented and proven with real evidence,
+including a real installer-flow pass against the validation VPS — see
+[`tasks/T15_DISTRIBUTION_AND_EASY_INSTALL.md`](tasks/T15_DISTRIBUTION_AND_EASY_INSTALL.md). Real
+avatars/presence/status (T13.3) and the gamer voice experience (T13.4 — Push to Talk, Voice Activity, speaking
 indicators, per-user volume, local mute, join/leave sounds) are now implemented — see below. Voice,
 camera, screen-video, and screen-audio
 sharing (T3–T6, P2P-mesh, small-room, self-hosted scope), local cryptographic client identity (T7),
@@ -649,8 +653,23 @@ T13 was redefined, by explicit product direction, from a single "self-hosting pr
 task into a five-part Product Experience series (T13.1-T13.5) — see
 [`tasks/STATUS.md`](tasks/STATUS.md) for the full renumbering (production self-hosting was T14,
 installer/releases T15, private-beta polish T16, SFU T17, hardening/release-candidate T18). **T14 —
-Production Self-Hosting** is now implemented (see above); **T15 — Windows client installer and
-dedicated-server releases** is next. Do not implement it until its own task document exists.
+Production Self-Hosting** is implemented (see above). **T15 — Chantivo Distribution, Easy Install &
+Dedicated Server Releases** is implemented: `install-chantivo.sh` (native + Docker, including automated
+HTTPS/WSS via Caddy — DNS-validated locally, never overwriting a pre-existing Caddy config, with a
+`--tls-only` path to add a hostname later without touching server data), the `chantivo-server` operator
+CLI (its final output now shows the real initial admin token and a per-component status block directly,
+not just a follow-up-command pointer), release-artifact/checksum tooling (Linux x64 only — arm64 is
+honestly reported as not yet supported, not merely "appears buildable"), and a real Windows Squirrel
+installer proven with a genuine two-version **upgrade** (not just install/uninstall), all passing the
+full repository gate and two rounds of code-level security review. A real installer-flow proof against
+the validation VPS found and closed several genuine bugs only a truly fresh host or a second real
+invocation exposed (a native install directory-ordering bug; a symlink-vs-realpath bug that silently
+no-op'd `doctor`/`admin-token create` in native mode; a non-idempotent Caddy GPG-keyring write; a missing
+`server.env` source in the dispatcher) — all fixed and independently re-verified with real VPS evidence,
+including a real, publicly CA-issued Let's Encrypt certificate obtained against the validation VPS. See
+[`tasks/T15_DISTRIBUTION_AND_EASY_INSTALL.md`](tasks/T15_DISTRIBUTION_AND_EASY_INSTALL.md).
+**T16 — Private Beta / Real Usage Polish** is next. Do not implement it until its own task document
+exists.
 
 Non-blocking follow-ups still open, cheap relative to the risk they guard against: (1) ~~a
 frequency-domain (e.g. dominant-frequency-near-440Hz) check for `e2e:screen-audio-smoke`'s

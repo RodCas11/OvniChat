@@ -70,7 +70,8 @@ describe('ServerRail (T13.1)', () => {
     const tileB = await screen.findByTestId('server-rail-tile-b');
     fireEvent.click(tileB);
 
-    expect(onSwitchServer).toHaveBeenCalledWith('ws://127.0.0.1:8091');
+    // Bare bookmark addresses (no scheme) resolve to wss:// (secure by default) at use time.
+    expect(onSwitchServer).toHaveBeenCalledWith('wss://127.0.0.1:8091');
   });
 
   it('never re-triggers a switch when clicking the already-active server', async () => {

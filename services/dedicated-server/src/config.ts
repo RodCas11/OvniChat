@@ -8,6 +8,7 @@ import { serverNameSchema, type VoiceChannelSummary } from '@disco-voador/protoc
 import { z } from 'zod';
 
 import { readServerConfigFile, type ServerConfigFile } from './server-config-file.js';
+import { inferDeploymentScope, type DeploymentScope } from './turn/public-endpoint.js';
 
 /**
  * T14 — TURN is optional (`docs/references/COTURN.md`); `turn` is `undefined` whenever it is not
@@ -24,7 +25,15 @@ export interface TurnConfig {
   readonly urls: readonly string[];
 }
 
-const DEFAULT_TURN_CREDENTIAL_TTL_SECONDS = 21_600; // 6 hours
+/**
+ * 6 hours. Do not lower this below one hour without re-reading the history: a 300-second default
+ * shipped once and made every voice join more than ~5 minutes after connecting fail against real
+ * Coturn (`401 Unauthorized`, zero relay candidates gathered). T15.2's periodic re-mint/re-push
+ * (`services/realtime`'s `turn-credential-refresh.ts`) means the value no longer has to cover a
+ * whole session on its own — the refresh interval is half of whatever this is — but the floor is
+ * enforced by a test (`tests/dedicated-server/config.test.ts`) rather than left to this comment.
+ */
+const DEFAULT_TURN_CREDENTIAL_TTL_SECONDS = 21_600;
 
 function isTurnUrl(value: string): boolean {
   try {
@@ -88,6 +97,15 @@ const overrideSchema = z
     // T14 — display-only (see `DedicatedServerConfig.publicHost`'s own doc comment); never used
     // for binding.
     DISCO_VOADOR_SERVER_PUBLIC_HOST: envNonEmptyString().optional(),
+    // T15 follow-up — does this deployment intend to serve remote clients over the internet
+    // (`public`), or is it a development/integration/LAN-only deployment (`local`)? Purely a
+    // diagnostic signal: nothing binds, routes, or authenticates differently because of it. It
+    // exists so `chantivo-server doctor` can tell "a loopback TURN address, deliberately, on a
+    // developer's laptop" apart from "a loopback TURN address advertised to every remote client of
+    // a real public server" — the exact production incident this field was added for. Optional and
+    // inferred from `DISCO_VOADOR_SERVER_PUBLIC_HOST` when unset (see `inferDeploymentScope`), so
+    // no existing deployment has to set anything.
+    DISCO_VOADOR_DEPLOYMENT_SCOPE: z.enum(['public', 'local']).optional(),
     // T14 — TURN (see `TurnConfig`'s own doc comment above). Both of these must be set together or
     // neither at all — enforced by the `superRefine` below, not left as a silently-partial config.
     DISCO_VOADOR_TURN_SHARED_SECRET: envNonEmptyString().optional(),
@@ -124,6 +142,11 @@ export interface DedicatedServerConfig {
    * sole bind authority, unaffected by this field's presence or value. `undefined` when the
    * operator hasn't set one. */
   readonly publicHost: string | undefined;
+  /** T15 follow-up — `'public'` when this deployment serves remote clients over the internet,
+   * `'local'` for development/integration/LAN-only deployments. Diagnostic only (see the env
+   * schema's own comment); resolved from `DISCO_VOADOR_DEPLOYMENT_SCOPE` when set, otherwise
+   * inferred from {@link publicHost}. */
+  readonly deploymentScope: DeploymentScope;
   /** T14 — Coturn `use-auth-secret` REST credential minting configuration (see `TurnConfig`'s own
    * doc comment above). `undefined` whenever TURN is not configured — a self-hosted deployment with
    * no TURN relay (STUN/P2P only) is a fully supported, documented configuration, not an error. */
@@ -156,6 +179,7 @@ export async function loadDedicatedServerConfig(
     DISCO_VOADOR_SERVER_ACCESS_MODE,
     DISCO_VOADOR_SERVER_DATA_DIR,
     DISCO_VOADOR_SERVER_PUBLIC_HOST,
+    DISCO_VOADOR_DEPLOYMENT_SCOPE,
     DISCO_VOADOR_TURN_SHARED_SECRET,
     DISCO_VOADOR_TURN_URLS,
     DISCO_VOADOR_TURN_CREDENTIAL_TTL_SECONDS,
@@ -182,6 +206,8 @@ export async function loadDedicatedServerConfig(
         }
       : undefined;
 
+  const publicHost = DISCO_VOADOR_SERVER_PUBLIC_HOST ?? file?.publicHost ?? undefined;
+
   return {
     name: DISCO_VOADOR_SERVER_NAME ?? file?.name ?? DEFAULT_SERVER_NAME,
     realtime,
@@ -190,7 +216,8 @@ export async function loadDedicatedServerConfig(
     dataDir: DISCO_VOADOR_SERVER_DATA_DIR ?? file?.dataDir ?? DEFAULT_DATA_DIR,
     configFilePath,
     configFileFound: file !== undefined,
-    publicHost: DISCO_VOADOR_SERVER_PUBLIC_HOST ?? file?.publicHost ?? undefined,
+    publicHost,
+    deploymentScope: inferDeploymentScope(DISCO_VOADOR_DEPLOYMENT_SCOPE, publicHost),
     turn,
   };
 }

@@ -89,10 +89,6 @@ export class AuthorizationStore implements AuthorizationPort {
   private readonly db: DatabaseSync;
   private readonly accessMode: AccessMode;
   private readonly now: () => number;
-  /** Set only when this call created a brand-new database (T9 Section 10) — the one-time Server
-   * Admin bootstrap token, in raw form. `undefined` on every subsequent open of an existing store;
-   * the raw token is never persisted, so there is no way to recover it later (T9 Section 11). */
-  readonly bootstrapToken: string | undefined;
 
   private readonly selectGroupStmt;
   private readonly selectAllGroupsStmt;
@@ -172,27 +168,29 @@ export class AuthorizationStore implements AuthorizationPort {
     );
 
     if (wasFreshInit) {
-      this.bootstrapToken = this.seedFreshDatabase();
-    } else {
-      this.bootstrapToken = undefined;
+      this.seedFreshDatabase();
     }
   }
 
-  /** Seeds the three built-in groups and generates the one-time bootstrap token — only ever run
-   * once, immediately after this exact database file was created for the first time. */
-  private seedFreshDatabase(): string {
-    return withTransaction(this.db, () => {
+  /** Seeds the three built-in groups — only ever run once, immediately after this exact database
+   * file was created for the first time. A fresh store deliberately mints no token and claims no
+   * admin (T15 security fix): the one-time 'bootstrap'-kind token this used to also generate here
+   * was minted inside the same long-running, supervised server process whose stdout is captured
+   * wholesale by systemd/Docker log collectors (`journalctl -u chantivo-server`, `docker compose
+   * logs`), so the raw admin-equivalent secret leaked into infrastructure logs on every fresh
+   * install. The very first Server Admin credential a server ever has now comes exclusively from an
+   * explicit, one-shot `chantivo-server admin-token create` invocation
+   * (`cli-admin-token.ts`/`mintServerAdminRecoveryToken`) — a distinct process whose stdout is never
+   * captured by the supervised service's log stream — using the exact same `createToken` mechanism
+   * as every later recovery call, not a second, parallel minting path. */
+  private seedFreshDatabase(): void {
+    withTransaction(this.db, () => {
       for (const seed of BUILT_IN_GROUPS) {
         this.insertGroupStmt.run(seed.groupId, seed.name, 1);
         for (const permission of seed.permissions) {
           this.insertPermissionStmt.run(seed.groupId, permission);
         }
       }
-
-      const token = generateServerToken('ADMIN');
-      const digest = digestServerToken(token);
-      this.insertTokenStmt.run(digest, 'bootstrap', SERVER_ADMIN_GROUP_ID, this.now(), null);
-      return token;
     });
   }
 
@@ -301,13 +299,20 @@ export class AuthorizationStore implements AuthorizationPort {
 
     const digest = digestServerToken(request.serverToken);
     const row = this.selectTokenStmt.get(digest) as TokenRow | undefined;
-    // A bootstrap token (T9 Section 10) also satisfies admission, not only 'invite' — otherwise a
-    // server started directly in `invite-only` mode would permanently lock its own operator out:
-    // with no persistent membership and no invite yet issued, the one-time bootstrap token is the
-    // *only* credential that could ever get them connected in the first place to redeem it.
+    // A 'privilege'-kind token also satisfies admission, not only 'invite' (T9 Section 10, revised
+    // T15) — otherwise a server started directly in `invite-only` mode would permanently lock its
+    // own operator out: with no persistent membership and no invite yet issued, the token minted by
+    // `chantivo-server admin-token create` (the sole initial-claim mechanism since T15's removal of
+    // the one-time 'bootstrap'-kind token — see `seedFreshDatabase`'s doc comment) is the *only*
+    // credential that could ever get them connected in the first place to redeem it. This is
+    // deliberately no broader than before: 'privilege' tokens are already admin-issued-or-explicitly-
+    // minted-by-an-operator-with-shell-access, never something an ordinary participant can generate
+    // for themselves, so accepting them here (in addition to their existing role as post-connection
+    // redeemable credentials) does not hand out any capability a 'privilege' token didn't already
+    // carry.
     const usable =
       row !== undefined &&
-      (row.kind === 'invite' || row.kind === 'bootstrap') &&
+      (row.kind === 'invite' || row.kind === 'privilege') &&
       row.consumed_at === null &&
       (row.expires_at === null || row.expires_at > this.now());
     if (!row || !usable) {
@@ -344,6 +349,16 @@ export class AuthorizationStore implements AuthorizationPort {
 
   getPublicBadges(identityId: string): readonly GroupBadge[] {
     return this.snapshotFor(this.effectiveGroupIds(identityId)).groups;
+  }
+
+  /** T15 — whether any identity currently holds the built-in Server Admin group, i.e. whether this
+   * server has ever had its initial admin claim completed (`chantivo-server admin-token create` +
+   * a real redemption). Used by `cli.ts`'s startup banner to show the "run admin-token create" hint
+   * only while genuinely unclaimed, never on every restart of an already-claimed server. Reuses the
+   * same prepared statement `revokeGroup`'s last-admin protection already relies on. */
+  hasAnyServerAdmin(): boolean {
+    const row = this.countServerAdminsStmt.get(SERVER_ADMIN_GROUP_ID) as { count: number };
+    return row.count > 0;
   }
 
   redeemToken(identityId: string, token: string): RedeemTokenResult {

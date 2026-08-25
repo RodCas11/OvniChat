@@ -6,12 +6,18 @@
  * throughout the address itself, not just before a port), while `new URL(...)` already implements
  * the full, correct scheme/host/port/bracketed-IPv6 grammar.
  *
- * A bare `host[:port]` (no scheme) — this app's LAN/dev default — is parsed as `ws://`, defaulting
- * to port `8090` when no port is given, exactly as before. An explicit `wss://host[:port]` is also
- * accepted (T14 — production self-hosting behind a TLS-terminating reverse proxy such as Caddy),
- * defaulting to the standard `443` when no port is given. An explicit `ws://host[:port]` behaves
- * identically to the bare form. Any other explicit scheme (`http://`, `https://`, etc.) is rejected
- * rather than silently reinterpreted.
+ * A bare `host[:port]` (no scheme) now defaults to **`wss://`**, secure by default, defaulting to
+ * the standard port `443` when no port is given — this covers a real production hostname (e.g.
+ * typing `beta.chantivo.app` with no scheme) reaching a TLS-terminating reverse proxy such as Caddy,
+ * which is only listening on 443. Bare input never guesses `ws://`, even for `localhost`/loopback
+ * addresses — an explicitly-typed scheme is the only way to get a plain, insecure `ws://` result, no
+ * exceptions. An explicit `ws://host[:port]` is preserved exactly as before, defaulting to port
+ * `8090` when no port is given — this remains the deliberate path for local/dev use
+ * (`ws://localhost:8090`, `ws://127.0.0.1:8090`) and for IP-only self-hosting without TLS. An
+ * explicit `wss://host[:port]` behaves identically to the bare form, defaulting to `443`. Any other
+ * explicit scheme (`http://`, `https://`, etc.) is rejected rather than silently reinterpreted, so a
+ * user who pastes a full URL with the wrong scheme gets a clear error instead of a silent, possibly
+ * wrong, reinterpretation.
  */
 
 const DEFAULT_PORT = 8090;
@@ -49,9 +55,11 @@ export function parseServerAddress(input: string): ParseServerAddressResult {
 
   const hasExplicitScheme = EXPLICIT_SCHEME_PATTERN.test(trimmed);
 
+  // Bare input (no explicit scheme) defaults to `wss://` — secure by default. Only an explicitly
+  // typed `ws://` ever produces a plain, insecure `ws://` result; see the module doc comment above.
   let url: URL;
   try {
-    url = new URL(hasExplicitScheme ? trimmed : `ws://${trimmed}`);
+    url = new URL(hasExplicitScheme ? trimmed : `wss://${trimmed}`);
   } catch {
     return { ok: false, reason: 'Not a valid server address' };
   }

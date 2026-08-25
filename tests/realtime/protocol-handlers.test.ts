@@ -237,6 +237,8 @@ describe('routeClientMessage — handshake', () => {
     if (!proofResult.ok) return;
     const messages = replies(proofResult.actions);
     expect(messages.some((m) => m.type === 'server:turn-credentials')).toBe(false);
+    // T15.2 — and therefore nothing for `Connection` to arm a refresh timer from.
+    expect(proofResult.turnCredentialsExpiresAt).toBeUndefined();
   });
 
   it('T14: sends server:turn-credentials with the minted payload when ctx.turnCredentials.mint() returns a value', () => {
@@ -272,6 +274,9 @@ describe('routeClientMessage — handshake', () => {
       iceServers: mintedIceServers,
       expiresAt: '2026-08-18T06:00:00.000Z',
     });
+    // T15.2 — the same expiry is reported back out of the pure router so `Connection` can arm the
+    // periodic re-mint/re-push without re-parsing its own outgoing message or minting a second time.
+    expect(proofResult.turnCredentialsExpiresAt).toBe('2026-08-18T06:00:00.000Z');
   });
 
   it('rejects a hello with an unsupported protocol version (fatal)', () => {

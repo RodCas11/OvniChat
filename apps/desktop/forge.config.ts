@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { FuseV1Options, FuseVersion } from '@electron/fuses';
+import { MakerSquirrel } from '@electron-forge/maker-squirrel';
 import { FusesPlugin } from '@electron-forge/plugin-fuses';
 import { VitePlugin } from '@electron-forge/plugin-vite';
 import type { ForgeConfig } from '@electron-forge/shared-types';
@@ -64,7 +65,54 @@ const repoRootNodeModules = path.join(desktopDir, '..', '..', 'node_modules');
 const chantivoIconBasePath = path.join(desktopDir, 'resources', 'chantivo');
 
 const forgeConfig: ForgeConfig = {
-  makers: [],
+  // T15 — first real Windows installer for this repo (previously `package` only produced a raw
+  // packaged directory, no `.exe`/installer output at all). `MakerSquirrel` wraps `electron-
+  // winstaller`, which itself wraps the real Squirrel.Windows toolchain (`vendor/Squirrel.exe`,
+  // bundled inside `electron-winstaller` itself — no separate install/download step).
+  //
+  // `title`, `description`, and `exe` are left to `electron-winstaller`'s own `usePackageJson`-driven
+  // inference (on by default) rather than duplicated here, verified directly against a real
+  // `electron-forge make` run and `@electron-forge/maker-squirrel`'s own `MakerSquirrel.js` (not just
+  // its `.d.ts`, which only documents `electron-winstaller`'s options, not which ones Forge's own
+  // wrapper already fills in before handing off):
+  //   - `exe`/`title` default to Forge's own computed `appName`, which itself is `filenamify(
+  //     packagerConfig.name || packageJSON.productName || packageJSON.name)` — since this app's
+  //     `package.json` sets `productName: "Chantivo"`, `appName` resolves to `"Chantivo"`, exactly
+  //     matching the real packaged executable's own name (`out/Chantivo-win32-x64/Chantivo.exe`,
+  //     confirmed by a real `electron-forge package` run). No `exe`/`title` override is needed.
+  //   - `description` defaults from this `package.json`'s own `description` field, which is already
+  //     accurate.
+  // `name` and `authors` cannot be left to their defaults:
+  //   - `name`: `MakerSquirrel.js`'s own default (not `electron-winstaller`'s) is
+  //     `packageJSON.name.replace(/-/g, '_')` — this app's real, scoped npm package name
+  //     (`@disco-voador/desktop`) contains `@` and `/`, neither of which hyphen-replacement touches,
+  //     which would hand `electron-winstaller` an invalid NuGet package ID. Set explicitly to the
+  //     public product name instead — internal-namespace-free, matching `docs/BRANDING.md`'s
+  //     "Internal namespace policy" (the public product name is the only thing this installer should
+  //     ever expose).
+  //   - `authors`: NuGet's `.nuspec` schema requires a non-empty `Authors` field; a real
+  //     `electron-forge make` run left unset failed outright (`nuspec.exe`: "Authors is required.")
+  //     because this `package.json` has no `author` field for `usePackageJson` to infer from, and
+  //     none exists anywhere else in this monorepo either (`license: "UNLICENSED"`, no `LICENSE`
+  //     file, no company/org entity). Rather than fabricate a company name or expose an individual
+  //     contributor's personal name in shipped installer metadata, this uses the same public product
+  //     name as `name`/`title` — the only identity this installer should surface at all.
+  //
+  // `setupIcon` is Squirrel's own icon option for `Setup.exe` and the generated uninstaller —
+  // distinct from `packagerConfig.icon` above, which only covers the packaged app's own `.exe` icon.
+  // Left unset, Squirrel falls back to a generic default icon for both.
+  //
+  // Auto-update is deliberately NOT wired: no `autoUpdater` calls, no `remoteReleases`/update-feed
+  // URL. There is no public release-hosting endpoint yet (a separate, not-yet-done T15 slice); wiring
+  // an update feed with nothing behind it would be dead/misleading configuration. Revisit once real
+  // release hosting exists.
+  makers: [
+    new MakerSquirrel({
+      name: 'Chantivo',
+      authors: 'Chantivo',
+      setupIcon: `${chantivoIconBasePath}.ico`,
+    }),
+  ],
   packagerConfig: {
     icon: chantivoIconBasePath,
     // `asar.unpack` (rather than a plain `asar: true`) is required specifically because

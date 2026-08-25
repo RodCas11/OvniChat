@@ -55,6 +55,27 @@ export interface RtcPeerConnectionLike {
   setRemoteDescription(description: RTCSessionDescriptionInit): Promise<void>;
   addIceCandidate(candidate?: RTCIceCandidateInit | null): Promise<void>;
   getStats(): Promise<RTCStatsReport>;
+  /**
+   * T15.1 — applies a new `RTCConfiguration` to an *already-constructed* peer connection. Standard
+   * WebRTC (`RTCPeerConnection.setConfiguration()`); the platform permits changing `iceServers` on a
+   * live connection, and newly gathered candidates use the new list. It is a whole-configuration
+   * REPLACE, not a merge, so every caller in this package passes the same single-property
+   * `{ iceServers }` shape {@link createRtcPeerConnection} constructs with — there is no other
+   * configuration field for this replacement to silently reset to its default.
+   *
+   * On its own this only affects *future* gathering; {@link restartIce} is what makes an already-
+   * gathering/failed connection actually re-gather against the new list.
+   */
+  setConfiguration(configuration: RTCConfiguration): void;
+  /**
+   * T15.1 — standard WebRTC `RTCPeerConnection.restartIce()`: marks this connection's current local
+   * ICE credentials for replacement so the next offer this side generates performs a real ICE
+   * restart (fresh ufrag/pwd, full re-gathering against the *current* configuration). Per the
+   * specification this also updates the negotiation-needed flag, so the platform fires
+   * `negotiationneeded` once signaling is stable — which is how `Peer` turns this into an actual
+   * renegotiation offer without a second, parallel offer-scheduling mechanism.
+   */
+  restartIce(): void;
   close(): void;
 }
 

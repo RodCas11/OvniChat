@@ -1,0 +1,471 @@
+#!/usr/bin/env bash
+# infrastructure/install/chantivo-server
+#
+# Operator CLI dispatcher, installed to /usr/local/bin/chantivo-server by install-chantivo.sh.
+# Subcommands: status, logs, restart, version, doctor, backup, update, admin-token create.
+#
+# Detects native-vs-docker deployment mode by checking which of /opt/chantivo/current (native) or
+# /etc/chantivo/docker-deployment.env (docker, written by install-chantivo.sh's docker_install) exists
+# — there is no other reliable anchor back to a docker-mode deployment's on-disk location once this
+# file is copied out to /usr/local/bin on its own.
+#
+# `doctor` and `admin-token create` dispatch to compiled Node CLI entry points a PARALLEL task builds
+# as services/dedicated-server/src/cli-doctor.ts / cli-admin-token.ts, shipped inside the deployed
+# release artifact at dist/cli-doctor.js / dist/cli-admin-token.js (the same dist/<name>.js convention
+# cli.ts -> dist/cli.js already establishes) — this script only needs to know that invocation shape,
+# not their implementation.
+set -Eeuo pipefail
+
+CS_SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd -P)"
+
+# Prefer a co-located lib/ (running straight from a repository checkout, e.g. during local testing)
+# over the fixed installed location, so this script works identically before and after
+# install-chantivo.sh copies it to /usr/local/bin (which also installs lib/fetch-verify.sh to
+# /usr/local/lib/chantivo/fetch-verify.sh alongside it).
+if [ -f "${CS_SCRIPT_DIR}/lib/fetch-verify.sh" ]; then
+  # shellcheck source=lib/fetch-verify.sh
+  source "${CS_SCRIPT_DIR}/lib/fetch-verify.sh"
+elif [ -f /usr/local/lib/chantivo/fetch-verify.sh ]; then
+  # shellcheck source=/dev/null
+  source /usr/local/lib/chantivo/fetch-verify.sh
+else
+  echo "ERROR: fetch-verify.sh library not found (looked in ${CS_SCRIPT_DIR}/lib and /usr/local/lib/chantivo)." >&2
+  exit 1
+fi
+
+cleanup() {
+  local path
+  for path in "${CLEANUP_PATHS[@]-}"; do
+    # See install-chantivo.sh's identical cleanup() for why this must be `if`, not a bare `&&` chain
+    # (a false condition on the last statement of a function invoked via `trap ... EXIT` spuriously
+    # fires the ERR trap under `set -e`, even on a clean `exit 0` — reproduced and fixed during this
+    # task's own local testing).
+    if [ -n "$path" ] && [ -e "$path" ]; then
+      rm -rf -- "$path"
+    fi
+  done
+}
+trap cleanup EXIT
+
+require_root_for_mutation() {
+  [ "$(id -u)" -eq 0 ] || die "This command must be run as root (or via sudo)."
+}
+
+# --- Mode detection ----------------------------------------------------------------------------------
+
+detect_deployment_mode() {
+  if [ -L /opt/chantivo/current ] && [ -e /opt/chantivo/current ]; then
+    printf 'native'
+    return 0
+  fi
+  if [ -f /etc/chantivo/docker-deployment.env ]; then
+    printf 'docker'
+    return 0
+  fi
+  return 1
+}
+
+# QA-VPS-tested real-fresh-host bug (T15 TLS follow-up): native-mode `doctor`/`admin-token create`
+# invoke `node .../dist/cli-doctor.js` / `.../dist/cli-admin-token.js` directly — unlike the systemd
+# unit (which gets DISCO_VOADOR_SERVER_DATA_DIR etc. via `EnvironmentFile=/etc/chantivo/server.env`),
+# a bare `node` invocation from this dispatcher inherits none of that, so cli-doctor.js/
+# cli-admin-token.js silently fall back to their own relative-path default ("disco-voador-server-data"
+# under the current working directory) instead of the real configured /var/lib/chantivo — reproduced
+# on a real fresh native install: `chantivo-server admin-token create` failed outright ("No
+# authorization store found at disco-voador-server-data/authorization.sqlite"), and `doctor` reported
+# a false "Data directory ... missing" FAIL, even though the actual running service (started by
+# systemd, which DOES get the EnvironmentFile) was healthy the whole time. Sourcing the same env file
+# this dispatcher already knows about (see write_server_env in install-chantivo.sh) before invoking
+# node closes the gap without changing either CLI entry point or the concurrent-store design itself.
+#
+# Real-production-upgrade-found bug (T15 follow-up): a bare `source`/`set -a` reads this file as a
+# SHELL script, but `EnvironmentFile=` (what the systemd unit actually uses) parses it as plain
+# KEY=VALUE lines with NO shell word-splitting or interpretation of the value. A value this dispatcher
+# never wrote itself but must still tolerate reading (e.g. a multi-word server name set by hand, or
+# before this quoting discipline existed) breaks `source` outright ("<word>: command not found") even
+# though the exact same file loads fine as a real systemd EnvironmentFile. Parsing each line manually
+# and `export`ing it as a single quoted argument avoids shell-interpreting the value at all, matching
+# EnvironmentFile's own simpler semantics.
+load_native_env() {
+  local env_path="/etc/chantivo/server.env"
+  if [ -f "$env_path" ]; then
+    local line
+    while IFS= read -r line || [ -n "$line" ]; do
+      case "$line" in
+        '' | '#'*) continue ;;
+      esac
+      export "${line?}"
+    done <"$env_path"
+  fi
+}
+
+# Sources /etc/chantivo/docker-deployment.env and defines `dc()`, a thin wrapper that always runs
+# `docker compose` against the right file/project from the right working directory — every docker-mode
+# subcommand below uses this instead of repeating the -f/-p/cd boilerplate.
+load_docker_deployment() {
+  # shellcheck source=/dev/null
+  source /etc/chantivo/docker-deployment.env
+  : "${CHANTIVO_DOCKER_DIR:?docker-deployment.env is missing CHANTIVO_DOCKER_DIR}"
+  : "${CHANTIVO_COMPOSE_FILE:?docker-deployment.env is missing CHANTIVO_COMPOSE_FILE}"
+  : "${CHANTIVO_COMPOSE_PROJECT:?docker-deployment.env is missing CHANTIVO_COMPOSE_PROJECT}"
+}
+
+dc() {
+  (cd "$CHANTIVO_DOCKER_DIR" && docker compose -f "$CHANTIVO_COMPOSE_FILE" -p "$CHANTIVO_COMPOSE_PROJECT" "$@")
+}
+
+# --- Subcommands ---------------------------------------------------------------------------------------
+
+status_cmd() {
+  local mode
+  mode="$(detect_deployment_mode)" || die "Cannot detect a Chantivo deployment (neither /opt/chantivo/current nor /etc/chantivo/docker-deployment.env found)."
+  case "$mode" in
+    native) systemctl status chantivo-server --no-pager "$@" ;;
+    docker)
+      load_docker_deployment
+      dc ps
+      ;;
+  esac
+}
+
+logs_cmd() {
+  local mode
+  mode="$(detect_deployment_mode)" || die "Cannot detect a Chantivo deployment."
+  case "$mode" in
+    native) journalctl -u chantivo-server "$@" ;;
+    docker)
+      load_docker_deployment
+      dc logs "$@" chantivo-server
+      ;;
+  esac
+}
+
+restart_cmd() {
+  require_root_for_mutation
+  local mode
+  mode="$(detect_deployment_mode)" || die "Cannot detect a Chantivo deployment."
+  case "$mode" in
+    native) systemctl restart chantivo-server ;;
+    docker)
+      load_docker_deployment
+      dc restart chantivo-server
+      ;;
+  esac
+}
+
+version_cmd() {
+  local mode
+  mode="$(detect_deployment_mode)" || die "Cannot detect a Chantivo deployment."
+  case "$mode" in
+    native)
+      local manifest="/opt/chantivo/current/release-manifest.json"
+      local pkg="/opt/chantivo/current/package.json"
+      if [ -f "$manifest" ]; then
+        read_manifest_version "$manifest"
+      elif [ -f "$pkg" ]; then
+        read_manifest_version "$pkg"
+      else
+        die "Cannot determine version: neither $manifest nor $pkg found."
+      fi
+      echo
+      ;;
+    docker)
+      load_docker_deployment
+      dc exec -T chantivo-server node -e "console.log(require('./package.json').version)"
+      ;;
+  esac
+}
+
+# turn_listener_port: the TURN listener port THIS deployment advertises, read from the deployment's
+# own configuration rather than assumed. Prints nothing and returns 1 when no TURN is configured at
+# all (a fully supported STUN/P2P-only deployment), so the caller can honestly report SKIPPED instead
+# of probing a port nothing was ever meant to listen on.
+turn_listener_port() {
+  local urls="${1:-}"
+  [ -n "$urls" ] || return 1
+  local first="${urls%%,*}"
+  first="${first%%\?*}"
+  local rest="${first#*:}"
+  rest="${rest#//}"
+  case "$rest" in
+    '['*) rest="${rest#*\]}" ;;
+    *) rest=":${rest#*:}" ;;
+  esac
+  local port="${rest#:}"
+  case "$port" in
+    '' | *[!0-9]*) printf '3478' ;;
+    *) printf '%s' "$port" ;;
+  esac
+}
+
+# check_turn_local_listener: a REAL TCP connect to this host's TURN listener port.
+#
+# Deliberately lives here and not in cli-doctor.js. Real Docker-fixture evidence (T15 follow-up): the
+# Node doctor runs INSIDE the chantivo-server container in Docker mode, while Coturn runs with
+# `network_mode: host` — so the app container's own 127.0.0.1 is not where the listener is, and a
+# probe from there FAILed on a completely correct Docker install. This dispatcher runs on the actual
+# host in BOTH deployment modes, which is exactly where Coturn is in both.
+#
+# Proves only that a local process accepts TCP on that port. Not that a TURN allocation succeeds
+# (no allocation is attempted), and not that anyone outside can reach it — see the external note.
+check_turn_local_listener() {
+  local urls="${1:-}"
+  local port
+  if ! port="$(turn_listener_port "$urls")"; then
+    echo "TURN LISTENER (local): SKIPPED (no TURN configured for this deployment — STUN/P2P only)"
+    return 0
+  fi
+  if timeout 3 bash -c "exec 3<>/dev/tcp/127.0.0.1/${port}" 2>/dev/null; then
+    echo "TURN LISTENER (local): PASS (a TCP listener accepted a connection on 127.0.0.1:${port}). This proves a local TURN process is up — NOT that a TURN allocation succeeds, and NOT that anyone outside this host can reach it."
+  else
+    echo "TURN LISTENER (local): FAIL (nothing accepted a TCP connection on 127.0.0.1:${port}). If Coturn runs on this host (the default for install-chantivo.sh --with-turn), it is not running — check 'systemctl status coturn' (native) or 'chantivo-server status' (docker). If you deliberately run Coturn on a separate machine (install-chantivo.sh --turn-url), this check does not apply to your deployment."
+  fi
+}
+
+# `doctor` runs the Node-side doctor (cli-doctor.js, shipped in the deployed release) and then layers
+# this script's OWN, honest host-level checks on top — the "listening locally vs. externally
+# verified" distinction for HTTP, and the real TURN listener probe above, neither of which the Node
+# process can honestly determine about a containerized deployment. `--external-check-url <url>` is
+# operator-supplied; without it, this prints an explicit "cannot verify" line rather than guessing.
+doctor_cmd() {
+  local external_url=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --external-check-url)
+        external_url="${2:-}"
+        shift 2
+        ;;
+      --external-check-url=*)
+        external_url="${1#*=}"
+        shift
+        ;;
+      *) shift ;;
+    esac
+  done
+
+  local mode
+  mode="$(detect_deployment_mode)" || die "Cannot detect a Chantivo deployment."
+
+  # The Node-side doctor is a diagnostic tool: a non-zero exit commonly just means "it found a
+  # problem to report", not "this dispatcher failed" — captured and reported, not treated as fatal
+  # here, so the host-level section below always still runs.
+  local node_doctor_status=0
+  # The TURN URLs this deployment advertises, read from wherever THIS deployment mode keeps its
+  # environment — never guessed, and never the shared secret (only the non-secret URL list is read).
+  local turn_urls=""
+  case "$mode" in
+    native)
+      load_native_env
+      turn_urls="${DISCO_VOADOR_TURN_URLS:-}"
+      if [ -f /opt/chantivo/current/dist/cli-doctor.js ]; then
+        node /opt/chantivo/current/dist/cli-doctor.js || node_doctor_status=$?
+      else
+        echo "(dist/cli-doctor.js not found in the deployed release yet — skipping the Node-side checks.)"
+      fi
+      ;;
+    docker)
+      load_docker_deployment
+      turn_urls="$(dc exec -T chantivo-server printenv DISCO_VOADOR_TURN_URLS 2>/dev/null | tr -d '\r\n')" || turn_urls=""
+      dc exec -T chantivo-server node dist/cli-doctor.js || node_doctor_status=$?
+      ;;
+  esac
+  [ "$node_doctor_status" -eq 0 ] || echo "(Node-side doctor exited with status $node_doctor_status — see its own output above.)"
+
+  echo
+  echo "--- chantivo-server doctor: host-level reachability (layered on top of the above) ---"
+  check_turn_local_listener "$turn_urls"
+  if curl --fail --silent --show-error --output /dev/null http://127.0.0.1:8090/healthz 2>/dev/null; then
+    echo "LISTENING LOCALLY:  yes (http://127.0.0.1:8090/healthz responded)"
+  else
+    echo "LISTENING LOCALLY:  no (http://127.0.0.1:8090/healthz did not respond)"
+  fi
+  if [ -n "$external_url" ]; then
+    if curl --fail --silent --show-error --output /dev/null "$external_url" 2>/dev/null; then
+      echo "EXTERNALLY VERIFIED: yes (reached $external_url from this host)"
+    else
+      echo "EXTERNALLY VERIFIED: no (could not reach $external_url from this host)"
+    fi
+  else
+    echo "EXTERNALLY VERIFIED: cannot verify — no --external-check-url given. This host cannot honestly confirm its own external reachability by inspecting itself; pass --external-check-url <url> (a URL this server should be reachable at from outside) if you want this checked for real."
+  fi
+}
+
+backup_cmd() {
+  require_root_for_mutation
+  local mode
+  mode="$(detect_deployment_mode)" || die "Cannot detect a Chantivo deployment."
+
+  local backup_dir="/var/backups/chantivo"
+  mkdir -p "$backup_dir"
+  chmod 700 "$backup_dir"
+
+  local ts
+  ts="$(date -u +%Y%m%dT%H%M%SZ)"
+  local out="${backup_dir}/chantivo-${ts}.tar.gz"
+
+  case "$mode" in
+    native)
+      # Stop -> tar -> start: the same documented, proven-consistent model docs/SELF_HOSTING.md
+      # already establishes (WAL-mode SQLite is only guaranteed self-consistent once the process
+      # holding it has cleanly closed).
+      systemctl stop chantivo-server
+      tar -czf "$out" -C /var/lib/chantivo .
+      systemctl start chantivo-server
+      ;;
+    docker)
+      load_docker_deployment
+      : "${CHANTIVO_DATA_VOLUME:?docker-deployment.env is missing CHANTIVO_DATA_VOLUME}"
+      dc stop chantivo-server
+      docker run --rm -v "${CHANTIVO_DATA_VOLUME}:/data" -v "${backup_dir}:/backup" alpine \
+        tar czf "/backup/$(basename -- "$out")" -C /data .
+      dc start chantivo-server
+      ;;
+  esac
+
+  chmod 600 "$out"
+  echo "Backup written: $out"
+  echo "Backups contain full authorization/chat/channel/profile state — treat this file like the live data directory (restrict its permissions, never upload it anywhere automatically)."
+}
+
+update_cmd() {
+  require_root_for_mutation
+  local mode
+  mode="$(detect_deployment_mode)" || die "Cannot detect a Chantivo deployment."
+
+  case "$mode" in
+    docker)
+      load_docker_deployment
+      cat <<EOF
+Docker deployments upgrade via the documented git-pull + rebuild path (docs/SELF_HOSTING.md's
+"Upgrading" section), not this command's release-tarball flow — that flow only applies to native
+installs, since Docker mode never used a release tarball to begin with (it builds this checkout's own
+Dockerfile). Back up first (chantivo-server backup), then run yourself:
+
+  cd "${CHANTIVO_DOCKER_DIR}/../.." && git pull
+  cd "${CHANTIVO_DOCKER_DIR}" && docker compose -f "${CHANTIVO_COMPOSE_FILE}" -p "${CHANTIVO_COMPOSE_PROJECT}" up -d --build
+EOF
+      ;;
+    native) update_native ;;
+  esac
+}
+
+update_native() {
+  local release_source="${CHANTIVO_RELEASE_SOURCE:-}"
+  [ -n "$release_source" ] \
+    || die "Set the CHANTIVO_RELEASE_SOURCE environment variable to the release source to update from (a URL or a local path/file://)."
+
+  local previous_target
+  previous_target="$(readlink -f /opt/chantivo/current)" \
+    || die "No existing /opt/chantivo/current — nothing to update. Use install-chantivo.sh for a first install."
+
+  download_and_verify_release "$release_source"
+
+  if [ "$RELEASE_VERSION" = "$(basename -- "$previous_target")" ]; then
+    echo "Already on version $RELEASE_VERSION — nothing to do."
+    return 0
+  fi
+
+  echo "Backing up before update..."
+  backup_cmd
+
+  local extract_staging
+  extract_staging="$(mktemp -d "${TMPDIR:-/tmp}/chantivo-update-extract.XXXXXX")"
+  CLEANUP_PATHS+=("$extract_staging")
+  extract_release_tarball "$RELEASE_TARBALL_PATH" "$extract_staging"
+
+  local new_release_dir="/opt/chantivo/releases/${RELEASE_VERSION}"
+  rm -rf -- "$new_release_dir"
+  mkdir -p /opt/chantivo/releases
+  mv -- "${extract_staging}/chantivo-dedicated-server" "$new_release_dir"
+  chown -R root:root "$new_release_dir"
+  find "$new_release_dir" -type d -exec chmod 755 {} +
+  find "$new_release_dir" -type f -exec chmod 644 {} +
+  cp -- "${RELEASE_DOWNLOAD_DIR}/release-manifest.json" "${new_release_dir}/release-manifest.json" 2>/dev/null || true
+
+  local tmp_link="/opt/chantivo/.current.tmp.$$"
+  ln -s -- "$new_release_dir" "$tmp_link"
+  mv -Tf -- "$tmp_link" /opt/chantivo/current
+
+  systemctl restart chantivo-server
+
+  if wait_for_health 127.0.0.1 8090 60; then
+    echo "Update to $RELEASE_VERSION succeeded."
+    return 0
+  fi
+
+  echo "Update health check FAILED — rolling back to $previous_target" >&2
+  local rollback_tmp="/opt/chantivo/.current.rollback.$$"
+  ln -s -- "$previous_target" "$rollback_tmp"
+  mv -Tf -- "$rollback_tmp" /opt/chantivo/current
+  systemctl restart chantivo-server
+  die "Update failed and was rolled back to the previous version ($previous_target). Check 'journalctl -u chantivo-server' for details."
+}
+
+admin_token_create_cmd() {
+  local mode
+  mode="$(detect_deployment_mode)" || die "Cannot detect a Chantivo deployment."
+  case "$mode" in
+    native)
+      load_native_env
+      [ -f /opt/chantivo/current/dist/cli-admin-token.js ] \
+        || die "dist/cli-admin-token.js not found in the deployed release."
+      exec node /opt/chantivo/current/dist/cli-admin-token.js create "$@"
+      ;;
+    docker)
+      load_docker_deployment
+      exec docker compose -f "${CHANTIVO_DOCKER_DIR}/${CHANTIVO_COMPOSE_FILE}" -p "$CHANTIVO_COMPOSE_PROJECT" \
+        exec chantivo-server node dist/cli-admin-token.js create "$@"
+      ;;
+  esac
+}
+
+print_cs_help() {
+  cat <<'EOF'
+Usage: chantivo-server <subcommand> [args]
+
+Subcommands:
+  status                        Show service/container status.
+  logs [args...]                Show logs (journalctl/docker compose logs args passed through).
+  restart                       Restart the server (requires root).
+  version                       Print the deployed server version.
+  doctor [--external-check-url <url>]
+                                 Run diagnostics, including this dispatcher's own honest
+                                 listening-locally-vs-externally-verified check and a real TCP
+                                 probe of this host's TURN listener port.
+  backup                        Stop, tar the data directory/volume, restart (requires root). Writes
+                                 to /var/backups/chantivo/chantivo-<ISO8601>.tar.gz.
+  update                        Native: download -> verify -> backup -> atomic symlink swap ->
+                                 restart -> readiness wait -> rollback-on-failure. Requires
+                                 CHANTIVO_RELEASE_SOURCE. Docker: prints the documented
+                                 git-pull + rebuild steps to run yourself.
+  admin-token create             Create a new admin/privilege token (dispatches to the deployed
+                                 cli-admin-token.js).
+EOF
+}
+
+main() {
+  local cmd="${1:-}"
+  [ $# -gt 0 ] && shift || true
+  case "$cmd" in
+    status) status_cmd "$@" ;;
+    logs) logs_cmd "$@" ;;
+    restart) restart_cmd "$@" ;;
+    version) version_cmd "$@" ;;
+    doctor) doctor_cmd "$@" ;;
+    backup) backup_cmd "$@" ;;
+    update) update_cmd "$@" ;;
+    admin-token)
+      case "${1:-}" in
+        create)
+          shift
+          admin_token_create_cmd "$@"
+          ;;
+        *) die "Usage: chantivo-server admin-token create" ;;
+      esac
+      ;;
+    -h | --help | help | "") print_cs_help ;;
+    *) die "Unknown subcommand: $cmd (see --help)" ;;
+  esac
+}
+
+main "$@"

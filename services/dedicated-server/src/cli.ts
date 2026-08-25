@@ -7,25 +7,25 @@ import { createDedicatedServer, ensureDataDirExists } from './create-dedicated-s
 import { ServerConfigFileError } from './server-config-file.js';
 import { acquireDataDirLock, DataDirLockError, type DataDirLock } from './storage/data-dir-lock.js';
 
-/** Product-facing startup banner (T8 Section 7) — an operator's first signal the server is
- * actually running and how it's configured, without printing anything sensitive (no client keys;
- * T9's one deliberate exception — the one-time bootstrap token — is printed separately by
- * {@link printBootstrapToken}, never folded into this routine banner so it can never be mistaken
- * for something printed on every restart). */
 /**
- * `bootstrapToken` (T9 Section 10/11) is folded into this *same* banner — printed exactly once,
- * only on the very first startup against a brand-new authorization store, as a visually distinct
- * trailing block (never repeated on a later restart, never written to the structured logger; the
- * raw token is not persisted anywhere, so this is the operator's only chance to ever see it) —
- * rather than a second separate `console.info` call, specifically so a reader watching stdout (a
- * human, or a smoke-test script) can rely on "Ready." having appeared meaning the bootstrap block
- * already has too, with no risk of the two being split across separate, out-of-order writes to a
- * piped (non-TTY) stdout.
+ * Product-facing startup banner (T8 Section 7) — an operator's first signal the server is actually
+ * running and how it's configured, without printing anything sensitive (no client keys, and —
+ * since T15's security fix — never a raw admin/privilege token either). This function runs inside
+ * the same long-running, supervised server process whose stdout systemd/Docker capture wholesale
+ * (`journalctl -u chantivo-server`, `docker compose logs`), so nothing printed here can ever be
+ * treated as secret; genuinely secret material (a minted admin token) is only ever printed by the
+ * distinct, one-shot `chantivo-server admin-token create` process (`cli-admin-token.ts`), whose
+ * stdout is never part of this stream.
+ *
+ * When the authorization store has no claimed Server Admin yet, this appends a safe, non-secret
+ * hint block pointing the operator at that command — gated on `hasAnyServerAdmin` (computed fresh
+ * at composition time by `createDedicatedServer`) so it only ever appears while the server is
+ * genuinely unclaimed, never on every restart of an already-claimed server.
  */
 function printStartupBanner(
   config: Awaited<ReturnType<typeof loadDedicatedServerConfig>>,
   address: { readonly host: string; readonly port: number },
-  bootstrapToken: string | undefined,
+  hasAnyServerAdmin: boolean,
 ): void {
   const lines = [
     'Chantivo Dedicated Server',
@@ -43,18 +43,13 @@ function printStartupBanner(
     'Ready.',
   ];
 
-  if (bootstrapToken) {
+  if (!hasAnyServerAdmin) {
     lines.push(
       '',
       '================================================================',
-      'Authorization store initialized for the first time.',
-      '',
-      'Initial Server Admin privilege key:',
-      '',
-      `  ${bootstrapToken}`,
-      '',
-      'Save this key now — it will not be shown again. Redeem it from the',
-      'client (or "Use Privilege Key" once connected) to become Server Admin.',
+      'No administrator has claimed this server yet.',
+      'Run:',
+      '  sudo chantivo-server admin-token create',
       '================================================================',
     );
   }
@@ -151,7 +146,7 @@ async function bootstrap(): Promise<void> {
     .start()
     .then((address) => {
       logger.info('server_listening', { ...address, name: config.name });
-      printStartupBanner(config, address, server.bootstrapToken);
+      printStartupBanner(config, address, server.hasAnyServerAdmin);
     })
     .catch((error: unknown) => {
       logger.error('server_start_failed', {

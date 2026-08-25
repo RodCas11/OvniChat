@@ -10,6 +10,7 @@ const verificationScripts = [
   'scripts/verify-infrastructure.mjs',
   'scripts/verify-links.mjs',
   'scripts/verify-secrets.mjs',
+  'scripts/verify-version.mjs',
 ];
 
 describe('repository guardrails', () => {

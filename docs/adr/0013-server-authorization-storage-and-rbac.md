@@ -2,7 +2,14 @@
 
 ## Status
 
-Accepted and implemented (T9).
+Accepted and implemented (T9). **Amended by T15**: the original one-time `'bootstrap'`-kind token
+described below was found to leak into `journalctl`/`docker compose logs` (it was printed inside the
+same supervised service process those log collectors capture wholesale) and was removed. Initial
+Server Admin claim and lost-credential recovery are now the same mechanism — `chantivo-server
+admin-token create`, a distinct one-shot process never captured by service logs — see
+[`../architecture/SERVER_AUTHORIZATION.md`](../architecture/SERVER_AUTHORIZATION.md)'s "Server Admin
+bootstrap" section for the current design. This ADR's own body is left as the historical record of the
+original T9 decision, not rewritten.
 
 ## Context
 

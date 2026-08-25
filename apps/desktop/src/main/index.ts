@@ -1,4 +1,5 @@
 import { app, BrowserWindow, dialog, globalShortcut, Menu, session } from 'electron';
+import squirrelStartupHandled from 'electron-squirrel-startup';
 import { promises as fsPromises } from 'node:fs';
 import path from 'node:path';
 
@@ -12,6 +13,24 @@ import { installScreenShareHandlers } from './screen-share.js';
 import { getClientSettings } from './settings/settings-service.js';
 import { IPC_CHANNELS } from '../shared/ipc-contract.js';
 import { createMainWindow, devServerUrl } from './window.js';
+
+// T15 — `electron-squirrel-startup` is `@electron-forge/maker-squirrel`'s own official quickstart
+// pattern (both the package's own README and Electron Forge's Squirrel.Windows guide document this
+// exact top-of-file usage): Squirrel.Windows re-launches the app it just (un)installed/updated with
+// a `--squirrel-install`/`--squirrel-updated`/`--squirrel-firstrun`/`--squirrel-uninstall`/
+// `--squirrel-obsolete` argv flag purely for its own bookkeeping (creating/removing the Start Menu
+// shortcut via `Update.exe`) — this is not a real user launch, so it must be detected and the
+// process quit immediately, before any of this file's own real startup logic (including the
+// userData pin immediately below) runs. `squirrelStartupHandled` is `require('electron-squirrel-
+// startup')`'s own return value (a plain boolean, computed synchronously at import time — see the
+// package's own `index.js`, which resolves to `true` only for the Squirrel argv flags above and only
+// on `win32`), imported as a default export because this file is ESM (`"type": "module"`) while the
+// package itself is CommonJS with `module.exports = <boolean>` (`@types/electron-squirrel-startup`
+// models this with `export =`, which resolves to a default-import binding under this repo's
+// `moduleResolution: NodeNext`).
+if (squirrelStartupHandled) {
+  app.quit();
+}
 
 // T13.5 — Chantivo product-branding rename. Historically no explicit Electron app name/productName
 // was ever set, so `app.getName()` (and therefore `app.getPath('userData')`) defaulted to reading

@@ -17,6 +17,28 @@ import {
 } from '../../services/dedicated-server/src/create-dedicated-server.js';
 import type { DedicatedServerConfig } from '../../services/dedicated-server/src/config.js';
 import type { Logger } from '../../services/realtime/src/logging.js';
+import { AuthorizationStore } from '../../services/dedicated-server/src/authorization/store.js';
+import { SERVER_ADMIN_GROUP_ID } from '../../services/dedicated-server/src/authorization/permissions.js';
+
+/** T15 — the exact same mechanism `chantivo-server admin-token create` uses
+ * (`mintServerAdminRecoveryToken`): mints a `privilege` token targeting the built-in Server Admin
+ * group directly via the store's own `createToken`. Replaces the removed `bootstrapToken` field
+ * these integration tests used to read straight off a fresh `DedicatedServerHandle`. */
+function mintAdminToken(store: AuthorizationStore): string {
+  const result = store.createToken({
+    tokenKind: 'privilege',
+    groupId: SERVER_ADMIN_GROUP_ID,
+    expiresInMs: undefined,
+  });
+  if (!result.ok) throw new Error(`expected admin token minting to succeed: ${result.message}`);
+  return result.token;
+}
+
+function authorizationPathFor(config: DedicatedServerConfig): string {
+  return config.dataDir === ':memory:'
+    ? ':memory:'
+    : path.join(config.dataDir, 'authorization.sqlite');
+}
 
 /**
  * T13.2 real-network integration tests for channel/category tree administration, ACL enforcement,
@@ -57,6 +79,7 @@ function testConfig(overrides: Partial<DedicatedServerConfig> = {}): DedicatedSe
     configFilePath: '(test)',
     configFileFound: false,
     publicHost: undefined,
+    deploymentScope: 'local',
     turn: undefined,
     ...overrides,
   };
@@ -241,31 +264,36 @@ describe('Dedicated Server — T13.2 channels (real network)', () => {
   async function startServer(
     overrides: Partial<DedicatedServerConfig> = {},
     deps: Parameters<typeof createDedicatedServer>[1] = {},
-  ): Promise<{ server: DedicatedServerHandle; url: string }> {
-    const server = track(createDedicatedServer(testConfig(overrides), deps));
+  ): Promise<{ server: DedicatedServerHandle; url: string; adminToken: string }> {
+    const config = testConfig(overrides);
+    // T15 — mint the admin token via the real `AuthorizationStore.createToken` mechanism (the exact
+    // same call `chantivo-server admin-token create` makes) before the server starts, unless the
+    // caller already injected its own `authorization` store via `deps`.
+    const authorization =
+      deps.authorization ??
+      new AuthorizationStore(authorizationPathFor(config), { accessMode: config.accessMode });
+    const adminToken = mintAdminToken(authorization);
+    const server = track(createDedicatedServer(config, { ...deps, authorization }));
     const address = await server.start();
-    return { server, url: `ws://${address.host}:${String(address.port)}` };
+    return { server, url: `ws://${address.host}:${String(address.port)}`, adminToken };
   }
 
   function send(ws: WebSocket, message: Record<string, unknown>): void {
     ws.send(JSON.stringify(message));
   }
 
-  /** Connects, then explicitly redeems the bootstrap token (`client:authorization-redeem-token`) to
+  /** Connects, then explicitly redeems the admin token (`client:authorization-redeem-token`) to
    * actually become Server Admin — on an `open` server (this file's default), a `serverToken`
    * merely present in `client:hello` is not itself checked/consumed (that only happens on an
    * `invite-only` server's admission path); redemption is always the separate, explicit step. */
-  async function connectAsAdmin(
-    server: DedicatedServerHandle,
-    url: string,
-  ): Promise<{ ws: WebSocket }> {
+  async function connectAsAdmin(adminToken: string, url: string): Promise<{ ws: WebSocket }> {
     const ws = track(await connect(url));
     await handshake(ws, 'Admin');
     const redeemed = waitForMessageOfType(ws, 'server:authorization-token-redeemed');
     send(ws, {
       type: 'client:authorization-redeem-token',
       id: 'redeem-1',
-      token: server.bootstrapToken,
+      token: adminToken,
     });
     await redeemed;
     return { ws };
@@ -290,8 +318,8 @@ describe('Dedicated Server — T13.2 channels (real network)', () => {
   }
 
   it('hostile Guest client: a hidden channel is never in the catalog, and history/join/update by known id fail CHANNEL_NOT_FOUND', async () => {
-    const { server, url } = await startServer();
-    const { ws: admin } = await connectAsAdmin(server, url);
+    const { url, adminToken } = await startServer();
+    const { ws: admin } = await connectAsAdmin(adminToken, url);
 
     const createdMessage = (await mutateChannel(admin, {
       type: 'client:channel-create-voice',
@@ -355,8 +383,8 @@ describe('Dedicated Server — T13.2 channels (real network)', () => {
   it('password-protected channel: required, wrong rejected, correct joins, and protection persists across a restart; the raw password is never logged', async () => {
     const dir = trackTempDir();
     const { logger, entries } = capturingLogger();
-    const { server, url } = await startServer({ dataDir: dir }, { logger });
-    const { ws: admin } = await connectAsAdmin(server, url);
+    const { server, url, adminToken } = await startServer({ dataDir: dir }, { logger });
+    const { ws: admin } = await connectAsAdmin(adminToken, url);
 
     const { node } = (await mutateChannel(admin, {
       type: 'client:channel-create-voice',
@@ -420,8 +448,8 @@ describe('Dedicated Server — T13.2 channels (real network)', () => {
   });
 
   it('access policy: a STAFF category with a Raid-Leaders child is invisible to a Guest and visible to staff; a Guest history request for the child is rejected', async () => {
-    const { server, url } = await startServer();
-    const { ws: admin } = await connectAsAdmin(server, url);
+    const { url, adminToken } = await startServer();
+    const { ws: admin } = await connectAsAdmin(adminToken, url);
 
     const groupAck = waitForMessageOfType(admin, 'server:authorization-ack');
     send(admin, {
@@ -503,8 +531,8 @@ describe('Dedicated Server — T13.2 channels (real network)', () => {
   });
 
   it('security regression: delegated Manage on a node hidden by an ancestor Visibility restriction never leaks it — CHANNEL_NOT_FOUND, not the admin-detail view or AUTHORIZATION_DENIED', async () => {
-    const { server, url } = await startServer();
-    const { ws: admin } = await connectAsAdmin(server, url);
+    const { url, adminToken } = await startServer();
+    const { ws: admin } = await connectAsAdmin(adminToken, url);
 
     // Two disjoint groups: "staff" gates Visibility on the category; "it-support" holds delegated
     // Manage on the child channel only — deliberately NOT a member of "staff", so this identity can
@@ -624,8 +652,8 @@ describe('Dedicated Server — T13.2 channels (real network)', () => {
   });
 
   it('join-policy is independent of visibility: visible to everyone, joinable only by a restricted group', async () => {
-    const { server, url } = await startServer();
-    const { ws: admin } = await connectAsAdmin(server, url);
+    const { url, adminToken } = await startServer();
+    const { ws: admin } = await connectAsAdmin(adminToken, url);
 
     const groupAck = waitForMessageOfType(admin, 'server:authorization-ack');
     send(admin, {
@@ -681,8 +709,8 @@ describe('Dedicated Server — T13.2 channels (real network)', () => {
   });
 
   it('live role change: granting Member lets an already-connected identity join without reconnecting; revoking it force-removes them from voice while the connection stays open', async () => {
-    const { server, url } = await startServer();
-    const { ws: admin } = await connectAsAdmin(server, url);
+    const { url, adminToken } = await startServer();
+    const { ws: admin } = await connectAsAdmin(adminToken, url);
 
     const groupAck = waitForMessageOfType(admin, 'server:authorization-ack');
     send(admin, {
@@ -771,8 +799,8 @@ describe('Dedicated Server — T13.2 channels (real network)', () => {
   });
 
   it('capacity: a limit of 2 admits exactly two simultaneous members; a rapid-fire third gets CHANNEL_FULL, and a slot frees up after a leave', async () => {
-    const { server, url } = await startServer();
-    const { ws: admin } = await connectAsAdmin(server, url);
+    const { url, adminToken } = await startServer();
+    const { ws: admin } = await connectAsAdmin(adminToken, url);
 
     const { node } = (await mutateChannel(admin, {
       type: 'client:channel-create-voice',
@@ -828,8 +856,8 @@ describe('Dedicated Server — T13.2 channels (real network)', () => {
 
   it('delete behavior: catalog removal, force-leave (not disconnect), history unreachable, restart keeps it deleted, and the id is never reused', async () => {
     const dir = trackTempDir();
-    const { server, url } = await startServer({ dataDir: dir });
-    const { ws: admin } = await connectAsAdmin(server, url);
+    const { server, url, adminToken } = await startServer({ dataDir: dir });
+    const { ws: admin } = await connectAsAdmin(adminToken, url);
 
     const { node } = (await mutateChannel(admin, {
       type: 'client:channel-create-voice',
@@ -877,14 +905,14 @@ describe('Dedicated Server — T13.2 channels (real network)', () => {
 
   it('temporary channel lifecycle: create -> join -> a second joiner -> creator leaves (remains) -> last leaves (destroyed) -> restart (does not return, history unreachable)', async () => {
     const dir = trackTempDir();
-    const { server, url } = await startServer({ dataDir: dir });
+    const { server, url, adminToken } = await startServer({ dataDir: dir });
 
     // (a) The creator issues `client:channel-create-voice{temporary:true}` — gated by exactly the
     // same `channels.create`/local-manage permission an ordinary (permanent) create requires (the
     // coordinator's decision only changes what happens *after* that check passes, never the check
-    // itself), so the creator here is the bootstrap-admin identity, same as every other create in
-    // this file. This alone never joins anything (no atomic auto-join, per the decision).
-    const { ws: creatorWs } = await connectAsAdmin(server, url);
+    // itself), so the creator here is the admin identity, same as every other create in this file.
+    // This alone never joins anything (no atomic auto-join, per the decision).
+    const { ws: creatorWs } = await connectAsAdmin(adminToken, url);
     const created = (await mutateChannel(creatorWs, {
       type: 'client:channel-create-voice',
       id: 'tc1',
@@ -990,10 +1018,10 @@ describe('Dedicated Server — T13.2 channels (real network)', () => {
   });
 
   it('two independent servers are fully isolated: different trees, different ACLs, different passwords, no cross-talk, and the same identity may be admin on one and Guest on the other', async () => {
-    const { server: serverA, url: urlA } = await startServer();
+    const { url: urlA, adminToken: adminTokenA } = await startServer();
     const { url: urlB } = await startServer();
 
-    const { ws: adminA } = await connectAsAdmin(serverA, urlA);
+    const { ws: adminA } = await connectAsAdmin(adminTokenA, urlA);
     const { node: nodeA } = (await mutateChannel(adminA, {
       type: 'client:channel-create-voice',
       id: 'ca1',

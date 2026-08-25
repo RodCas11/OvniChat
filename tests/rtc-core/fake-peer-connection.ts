@@ -37,6 +37,11 @@ export class FakePeerConnection implements RtcPeerConnectionLike {
   readonly setLocalDescriptionCalls: RTCSessionDescriptionInit[] = [];
   readonly setRemoteDescriptionCalls: RTCSessionDescriptionInit[] = [];
   readonly addIceCandidateCalls: (RTCIceCandidateInit | null | undefined)[] = [];
+  /** T15.1 — every `setConfiguration()` call, so a test can assert exactly which ICE server list
+   * reached an already-created connection (never the credential value itself in assertions). */
+  readonly setConfigurationCalls: RTCConfiguration[] = [];
+  /** T15.1 — how many times `restartIce()` was called on this connection. */
+  restartIceCallCount = 0;
   closeCallCount = 0;
 
   private readonly sendersByTrack = new Map<MediaStreamTrack, RTCRtpSender>();
@@ -190,6 +195,30 @@ export class FakePeerConnection implements RtcPeerConnectionLike {
 
   getStats(): Promise<RTCStatsReport> {
     return this.getStatsImpl();
+  }
+
+  /**
+   * T15.1 — mirrors the real platform closely enough for `Peer.applyIceServers`: the configuration
+   * is recorded, and `setConfigurationImpl` is a controllable hook so a test can inject the real
+   * platform's `InvalidStateError` for a connection that is already closing.
+   */
+  setConfigurationImpl: (configuration: RTCConfiguration) => void = () => undefined;
+
+  setConfiguration(configuration: RTCConfiguration): void {
+    this.setConfigurationCalls.push(configuration);
+    this.setConfigurationImpl(configuration);
+  }
+
+  /**
+   * T15.1 — a real `restartIce()` marks the local ICE credentials for replacement and, per the
+   * WebRTC specification, updates the negotiation-needed flag, which the platform surfaces as a
+   * `negotiationneeded` event once signaling is stable. This fake fires `onnegotiationneeded`
+   * synchronously so `Peer`'s existing renegotiation path is genuinely exercised rather than
+   * assumed; a peer that has not negotiated yet ignores it, exactly as it does for a real event.
+   */
+  restartIce(): void {
+    this.restartIceCallCount += 1;
+    this.onnegotiationneeded?.(new Event('negotiationneeded'));
   }
 
   close(): void {

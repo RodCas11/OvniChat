@@ -144,12 +144,87 @@ describe('AddServerDialog (T13.1, F-1 regression coverage)', () => {
     });
     fireEvent.click(screen.getByTestId('add-server-submit'));
 
+    // The bare-input default is `wss://` (secure by default); the raw typed string is never
+    // persisted — only the canonical, already-parsed form is.
     await vi.waitFor(() => {
       expect(updateBookmark).toHaveBeenCalledWith({
         bookmarkId: 'a',
         displayName: 'Server A',
-        serverAddress: '10.0.0.1:9999',
+        serverAddress: 'wss://10.0.0.1:9999',
       });
     });
+  });
+
+  // Real-world regression: entering a bare production hostname (no scheme) previously persisted the
+  // raw typed string, and separately defaulted to insecure `ws://` at connect time. Both are fixed
+  // together — the saved bookmark now carries the canonical `wss://` form, never the raw input.
+  it('persists the canonical wss:// form of a bare hostname on Add, not the raw typed string', async () => {
+    const addBookmark = vi.fn().mockResolvedValue({
+      bookmarkId: 'new',
+      displayName: 'Beta',
+      serverAddress: 'wss://beta.chantivo.app:443',
+    });
+    const actions = bookmarksActions({ addBookmark });
+
+    render(<AddServerDialog open={true} onClose={vi.fn()} actions={actions} />);
+
+    fireEvent.change(screen.getByTestId('add-server-name-input'), {
+      target: { value: 'Beta' },
+    });
+    fireEvent.change(screen.getByTestId('add-server-address-input'), {
+      target: { value: 'beta.chantivo.app' },
+    });
+    fireEvent.click(screen.getByTestId('add-server-submit'));
+
+    await vi.waitFor(() => {
+      expect(addBookmark).toHaveBeenCalledWith({
+        displayName: 'Beta',
+        serverAddress: 'wss://beta.chantivo.app:443',
+      });
+    });
+  });
+
+  it('persists the canonical wss:// form of a bare hostname on Edit, not the raw typed string', async () => {
+    const updateBookmark = vi.fn().mockResolvedValue(true);
+    const actions = bookmarksActions({ updateBookmark });
+    const bookmark = {
+      bookmarkId: 'a',
+      displayName: 'Beta',
+      serverAddress: 'ws://old.example.com:8090',
+    };
+
+    render(<AddServerDialog open={true} onClose={vi.fn()} actions={actions} bookmark={bookmark} />);
+
+    fireEvent.change(screen.getByTestId('add-server-address-input'), {
+      target: { value: 'beta.chantivo.app' },
+    });
+    fireEvent.click(screen.getByTestId('add-server-submit'));
+
+    await vi.waitFor(() => {
+      expect(updateBookmark).toHaveBeenCalledWith({
+        bookmarkId: 'a',
+        displayName: 'Beta',
+        serverAddress: 'wss://beta.chantivo.app:443',
+      });
+    });
+  });
+
+  // An already-saved bookmark whose `serverAddress` is a raw/bare or `ws://`-explicit string (from
+  // before this fix, or a hand-edited config) must keep opening and displaying exactly as typed —
+  // `AddServerDialog` shows the stored string verbatim in Edit mode; only a subsequent Save rewrites
+  // it to the canonical form. No bulk migration of existing storage is performed anywhere.
+  it('opens Edit mode for an old-style raw-string bookmark showing it unmodified, without rewriting storage', () => {
+    const actions = bookmarksActions();
+    const bookmark = {
+      bookmarkId: 'old',
+      displayName: 'Old Server',
+      serverAddress: 'beta.chantivo.app',
+    };
+
+    render(<AddServerDialog open={true} onClose={vi.fn()} actions={actions} bookmark={bookmark} />);
+
+    expect(screen.getByTestId('add-server-address-input')).toHaveValue('beta.chantivo.app');
+    expect(actions.updateBookmark).not.toHaveBeenCalled();
+    expect(actions.addBookmark).not.toHaveBeenCalled();
   });
 });

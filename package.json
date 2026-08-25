@@ -1,6 +1,6 @@
 {
   "name": "disco-voador",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "description": "Engineering scaffold for a self-hosted Windows desktop communication application.",
   "license": "UNLICENSED",
@@ -28,7 +28,9 @@
     "verify:harness": "node scripts/verify-harness.mjs",
     "verify:infrastructure": "node scripts/verify-infrastructure.mjs",
     "verify:links": "node scripts/verify-links.mjs",
-    "verify:secrets": "node scripts/verify-secrets.mjs"
+    "verify:secrets": "node scripts/verify-secrets.mjs",
+    "verify:version": "node scripts/verify-version.mjs",
+    "bump-version": "node scripts/bump-version.mjs"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

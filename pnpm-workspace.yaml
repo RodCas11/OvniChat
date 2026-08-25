@@ -14,6 +14,13 @@ allowBuilds:
   # current platform/arch, which is exactly the ADR's own "no compile step at install time on the
   # operator's machine" selling point for choosing this dependency in the first place. Allowed to run.
   uiohook-napi: true
+  # T15 — `electron-winstaller` (a `@electron-forge/maker-squirrel` dependency)'s own `install`
+  # script is `script/select-7z-arch.js`, verified directly against the real published tarball: it
+  # only copies its own already-bundled `vendor/7z-<hostArch>.exe`/`.dll` pair to `vendor/7z.exe`/
+  # `.dll` for the current host architecture — no network access, no compiler toolchain, no
+  # arbitrary code beyond that one local file copy. Required for `electron-forge make` to run at
+  # all (Squirrel's own nupkg packaging step shells out to this `7z.exe`). Allowed to run.
+  electron-winstaller: true
 
 auditConfig:
   ignoreGhsas:

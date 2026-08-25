@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 /**
  * T9 — server-local authorization wire schemas: groups, permissions, and bearer tokens (privilege
- * keys, invite tokens, the one-time Server Admin bootstrap token). Deliberately crypto-free and
+ * keys and invite tokens). Deliberately crypto-free and
  * Node-free, matching every other file in this package (see `identity.ts`'s doc comment) — the
  * actual authorization *store* (SQLite, digests, migrations) lives entirely in
  * `services/dedicated-server/src/authorization/`, never here. This file only describes what can be
@@ -129,8 +129,8 @@ export const MAX_BADGES_PER_PARTICIPANT = 8;
 export const groupBadgeListSchema = z.array(groupBadgeSchema).max(MAX_BADGES_PER_PARTICIPANT);
 
 /**
- * Bearer capability tokens (privilege keys, invite tokens, the bootstrap Server Admin token) —
- * opaque, high-entropy random secrets the server never encodes any claim into (T9 Section 12: no
+ * Bearer capability tokens (privilege keys, invite tokens) — opaque, high-entropy random secrets
+ * the server never encodes any claim into (T9 Section 12: no
  * identityId/permissions/group-name encoded in a client-trusted unsigned token). Bounded and
  * charset-restricted so a garbage value fails schema validation before ever reaching the server's
  * digest lookup. The `DV-<KIND>-` prefix (`server-token-crypto.ts` in `services/dedicated-server`

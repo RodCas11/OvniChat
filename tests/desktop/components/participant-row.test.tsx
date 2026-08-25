@@ -150,3 +150,38 @@ describe('ParticipantRow — avatar (T13.4 UI consistency follow-up)', () => {
     expect(onRequestAvatar).toHaveBeenCalledTimes(1);
   });
 });
+
+/**
+ * T15.1 — before this, a participant whose media connection conclusively failed looked completely
+ * normal in the roster while no audio or video could ever arrive from them (the exact experience the
+ * field report described). The indicator is driven by the real, already-tracked `connectionState`,
+ * never a guess, and its wording must stay ordinary-user language.
+ */
+describe('ParticipantRow — failed media connection (T15.1)', () => {
+  it('shows nothing extra while the connection is healthy or still being established', () => {
+    for (const state of ['new', 'connecting', 'connected', 'disconnected'] as const) {
+      renderRow({ participant: createParticipant({ connectionState: state }) });
+      expect(
+        screen.queryByTestId('participant-row-connection-problem-participant-1'),
+      ).not.toBeInTheDocument();
+      cleanup();
+    }
+  });
+
+  it('surfaces a plain-language problem indicator once the connection has failed', () => {
+    renderRow({ participant: createParticipant({ connectionState: 'failed' }) });
+    const indicator = screen.getByTestId('participant-row-connection-problem-participant-1');
+    expect(indicator).toBeInTheDocument();
+    expect(indicator).toHaveAttribute('aria-label', 'Voice connection problem with Alice');
+  });
+
+  it('never puts protocol jargon in front of a normal user', () => {
+    const { container } = renderRow({
+      participant: createParticipant({ connectionState: 'failed' }),
+    });
+    const visibleText = `${container.textContent ?? ''} ${container.innerHTML}`;
+    for (const jargon of ['ICE', 'STUN', 'TURN', 'DTLS', 'SDP', 'candidate']) {
+      expect(visibleText).not.toContain(jargon);
+    }
+  });
+});

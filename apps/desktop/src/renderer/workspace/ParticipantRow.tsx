@@ -1,5 +1,5 @@
 import type { ReactElement } from 'react';
-import { Monitor, SlidersHorizontal, Video } from 'lucide-react';
+import { Monitor, SlidersHorizontal, TriangleAlert, Video } from 'lucide-react';
 
 import type { VoiceParticipantView } from '../voice/use-voice-channel.js';
 import { IconButton } from '../ui/IconButton.js';
@@ -65,6 +65,19 @@ export function ParticipantRow({
         {isSelf && <span className={styles.you}> (you)</span>}
       </span>
       <span className={styles.mediaIcons}>
+        {/* T15.1 — a peer whose media connection conclusively failed was previously invisible in the
+            UI: the row looked completely normal while no audio or video could ever arrive. This
+            surfaces the real, already-tracked `connectionState` (never a guess) in ordinary-user
+            language. Deliberately never says "ICE", "STUN", "TURN", or "DTLS" — those belong in
+            diagnostics, not in front of someone who just wants to talk to their friend. */}
+        {participant.connectionState === 'failed' && (
+          <TriangleAlert
+            size={14}
+            className={styles.connectionProblem}
+            aria-label={`Voice connection problem with ${participant.displayName}`}
+            data-testid={`participant-row-connection-problem-${participant.participantId}`}
+          />
+        )}
         {hasCamera && <Video size={14} aria-label={`${participant.displayName} has camera on`} />}
         {hasScreen && (
           <Monitor size={14} aria-label={`${participant.displayName} is sharing their screen`} />

@@ -1,6 +1,11 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { Peer, type PeerCallbacks } from '../../packages/rtc-core/src/peer.js';
+import {
+  ICE_RECOVERY_INITIAL_DELAY_MS,
+  ICE_RECOVERY_MAX_ATTEMPTS,
+  Peer,
+  type PeerCallbacks,
+} from '../../packages/rtc-core/src/peer.js';
 import type { SignalingPort } from '../../packages/rtc-core/src/types.js';
 import { FakePeerConnection, createDeferred, fakeAudioTrack } from './fake-peer-connection.js';
 
@@ -171,7 +176,7 @@ describe('Peer — ICE candidate queueing', () => {
 });
 
 describe('Peer — connection-state forwarding and terminal cleanup', () => {
-  it('forwards every state change and signals terminal exactly once on failure', () => {
+  it('forwards every state change, and no longer reports terminal the instant "failed" appears (T15.2)', () => {
     const pc = new FakePeerConnection();
     const callbacks = createCallbacks();
     new Peer('peer-1', 'initiator', pc, createFakeSignalingPort(), callbacks);
@@ -180,11 +185,25 @@ describe('Peer — connection-state forwarding and terminal cleanup', () => {
     pc.onconnectionstatechange?.(new Event('connectionstatechange'));
     pc.connectionState = 'failed';
     pc.onconnectionstatechange?.(new Event('connectionstatechange'));
-    // A second dispatch of the same terminal state must not double-count.
+    // A second dispatch of the same state must stay absorbed, not restart or terminate anything.
     pc.onconnectionstatechange?.(new Event('connectionstatechange'));
 
     expect(callbacks.stateChanges).toHaveLength(3);
-    expect(callbacks.terminalCount).toBe(2); // once per dispatch while already in "failed"
+    // Pre-T15.2 this was the point a failed peer was destroyed for the rest of the session. It now
+    // enters bounded ICE-restart recovery instead; terminal is only reported once that is spent
+    // (covered in detail by the recovery suite below).
+    expect(callbacks.terminalCount).toBe(0);
+  });
+
+  it('reports terminal immediately for "closed" — no recovery is possible for a gone connection', () => {
+    const pc = new FakePeerConnection();
+    const callbacks = createCallbacks();
+    new Peer('peer-1', 'initiator', pc, createFakeSignalingPort(), callbacks);
+
+    pc.connectionState = 'closed';
+    pc.onconnectionstatechange?.(new Event('connectionstatechange'));
+
+    expect(callbacks.terminalCount).toBe(1);
   });
 
   it('does not treat "disconnected" as terminal', () => {
@@ -196,6 +215,294 @@ describe('Peer — connection-state forwarding and terminal cleanup', () => {
     pc.onconnectionstatechange?.(new Event('connectionstatechange'));
 
     expect(callbacks.terminalCount).toBe(0);
+  });
+});
+
+describe('Peer — bounded ICE-failure recovery (T15.2)', () => {
+  const turnServers: RTCIceServer[] = [
+    { urls: 'turn:turn.example.com:3478', username: 'fake-user', credential: 'fake-credential' },
+  ];
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** Drives a `Peer` to `'failed'` through the same platform dispatch a real connection would. */
+  function fail(pc: FakePeerConnection): void {
+    pc.connectionState = 'failed';
+    pc.iceConnectionState = 'failed';
+    pc.onconnectionstatechange?.(new Event('connectionstatechange'));
+  }
+
+  function establish(pc: FakePeerConnection): void {
+    pc.connectionState = 'connected';
+    pc.iceConnectionState = 'connected';
+    pc.onconnectionstatechange?.(new Event('connectionstatechange'));
+  }
+
+  it('does not restart ICE immediately on failure — the first attempt waits out the initial backoff', () => {
+    const pc = new FakePeerConnection();
+    new Peer('peer-1', 'initiator', pc, createFakeSignalingPort(), createCallbacks());
+
+    fail(pc);
+    expect(pc.restartIceCallCount).toBe(0);
+
+    vi.advanceTimersByTime(ICE_RECOVERY_INITIAL_DELAY_MS - 1);
+    expect(pc.restartIceCallCount).toBe(0);
+
+    vi.advanceTimersByTime(1);
+    expect(pc.restartIceCallCount).toBe(1);
+  });
+
+  it('makes exactly ICE_RECOVERY_MAX_ATTEMPTS restarts, spaced by the documented exponential backoff', () => {
+    const pc = new FakePeerConnection();
+    new Peer('peer-1', 'initiator', pc, createFakeSignalingPort(), createCallbacks());
+
+    fail(pc);
+
+    // 1s, then 3s, then 9s — the connection stays "failed" throughout, as a genuinely broken path
+    // would.
+    vi.advanceTimersByTime(1_000);
+    expect(pc.restartIceCallCount).toBe(1);
+    vi.advanceTimersByTime(2_999);
+    expect(pc.restartIceCallCount).toBe(1);
+    vi.advanceTimersByTime(1);
+    expect(pc.restartIceCallCount).toBe(2);
+    vi.advanceTimersByTime(9_000);
+    expect(pc.restartIceCallCount).toBe(3);
+
+    // And then no more, ever — not after the next window, not after an hour.
+    vi.advanceTimersByTime(60 * 60 * 1_000);
+    expect(pc.restartIceCallCount).toBe(ICE_RECOVERY_MAX_ATTEMPTS);
+  });
+
+  it('a storm of repeated "failed" dispatches produces no extra restarts', () => {
+    const pc = new FakePeerConnection();
+    new Peer('peer-1', 'initiator', pc, createFakeSignalingPort(), createCallbacks());
+
+    // Both platform events fire for the same transition, and a real connection re-dispatches while
+    // it stays failed. None of this may multiply the retry budget.
+    for (let i = 0; i < 25; i += 1) {
+      pc.connectionState = 'failed';
+      pc.iceConnectionState = 'failed';
+      pc.onconnectionstatechange?.(new Event('connectionstatechange'));
+      pc.oniceconnectionstatechange?.(new Event('iceconnectionstatechange'));
+    }
+    vi.advanceTimersByTime(60 * 60 * 1_000);
+
+    expect(pc.restartIceCallCount).toBe(ICE_RECOVERY_MAX_ATTEMPTS);
+  });
+
+  it('reports terminal exactly once, only after the final attempt has had its own verdict window', () => {
+    const pc = new FakePeerConnection();
+    const callbacks = createCallbacks();
+    new Peer('peer-1', 'initiator', pc, createFakeSignalingPort(), callbacks);
+
+    fail(pc);
+    // 1 + 3 + 9 = 13s covers all three attempts; terminal must not be declared yet.
+    vi.advanceTimersByTime(13_000);
+    expect(pc.restartIceCallCount).toBe(3);
+    expect(callbacks.terminalCount).toBe(0);
+
+    // The 27s window after the third attempt is what decides the user-visible failure.
+    vi.advanceTimersByTime(26_999);
+    expect(callbacks.terminalCount).toBe(0);
+    vi.advanceTimersByTime(1);
+    expect(callbacks.terminalCount).toBe(1);
+
+    vi.advanceTimersByTime(60 * 60 * 1_000);
+    expect(callbacks.terminalCount).toBe(1);
+  });
+
+  it('stops the chain the moment the peer recovers, and never reports terminal', () => {
+    const pc = new FakePeerConnection();
+    const callbacks = createCallbacks();
+    new Peer('peer-1', 'initiator', pc, createFakeSignalingPort(), callbacks);
+
+    fail(pc);
+    vi.advanceTimersByTime(1_000);
+    expect(pc.restartIceCallCount).toBe(1);
+
+    establish(pc);
+    vi.advanceTimersByTime(60 * 60 * 1_000);
+
+    expect(pc.restartIceCallCount).toBe(1);
+    expect(callbacks.terminalCount).toBe(0);
+  });
+
+  it('a peer that failed, recovered, then fails again much later gets a full fresh retry budget', () => {
+    const pc = new FakePeerConnection();
+    const callbacks = createCallbacks();
+    new Peer('peer-1', 'initiator', pc, createFakeSignalingPort(), callbacks);
+
+    fail(pc);
+    vi.advanceTimersByTime(4_000); // two attempts spent
+    expect(pc.restartIceCallCount).toBe(2);
+    establish(pc);
+    vi.advanceTimersByTime(60 * 60 * 1_000);
+    expect(pc.restartIceCallCount).toBe(2);
+
+    // A completely unrelated later failure must not inherit the one remaining attempt.
+    fail(pc);
+    vi.advanceTimersByTime(13_000);
+    expect(pc.restartIceCallCount).toBe(2 + ICE_RECOVERY_MAX_ATTEMPTS);
+    expect(callbacks.terminalCount).toBe(0);
+    vi.advanceTimersByTime(27_000);
+    expect(callbacks.terminalCount).toBe(1);
+  });
+
+  it('leaves a restart that is still checking alone, and resumes the remaining budget when the platform gives up again', () => {
+    const pc = new FakePeerConnection();
+    const callbacks = createCallbacks();
+    new Peer('peer-1', 'initiator', pc, createFakeSignalingPort(), callbacks);
+
+    fail(pc);
+    vi.advanceTimersByTime(1_000);
+    expect(pc.restartIceCallCount).toBe(1);
+
+    // The restart is genuinely in progress: nothing has failed *again* yet, so nothing may be
+    // retried or declared terminal on this side — the ICE agent's own timeouts own this window.
+    pc.connectionState = 'connecting';
+    pc.iceConnectionState = 'checking';
+    vi.advanceTimersByTime(60 * 60 * 1_000);
+    expect(pc.restartIceCallCount).toBe(1);
+    expect(callbacks.terminalCount).toBe(0);
+
+    // The platform eventually gives up. The chain resumes with what is left of the budget — two more
+    // attempts, not a fresh three, because this is the same unresolved incident.
+    fail(pc);
+    vi.advanceTimersByTime(3_000 + 9_000);
+    expect(pc.restartIceCallCount).toBe(ICE_RECOVERY_MAX_ATTEMPTS);
+    vi.advanceTimersByTime(27_000);
+    expect(callbacks.terminalCount).toBe(1);
+  });
+
+  it('never restarts a peer that is merely "disconnected" — the transient state stays untouched', () => {
+    const pc = new FakePeerConnection();
+    const callbacks = createCallbacks();
+    new Peer('peer-1', 'initiator', pc, createFakeSignalingPort(), callbacks);
+
+    pc.connectionState = 'disconnected';
+    pc.iceConnectionState = 'disconnected';
+    pc.onconnectionstatechange?.(new Event('connectionstatechange'));
+    pc.oniceconnectionstatechange?.(new Event('iceconnectionstatechange'));
+    vi.advanceTimersByTime(60 * 60 * 1_000);
+
+    expect(pc.restartIceCallCount).toBe(0);
+    expect(pc.setConfigurationCalls).toEqual([]);
+    expect(callbacks.terminalCount).toBe(0);
+  });
+
+  it('recovers against the newest known ICE servers, including a refresh that arrived while it was healthy', () => {
+    const pc = new FakePeerConnection();
+    const peer = new Peer('peer-1', 'initiator', pc, createFakeSignalingPort(), createCallbacks());
+
+    // Established first: a replacement credential must be recorded but must not disturb the call.
+    establish(pc);
+    expect(peer.applyIceServers(turnServers)).toBe(false);
+    expect(pc.setConfigurationCalls).toEqual([]);
+    expect(pc.restartIceCallCount).toBe(0);
+
+    fail(pc);
+    vi.advanceTimersByTime(1_000);
+
+    expect(pc.setConfigurationCalls).toHaveLength(1);
+    expect(pc.setConfigurationCalls[0]?.iceServers).toEqual(turnServers);
+    expect(pc.restartIceCallCount).toBe(1);
+  });
+
+  it('restarts without touching the configuration when no ICE server list was ever supplied', () => {
+    const pc = new FakePeerConnection();
+    new Peer('peer-1', 'initiator', pc, createFakeSignalingPort(), createCallbacks());
+
+    fail(pc);
+    vi.advanceTimersByTime(1_000);
+
+    expect(pc.setConfigurationCalls).toEqual([]);
+    expect(pc.restartIceCallCount).toBe(1);
+  });
+
+  it('close() cancels an armed recovery timer — a departed participant leaks nothing', () => {
+    const pc = new FakePeerConnection();
+    const callbacks = createCallbacks();
+    const peer = new Peer('peer-1', 'initiator', pc, createFakeSignalingPort(), callbacks);
+
+    fail(pc);
+    peer.close();
+    vi.advanceTimersByTime(60 * 60 * 1_000);
+
+    expect(pc.restartIceCallCount).toBe(0);
+    expect(callbacks.terminalCount).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('a connection that throws on every restart still converges on terminal instead of looping', () => {
+    const pc = new FakePeerConnection();
+    const callbacks = createCallbacks();
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const peer = new Peer('peer-1', 'initiator', pc, createFakeSignalingPort(), callbacks);
+    // A known ICE server list is what makes the recovery path call `setConfiguration` at all.
+    peer.applyIceServers(turnServers);
+    pc.setConfigurationImpl = () => {
+      throw new Error('InvalidStateError');
+    };
+
+    fail(pc);
+    vi.advanceTimersByTime(60 * 60 * 1_000);
+
+    // Every attempt threw, yet the budget was still consumed and the verdict was still reached —
+    // the alternative (a rejected restart not counting) would be an unbounded loop.
+    expect(callbacks.terminalCount).toBe(1);
+    expect(consoleError).toHaveBeenCalledTimes(ICE_RECOVERY_MAX_ATTEMPTS);
+    consoleError.mockRestore();
+  });
+
+  it('never logs a credential value from the retry path, at any level', () => {
+    const pc = new FakePeerConnection();
+    const logged: string[] = [];
+    const capture = (...args: unknown[]): void => {
+      logged.push(args.map((a) => JSON.stringify(a) ?? String(a)).join(' '));
+    };
+    const spies = [
+      vi.spyOn(console, 'error').mockImplementation(capture),
+      vi.spyOn(console, 'warn').mockImplementation(capture),
+      vi.spyOn(console, 'info').mockImplementation(capture),
+      vi.spyOn(console, 'log').mockImplementation(capture),
+      vi.spyOn(console, 'debug').mockImplementation(capture),
+    ];
+    const peer = new Peer('peer-1', 'initiator', pc, createFakeSignalingPort(), createCallbacks());
+    peer.applyIceServers(turnServers);
+    // Force the retry path's own error branch, which is the one place a naive implementation would
+    // dump the whole configuration into a log line.
+    pc.setConfigurationImpl = () => {
+      throw new Error('InvalidStateError');
+    };
+
+    fail(pc);
+    vi.advanceTimersByTime(60 * 60 * 1_000);
+
+    for (const spy of spies) spy.mockRestore();
+    expect(logged.join('\n')).not.toContain('fake-credential');
+    expect(logged.join('\n')).not.toContain('fake-user');
+  });
+
+  it('an already-negotiated peer turns a recovery restart into a real renegotiation offer', async () => {
+    const pc = new FakePeerConnection();
+    const signalingPort = createFakeSignalingPort();
+    const peer = new Peer('peer-1', 'initiator', pc, signalingPort, createCallbacks());
+    await peer.createAndSendOffer();
+    expect(signalingPort.offers).toHaveLength(1);
+
+    fail(pc);
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    // Produced by the platform's own negotiationneeded -> createAndSendOffer path, not by a second
+    // offer-scheduling mechanism inside the recovery code.
+    expect(signalingPort.offers).toHaveLength(2);
   });
 });
 
