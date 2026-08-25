@@ -1,7 +1,7 @@
 {
   "name": "@disco-voador/desktop",
   "productName": "Chantivo",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "Electron desktop composition boundary: Main/Preload/Renderer application shell.",
   "type": "module",

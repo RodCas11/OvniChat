@@ -1,6 +1,6 @@
 {
   "name": "@disco-voador/dedicated-server",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "Disco Voador Dedicated Server: the independently-operated product an operator self-hosts, composing @disco-voador/realtime with server-name/channel configuration and product-facing startup UX.",
   "type": "module",
